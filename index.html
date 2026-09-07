@@ -1,4 +1,4 @@
-<!DOCTYPE html>    
+<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
@@ -460,6 +460,113 @@ a{color:inherit;text-decoration:none;}
 #player-back{font-size:20px;background:rgba(255,255,255,.12);backdrop-filter:blur(8px);width:38px;height:38px;border-radius:50%;flex-shrink:0;transition:background .15s;}
 #player-back:hover{background:rgba(255,255,255,.2);}
 
+#player-topbar, #player-controls-bottom{
+  transition:opacity .25s ease, transform .25s ease;
+  opacity:1;
+}
+#player-overlay.controls-hidden #player-topbar{opacity:0;transform:translateY(-6px);pointer-events:none;}
+#player-overlay.controls-hidden #player-controls-bottom{opacity:0;transform:translateY(6px);pointer-events:none;}
+#player-overlay.controls-hidden{cursor:none;}
+
+#player-controls-bottom{
+  position:absolute;bottom:0;left:0;right:0;z-index:2;
+  padding:16px 22px 20px;display:flex;align-items:center;gap:14px;
+  background:linear-gradient(0deg,rgba(0,0,0,.82),transparent);
+}
+#player-playpause{
+  width:40px;height:40px;border-radius:50%;flex-shrink:0;color:#fff;
+  background:rgba(255,255,255,.14);backdrop-filter:blur(8px);
+  display:flex;align-items:center;justify-content:center;transition:background .15s;
+}
+#player-playpause:hover{background:rgba(255,255,255,.24);}
+#player-playpause svg{width:18px;height:18px;}
+.player-ctrl-btn{
+  height:34px;min-width:34px;padding:0 10px;border-radius:17px;flex-shrink:0;font-size:11px;font-weight:700;color:#fff;
+  background:rgba(255,255,255,.14);backdrop-filter:blur(8px);
+  display:flex;align-items:center;justify-content:center;gap:3px;transition:background .15s;
+}
+.player-ctrl-btn:hover{background:rgba(255,255,255,.24);}
+.player-ctrl-btn svg{width:16px;height:16px;flex-shrink:0;}
+#player-fullscreen svg{width:18px;height:18px;} /* um pouco maior, mais visível */
+#player-volume-wrap{position:relative;display:flex;align-items:center;flex-shrink:0;}
+#player-volume-slider-wrap{
+  position:absolute;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%);
+  width:36px;height:0;overflow:hidden;
+  background:rgba(20,22,34,.9);backdrop-filter:blur(20px) saturate(160%);
+  border:1px solid var(--border-strong);border-radius:12px;
+  display:flex;align-items:center;justify-content:center;
+  transition:height .2s ease;
+  box-shadow:0 12px 32px -8px rgba(0,0,0,.6);
+}
+#player-volume-wrap:hover #player-volume-slider-wrap{height:104px;}
+#player-volume-slider{
+  -webkit-appearance:none;appearance:none;
+  width:80px;height:4px;background:rgba(255,255,255,.25);border-radius:4px;
+  padding:0;border:none;cursor:pointer;
+  transform:rotate(-90deg); /* horizontal vira vertical: esquerda(min) embaixo, direita(max) em cima */
+}
+#player-volume-slider::-webkit-slider-thumb{
+  -webkit-appearance:none;appearance:none;
+  width:12px;height:12px;border-radius:50%;background:#fff;
+  box-shadow:0 2px 4px rgba(0,0,0,.4);cursor:pointer;
+}
+#player-volume-slider::-moz-range-thumb{
+  width:12px;height:12px;border-radius:50%;background:#fff;border:none;
+  box-shadow:0 2px 4px rgba(0,0,0,.4);cursor:pointer;
+}
+#player-volume-slider::-moz-range-track{background:rgba(255,255,255,.25);height:4px;border-radius:4px;}
+#player-time-current,#player-time-duration{color:#fff;font-size:12.5px;font-weight:600;flex-shrink:0;min-width:42px;text-align:center;}
+#player-seek-track{
+  flex:1;height:5px;background:rgba(255,255,255,.22);border-radius:4px;cursor:pointer;position:relative;
+}
+#player-seek-track:hover{height:7px;}
+#player-buffered-fill{
+  position:absolute;top:0;left:0;height:100%;border-radius:4px;
+  background:rgba(255,255,255,.35);width:0%;
+}
+#player-seek-fill{
+  height:100%;border-radius:4px;width:0%;
+  background:linear-gradient(90deg,var(--accent),var(--accent-2));
+  position:relative;
+}
+#player-seek-fill::after{
+  content:"";position:absolute;right:-6px;top:50%;transform:translateY(-50%);
+  width:13px;height:13px;border-radius:50%;background:#fff;
+  box-shadow:0 2px 6px rgba(0,0,0,.4);opacity:0;transition:opacity .15s;
+}
+/* Feedback visual ao avançar/retroceder — sem isso, nada confirmava
+   visualmente que o seek aconteceu. */
+#player-seek-feedback{
+  position:absolute;top:50%;left:50%;transform:translate(-50%,-50%) scale(.85);
+  background:rgba(10,11,18,.72);backdrop-filter:blur(10px);
+  border:1px solid rgba(255,255,255,.15);border-radius:50px;
+  padding:14px 22px;display:none;align-items:center;gap:8px;
+  color:#fff;font-size:15px;font-weight:700;z-index:3;pointer-events:none;
+  opacity:0;transition:opacity .18s, transform .18s;
+}
+#player-seek-feedback.show{display:flex;opacity:1;transform:translate(-50%,-50%) scale(1);}
+#player-seek-feedback svg{width:22px;height:22px;}
+/* Menu de opções de velocidade */
+#player-speed-menu{
+  display:none;position:absolute;bottom:calc(100% + 10px);left:50%;transform:translateX(-50%);
+  background:rgba(20,22,34,.9);backdrop-filter:blur(20px) saturate(160%);
+  border:1px solid var(--border-strong);border-radius:12px;padding:6px;
+  flex-direction:column;gap:2px;min-width:70px;box-shadow:0 12px 32px -8px rgba(0,0,0,.6);
+}
+#player-speed-menu.open{display:flex;}
+#player-speed-menu button{
+  padding:7px 14px;border-radius:8px;font-size:12.5px;font-weight:700;color:#fff;text-align:center;
+  transition:background .15s;
+}
+#player-speed-menu button:hover{background:rgba(255,255,255,.14);}
+#player-speed-menu button.active{background:linear-gradient(135deg,var(--accent),var(--accent-2));}
+#player-seek-track:hover #player-seek-fill::after{opacity:1;}
+#player-overlay.live-mode #player-seek-track,
+#player-overlay.live-mode #player-time-current,
+#player-overlay.live-mode #player-time-duration,
+#player-overlay.live-mode #player-seek-back5,
+#player-overlay.live-mode #player-seek-fwd5{display:none;}
+
 /* sidebar-search counters */
 .search-counters{padding:8px 14px;font-size:11.5px;color:var(--text-2);}
 .search-counters .sc-line{display:flex;justify-content:space-between;padding:3px 0;}
@@ -531,7 +638,7 @@ a{color:inherit;text-decoration:none;}
       <li class="nav-item" data-view="settings"><span class="ic">&#9881;</span>Configurações</li>
     </ul>
     <div id="sidebar-search-counters" class="search-counters" style="display:none;"></div>
-    <div class="footer-mini">StreamManager &middot; local &amp; offline-first</div>
+    <div class="footer-mini">StreamManager &middot; local &amp; offline-first &middot; <span id="app-version-label">v1.0.0</span></div>
   </nav>
 
   <div id="main">
@@ -567,7 +674,27 @@ a{color:inherit;text-decoration:none;}
     <div class="spinner"></div>
     <span>Carregando stream...</span>
   </div>
-  <video id="video-player" controls playsinline></video>
+  <video id="video-player" playsinline preload="auto"></video>
+  <div id="player-seek-feedback"></div>
+  <div id="player-controls-bottom">
+    <button id="player-playpause" title="Play/Pause"></button>
+    <button id="player-seek-back5" class="player-ctrl-btn" title="Retroceder 5s"></button>
+    <button id="player-seek-fwd5" class="player-ctrl-btn" title="Avançar 5s"></button>
+    <span id="player-time-current">00:00</span>
+    <div id="player-seek-track"><div id="player-buffered-fill"></div><div id="player-seek-fill"></div></div>
+    <span id="player-time-duration">00:00</span>
+    <div style="position:relative;">
+      <button id="player-speed" class="player-ctrl-btn" title="Velocidade de reprodução">1x</button>
+      <div id="player-speed-menu"></div>
+    </div>
+    <div id="player-volume-wrap">
+      <button id="player-volume" class="player-ctrl-btn" title="Volume"></button>
+      <div id="player-volume-slider-wrap">
+        <input type="range" id="player-volume-slider" min="0" max="1" step="0.05" value="1">
+      </div>
+    </div>
+    <button id="player-fullscreen" class="player-ctrl-btn" title="Tela cheia"></button>
+  </div>
 </div>
 
 <script>
@@ -587,6 +714,7 @@ const STORES = {
   seriesSummary: 'seriesSummary'
 };
 
+const APP_VERSION = '1.0.0'; // atualize aqui quando lançar uma nova versão
 const PAGE_SIZE_DEFAULT = 50;
 const MAX_CONCURRENT_DOWNLOADS = 10; // não usado mais como limite (downloads são todos simultâneos), mantido por compatibilidade
 const MAX_CONCURRENT_PROCESSING = 1; // processamento sequencial (1 playlist por vez); download continua ilimitado
@@ -594,7 +722,7 @@ const MAX_CONCURRENT_PROCESSING = 1; // processamento sequencial (1 playlist por
 const DEFAULT_SETTINGS = {
   id: 'app',
   pageSize: 50,
-  rawUrl: 'https://plainraw.com/raw/f48301398016xxxx',
+  rawUrl: 'https://matheus.aulas.arquitetura.com/lista_com_aulas.txt',
   rawUser: '111111',
   rawPass: 'xxx',
   autoSaveServers: true
@@ -621,6 +749,8 @@ const State = {
   settings: { ...DEFAULT_SETTINGS },
   pageCache: new Map(), // cache em memória: chave -> {items,total,catOptions,serverIds}
   dashboardCache: null, // {continueList, recentGroups}
+  favoritesCache: null, // {favMovies, favLive, favSeries}
+  continueCache: null,  // array retornado por getContinueWatchingList()
   contentLoad: {
     isLoading: false,
     processed: 0,
@@ -689,6 +819,26 @@ function escapeHtml(str){
 }
 function uid(prefix){
   return (prefix||'id') + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,9);
+}
+/**
+ * Baixa a URL do conteúdo. É "melhor esforço": como a maioria dos servidores
+ * IPTV não envia cabeçalho Content-Disposition, o navegador pode abrir o
+ * arquivo numa aba em vez de baixar direto — isso é uma limitação do
+ * servidor de origem, não tem como forçar via JS puro sem um backend.
+ */
+function downloadContentUrl(url, filename){
+  try{
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename || '';
+    a.target = '_blank';
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }catch(e){
+    showToast('Não foi possível iniciar o download.', 'error');
+  }
 }
 function showToast(msg, type){
   const wrap = qs('#toast-wrap');
@@ -1403,6 +1553,7 @@ const IndexModule = {
     // precisar refazer a consulta ao banco (o que causava aquele "reload"
     // visual da tela inteira só por favoritar um item).
     State.dashboardCache = null;
+    State.favoritesCache = null;
   },
 
   async toggleFavoriteSeries(seriesKey){
@@ -1412,6 +1563,7 @@ const IndexModule = {
       else{ await IDB.put(STORES.favorites, { id: seriesKey, type: 'series' }); }
     }catch(e){}
     State.dashboardCache = null;
+    State.favoritesCache = null;
   },
 
   rebuildFromScratch(allContents){
@@ -2445,6 +2597,13 @@ const ProgressModule = {
   getProgress(contentId){
     return State.progress.get(contentId) || null;
   },
+  /** Remove o progresso de um item, deixando-o como "não iniciado" — some
+   * do Continuar Assistindo. */
+  async resetProgress(contentId){
+    State.progress.delete(contentId);
+    State.dashboardCache = null;
+    try{ await IDB.delete(STORES.progress, contentId); }catch(e){}
+  },
   getContinueWatchingCount(){
     let count = 0;
     for(const [, prog] of State.progress){ if(!prog.concluido && prog.porcentagem > 0) count++; }
@@ -2513,13 +2672,23 @@ const PlayerModule = {
     const title = qs('#player-title');
     title.textContent = content.nome;
     overlay.style.display = 'flex';
+    overlay.classList.toggle('live-mode', content.tipo === 'live');
 
     this._ensureVideoListeners();
     this._ensureNextEpisodeButton();
+    this._ensurePlayerControls();
     this.cleanup();
     this.hideFallbackBar();
     this._startPlayback(content, this.playToken);
     this._updateNextEpisodeButton(content);
+    const video0 = qs('#video-player');
+    const speedBtn0 = qs('#player-speed');
+    const volumeBtn0 = qs('#player-volume');
+    if(speedBtn0) speedBtn0.textContent = (video0.playbackRate || 1) + 'x';
+    if(volumeBtn0) volumeBtn0.innerHTML = video0.muted ? this.ICONS.volumeOff : this.ICONS.volumeOn;
+    const volumeSlider0 = qs('#player-volume-slider');
+    if(volumeSlider0) volumeSlider0.value = video0.muted ? 0 : video0.volume;
+    this._showControls();
   },
 
   _ensureNextEpisodeButton(){
@@ -2551,18 +2720,286 @@ const PlayerModule = {
     }
   },
 
+  _controlsReady: false,
+  _hideControlsTimer: null,
+  _isSeeking: false,
+
+  // Ícones desenhados em SVG (inspirados nos controles nativos do
+  // navegador) em vez de emoji — rendem igual em qualquer sistema e ficam
+  // mais "limpos"/consistentes com o resto da interface.
+  ICONS: {
+    play: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>',
+    pause: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>',
+    seekBack5: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-9.36L1 10"/></svg><span>5</span>',
+    seekFwd5: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.49-9.36L23 10"/></svg><span>5</span>',
+    volumeOn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="10.5 4.5 5.5 8.5 2 8.5 2 15.5 5.5 15.5 10.5 19.5 10.5 4.5" fill="currentColor" stroke="none"/><path d="M15.3 8.3a5 5 0 0 1 0 7.4"/><path d="M18.6 5a9.5 9.5 0 0 1 0 14"/></svg>',
+    volumeOff: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="10.5 4.5 5.5 8.5 2 8.5 2 15.5 5.5 15.5 10.5 19.5 10.5 4.5" fill="currentColor" stroke="none"/><line x1="22.5" y1="8.5" x2="16.5" y2="14.5"/><line x1="16.5" y1="8.5" x2="22.5" y2="14.5"/></svg>',
+    // "Entrar" em tela cheia: 4 cantos abrindo pra fora.
+    fullscreenEnter: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>',
+    // "Sair" da tela cheia: o MESMO desenho, só que invertido (cantos
+    // fechando pra dentro) — pedido explícito, em vez de um X genérico.
+    fullscreenExit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/></svg>'
+  },
+
+  /**
+   * Controles customizados (play/pause, barra de progresso, mostrar/esconder
+   * por atividade, atalhos de teclado). Tudo isso substitui os controles
+   * nativos do <video> (removidos do HTML) porque o navegador não expõe
+   * como customizar seu comportamento de auto-esconder, e os atalhos de
+   * teclado nativos só funcionam depois de um clique inicial no vídeo — o
+   * usuário pediu que funcionassem sempre, sem esse clique prévio.
+   */
+  _ensurePlayerControls(){
+    if(this._controlsReady) return;
+    const overlay = qs('#player-overlay');
+    const video = qs('#video-player');
+    const playPauseBtn = qs('#player-playpause');
+    const seekTrack = qs('#player-seek-track');
+    const seekBack5Btn = qs('#player-seek-back5');
+    const seekFwd5Btn = qs('#player-seek-fwd5');
+    const speedBtn = qs('#player-speed');
+    const speedMenu = qs('#player-speed-menu');
+    const volumeBtn = qs('#player-volume');
+    const fullscreenBtn = qs('#player-fullscreen');
+
+    seekBack5Btn.innerHTML = this.ICONS.seekBack5;
+    seekFwd5Btn.innerHTML = this.ICONS.seekFwd5;
+    fullscreenBtn.innerHTML = this.ICONS.fullscreenEnter;
+    volumeBtn.innerHTML = this.ICONS.volumeOn;
+
+    const speeds = [0.5, 0.75, 1, 1.25, 1.5, 2];
+    speeds.forEach((s) => {
+      const opt = el('button', {}, [s + 'x']);
+      opt.addEventListener('click', (e) => {
+        e.stopPropagation();
+        video.playbackRate = s;
+        speedBtn.textContent = s + 'x';
+        speedMenu.classList.remove('open');
+        qsa('#player-speed-menu button').forEach(b => b.classList.toggle('active', b.textContent === s + 'x'));
+      });
+      speedMenu.appendChild(opt);
+    });
+
+    const showAndSchedule = () => { this._showControls(); this._scheduleHideControls(); };
+
+    // Qualquer atividade (mouse ou teclado) reaparece os controles.
+    overlay.addEventListener('mousemove', showAndSchedule);
+    overlay.addEventListener('mousedown', showAndSchedule);
+    overlay.addEventListener('touchstart', showAndSchedule);
+    overlay.addEventListener('keydown', showAndSchedule);
+
+    // Clique no vídeo alterna play/pause; DUPLO clique entra/sai da tela cheia.
+    video.addEventListener('click', () => { this.togglePlayPause(); });
+    video.addEventListener('dblclick', () => { this.toggleFullscreen(); });
+
+    playPauseBtn.addEventListener('click', (e) => { e.stopPropagation(); this.togglePlayPause(); });
+
+    seekBack5Btn.addEventListener('click', (e) => { e.stopPropagation(); this.seekBy(-5); });
+    seekFwd5Btn.addEventListener('click', (e) => { e.stopPropagation(); this.seekBy(5); });
+
+    // Clicar no botão de velocidade agora ABRE UM MENU com as opções, em
+    // vez de ciclar sozinho sem mostrar quais opções existem.
+    speedBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      speedMenu.classList.toggle('open');
+      if(speedMenu.classList.contains('open')){
+        qsa('#player-speed-menu button').forEach(b => b.classList.toggle('active', b.textContent === video.playbackRate + 'x'));
+      }
+    });
+    document.addEventListener('click', () => { speedMenu.classList.remove('open'); });
+
+    volumeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      video.muted = !video.muted;
+      volumeBtn.innerHTML = video.muted ? this.ICONS.volumeOff : this.ICONS.volumeOn;
+    });
+
+    const volumeSlider = qs('#player-volume-slider');
+    volumeSlider.value = video.volume;
+    volumeSlider.addEventListener('input', (e) => {
+      const v = parseFloat(e.target.value);
+      video.volume = v;
+      video.muted = v === 0;
+      volumeBtn.innerHTML = (v === 0 || video.muted) ? this.ICONS.volumeOff : this.ICONS.volumeOn;
+    });
+    volumeSlider.addEventListener('click', (e) => e.stopPropagation());
+
+    // Barra de buffer: mostra quanto do vídeo já foi baixado à frente da
+    // reprodução (o navegador já faz esse buffer progressivo sozinho pra
+    // <video src>; aqui só deixamos isso visível).
+    video.addEventListener('progress', () => this._updateBufferedUI());
+
+    fullscreenBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggleFullscreen();
+    });
+    document.addEventListener('fullscreenchange', () => {
+      fullscreenBtn.innerHTML = document.fullscreenElement ? this.ICONS.fullscreenExit : this.ICONS.fullscreenEnter;
+    });
+
+    seekTrack.addEventListener('click', (e) => {
+      if(this.currentContent && this.currentContent.tipo === 'live') return;
+      if(!video.duration || isNaN(video.duration)) return;
+      const rect = seekTrack.getBoundingClientRect();
+      const pct = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+      video.currentTime = pct * video.duration;
+      this._updateSeekUI();
+    });
+
+    // Atalhos de teclado SEMPRE ativos enquanto o player está aberto — sem
+    // precisar clicar no vídeo primeiro. Guardado por overlay visível pra
+    // não interferir em nenhum outro lugar do app (ex: campos de texto).
+    document.addEventListener('keydown', (e) => {
+      if(overlay.style.display !== 'flex') return;
+      if(e.key === 'Escape'){
+        e.preventDefault();
+        this.goBack();
+      } else if(e.key === ' ' || e.code === 'Space'){
+        e.preventDefault(); // evita rolar a página
+        this.togglePlayPause();
+        showAndSchedule();
+      } else if(e.key === 'ArrowRight'){
+        this.seekBy(10);
+        showAndSchedule();
+      } else if(e.key === 'ArrowLeft'){
+        this.seekBy(-10);
+        showAndSchedule();
+      }
+    });
+
+    this._controlsReady = true;
+  },
+
+  /**
+   * Mostra por um instante um indicador central (ícone + "±Ns") confirmando
+   * visualmente que o avanço/retrocesso aconteceu — sem isso, nada deixava
+   * claro que o seek tinha de fato ocorrido.
+   */
+  _showSeekFeedback(deltaSeconds){
+    const indicator = qs('#player-seek-feedback');
+    const icon = deltaSeconds >= 0 ? this.ICONS.seekFwd5 : this.ICONS.seekBack5;
+    indicator.innerHTML = icon.replace('<span>5</span>', '') + '<span>' + (deltaSeconds >= 0 ? '+' : '') + deltaSeconds + 's</span>';
+    indicator.classList.remove('show');
+    void indicator.offsetWidth; // força reflow pra reiniciar a animação em cliques seguidos
+    indicator.classList.add('show');
+    clearTimeout(this._seekFeedbackTimer);
+    this._seekFeedbackTimer = setTimeout(() => indicator.classList.remove('show'), 600);
+  },
+
+  seekBy(deltaSeconds){
+    const video = qs('#video-player');
+    if(this.currentContent && this.currentContent.tipo === 'live') return;
+    if(deltaSeconds > 0 && !video.duration) return;
+    video.currentTime = Math.max(0, deltaSeconds > 0 && video.duration ? Math.min(video.duration, video.currentTime + deltaSeconds) : video.currentTime + deltaSeconds);
+    this._updateSeekUI();
+    this._showSeekFeedback(deltaSeconds);
+  },
+
+  toggleFullscreen(){
+    const overlay = qs('#player-overlay');
+    if(document.fullscreenElement){
+      document.exitFullscreen().catch(()=>{});
+    } else if(overlay.requestFullscreen){
+      overlay.requestFullscreen().catch(()=>{});
+    }
+  },
+
+  togglePlayPause(){
+    const video = qs('#video-player');
+    if(video.paused) video.play().catch(()=>{});
+    else video.pause();
+  },
+
+  _updatePlayPauseIcon(){
+    const video = qs('#video-player');
+    const btn = qs('#player-playpause');
+    btn.innerHTML = video.paused ? this.ICONS.play : this.ICONS.pause;
+  },
+
+  _formatTime(seconds){
+    if(!isFinite(seconds) || seconds < 0) return '00:00';
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    const mm = String(m).padStart(2,'0');
+    const ss = String(s).padStart(2,'0');
+    return h > 0 ? h + ':' + mm + ':' + ss : mm + ':' + ss;
+  },
+
+  _updateSeekUI(){
+    const video = qs('#video-player');
+    const fill = qs('#player-seek-fill');
+    const curEl = qs('#player-time-current');
+    const durEl = qs('#player-time-duration');
+    if(video.duration && !isNaN(video.duration)){
+      fill.style.width = Math.min(100, (video.currentTime/video.duration)*100) + '%';
+    }
+    curEl.textContent = this._formatTime(video.currentTime);
+    durEl.textContent = this._formatTime(video.duration);
+  },
+
+  _updateBufferedUI(){
+    const video = qs('#video-player');
+    const bufferedFill = qs('#player-buffered-fill');
+    if(!video.duration || isNaN(video.duration) || video.buffered.length === 0) return;
+    const end = video.buffered.end(video.buffered.length - 1);
+    bufferedFill.style.width = Math.min(100, (end / video.duration) * 100) + '%';
+  },
+
+  _showControls(){
+    qs('#player-overlay').classList.remove('controls-hidden');
+    this._updatePlayPauseIcon();
+  },
+
+  _scheduleHideControls(){
+    clearTimeout(this._hideControlsTimer);
+    const video = qs('#video-player');
+    if(video.paused) return; // nunca esconde controles com o vídeo pausado
+    this._hideControlsTimer = setTimeout(() => {
+      const v = qs('#video-player');
+      if(!v.paused){ qs('#player-overlay').classList.add('controls-hidden'); }
+    }, 3000);
+  },
+
+  /**
+   * Ação compartilhada entre o botão "←" e a tecla ESC: pra série, volta
+   * pra tela de detalhes daquela série (evita o "limbo" de quem assistiu
+   * pelo Continuar Assistindo); pra filme/ao vivo, só fecha o player.
+   */
+  goBack(){
+    const content = this.currentContent;
+    if(content && content.tipo === 'series' && content.seriesKey){
+      State.ui.activeSeriesKey = content.seriesKey;
+      State.ui.currentView = 'series-detail';
+    }
+    this.close();
+  },
+
   _ensureVideoListeners(){
     if(this._videoListenersReady) return;
     const video = qs('#video-player');
     video.addEventListener('playing', ()=> this.hideBuffering());
     video.addEventListener('waiting', ()=> this.showBuffering());
-    video.addEventListener('timeupdate', ()=>{ this.lastTimeUpdateAt = Date.now(); });
+    video.addEventListener('timeupdate', ()=>{
+      this.lastTimeUpdateAt = Date.now();
+      this._updateSeekUI();
+    });
     // The stall watchdog only makes sense while the video is actually
     // supposed to be playing. Without this, pausing a live channel for more
     // than ~12s made the watchdog think playback had frozen and it would
     // force a reconnect — which auto-resumed playback ("despausa sozinho").
-    video.addEventListener('pause', ()=>{ this.isUserPaused = true; });
-    video.addEventListener('play', ()=>{ this.isUserPaused = false; this.lastTimeUpdateAt = Date.now(); });
+    video.addEventListener('pause', ()=>{
+      this.isUserPaused = true;
+      this._updatePlayPauseIcon();
+      this._showControls();
+      // Pausar não é "travado esperando rede" — sem isso, se o usuário
+      // pausasse enquanto o vídeo ainda estava no meio do buffer inicial
+      // (evento 'waiting' já disparado), a mensagem "Carregando stream..."
+      // ficava presa na tela mesmo já tendo carregado uma parte e estando
+      // simplesmente pausado de propósito.
+      this.hideBuffering();
+    });
+    video.addEventListener('play', ()=>{ this.isUserPaused = false; this.lastTimeUpdateAt = Date.now(); this._updatePlayPauseIcon(); this._scheduleHideControls(); });
 
     // 'loadedmetadata' and 'ended' are attached ONCE here (not per open()/
     // _startPlayback call) and always read this.currentContent/this.playToken
@@ -2572,6 +3009,7 @@ const PlayerModule = {
     // "próximo episódio" toasts, duplicated progress saves).
     video.addEventListener('loadedmetadata', ()=>{
       const content = this.currentContent;
+      this._updateSeekUI();
       if(!content || content.tipo === 'live') return;
       const prog = ProgressModule.getProgress(content.id);
       if(prog && prog.currentTime && video.duration && prog.currentTime < video.duration - 5){
@@ -2832,6 +3270,7 @@ const PlayerModule = {
   cleanup(){
     if(this.retryTimer){ clearTimeout(this.retryTimer); this.retryTimer = null; }
     if(this.stallWatchdog){ clearInterval(this.stallWatchdog); this.stallWatchdog = null; }
+    if(this._hideControlsTimer){ clearTimeout(this._hideControlsTimer); this._hideControlsTimer = null; }
     const video = qs('#video-player');
     if(this.hls){ try{ this.hls.destroy(); }catch(e){} this.hls = null; }
     if(this.mpegtsPlayer){
@@ -2961,7 +3400,8 @@ function buildServerOptionsForType(type){
   return Array.from(serverIds).map(id => ({ id, nome: getServerName(id) })).sort((a,b)=>a.nome.localeCompare(b.nome));
 }
 
-function renderContentCard(content){
+function renderContentCard(content, options){
+  options = options || {};
   const card = el('div', { class:'content-card' });
   const thumb = el('div', { class:'thumb' });
   if(content.logo){
@@ -2975,7 +3415,22 @@ function renderContentCard(content){
   if(content.tipo === 'live'){
     thumb.appendChild(el('div', { class:'live-badge' }, ['AO VIVO']));
   }
-  const favBtn = el('button', { class:'fav-btn' + (content.favorito ? ' active':''), onclick: async function(e){
+
+  const topRightWrap = el('div', { style:'position:absolute;top:8px;right:8px;display:flex;gap:6px;z-index:2;' });
+
+  // Download só faz sentido pra arquivo finito (filme ou episódio de série)
+  // — ao vivo é um stream contínuo, não um arquivo pra baixar. Fica à
+  // esquerda do favorito. No Dashboard fica oculto (options.hideDownload).
+  if((content.tipo === 'movie' || content.tipo === 'series') && !options.hideDownload){
+    const dlBtn = el('button', { class:'fav-btn', style:'position:static;', title:'Baixar' }, ['⬇']);
+    dlBtn.addEventListener('click', function(e){
+      e.stopPropagation();
+      downloadContentUrl(content.url, content.nome);
+    });
+    topRightWrap.appendChild(dlBtn);
+  }
+
+  const favBtn = el('button', { class:'fav-btn' + (content.favorito ? ' active':''), style:'position:static;', onclick: async function(e){
     e.stopPropagation();
     await IndexModule.toggleFavoriteContent(content);
     favBtn.className = 'fav-btn' + (content.favorito ? ' active' : '');
@@ -2986,7 +3441,23 @@ function renderContentCard(content){
       || State.ui.currentView === 'favorites';
     if(!content.favorito && filteringByFav) card.remove();
   }}, [content.favorito ? '★' : '☆']);
-  thumb.appendChild(favBtn);
+  topRightWrap.appendChild(favBtn);
+  thumb.appendChild(topRightWrap);
+
+  if(options.showRemoveFromContinue){
+    const rmBtn = el('button', {
+      style:'position:absolute;top:8px;left:8px;width:29px;height:29px;border-radius:50%;background:rgba(10,11,18,.55);backdrop-filter:blur(6px);border:1px solid rgba(255,255,255,.12);display:flex;align-items:center;justify-content:center;font-size:13px;color:#fff;z-index:2;',
+      title:'Remover de Continuar Assistindo'
+    }, ['✕']);
+    rmBtn.addEventListener('click', async function(e){
+      e.stopPropagation();
+      await ProgressModule.resetProgress(content.id);
+      card.remove();
+      updateSidebarCounts();
+      if(typeof options.onRemoved === 'function') options.onRemoved();
+    });
+    thumb.appendChild(rmBtn);
+  }
 
   if(content.tipo !== 'live'){
     const prog = ProgressModule.getProgress(content.id);
@@ -3276,6 +3747,15 @@ async function renderSeriesDetailView(container){
     }
     row.appendChild(el('div', { class:'estatus'+(statusClass?' '+statusClass:'') }, [statusText]));
     row.appendChild(el('div', { class:'eprog' }, [el('div',{class:'f', style:'width:'+(prog?Math.min(100,prog.porcentagem):0)+'%'})]));
+    const dlBtn = el('button', {
+      style:'width:28px;height:28px;border-radius:50%;background:var(--bg-3);display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0;margin-left:4px;',
+      title:'Baixar episódio'
+    }, ['⬇']);
+    dlBtn.addEventListener('click', function(e){
+      e.stopPropagation();
+      downloadContentUrl(content.url, content.nome);
+    });
+    row.appendChild(dlBtn);
     return row;
   }
 
@@ -3346,7 +3826,7 @@ async function renderDashboardView(container){
       el('button', { class:'btn small', onclick:()=>Router.goTo('continue') }, ['Ver tudo'])
     ]));
     const grid2 = el('div', { class:'card-grid' });
-    for(const { content } of continueList){ grid2.appendChild(renderContentCard(content)); }
+    for(const { content } of continueList){ grid2.appendChild(renderContentCard(content, { showRemoveFromContinue:true, hideDownload:true })); }
     container.appendChild(grid2);
   }
 
@@ -3359,7 +3839,7 @@ async function renderDashboardView(container){
       const g = el('div', { class:'card-grid' });
       for(const item of group.items){
         if(item.kind === 'series') g.appendChild(renderSeriesCard(item.data));
-        else g.appendChild(renderContentCard(item.data));
+        else g.appendChild(renderContentCard(item.data, { hideDownload:true }));
       }
       container.appendChild(g);
     }
@@ -3395,23 +3875,30 @@ async function getRecentlyAddedGroupedForDashboard(maxServers, perServerLimit){
    ====================================================================== */
 async function renderFavoritesView(container){
   container.appendChild(el('div', { class:'section-header' }, [el('h2',{},['Favoritos'])]));
-  const loading = el('div', { class:'loader-inline' }, [el('div',{class:'spinner'}), 'Carregando...']);
-  container.appendChild(loading);
 
-  const favs = await IDB.getAll(STORES.favorites);
-  const favContentEntries = favs.filter(f => f.type !== 'series');
-  const favSeriesEntries = favs.filter(f => f.type === 'series');
+  let favMovies, favLive, favSeries;
+  if(State.favoritesCache){
+    ({ favMovies, favLive, favSeries } = State.favoritesCache);
+  } else {
+    const loading = el('div', { class:'loader-inline' }, [el('div',{class:'spinner'}), 'Carregando...']);
+    container.appendChild(loading);
 
-  const [contents, seriesList] = await Promise.all([
-    Promise.all(favContentEntries.map(f => IDB.getByKey(STORES.contents, f.id).catch(()=>null))),
-    Promise.all(favSeriesEntries.map(f => IDB.getByKey(STORES.seriesSummary, f.id).catch(()=>null)))
-  ]);
-  if(State.ui.currentView !== 'favorites') return;
-  loading.remove();
+    const favs = await IDB.getAll(STORES.favorites);
+    const favContentEntries = favs.filter(f => f.type !== 'series');
+    const favSeriesEntries = favs.filter(f => f.type === 'series');
 
-  const favMovies = contents.filter(c => c && c.tipo === 'movie');
-  const favLive = contents.filter(c => c && c.tipo === 'live');
-  const favSeries = seriesList.filter(Boolean).map(s => { s.favorito = true; return s; });
+    const [contents, seriesList] = await Promise.all([
+      Promise.all(favContentEntries.map(f => IDB.getByKey(STORES.contents, f.id).catch(()=>null))),
+      Promise.all(favSeriesEntries.map(f => IDB.getByKey(STORES.seriesSummary, f.id).catch(()=>null)))
+    ]);
+    if(State.ui.currentView !== 'favorites') return;
+    loading.remove();
+
+    favMovies = contents.filter(c => c && c.tipo === 'movie');
+    favLive = contents.filter(c => c && c.tipo === 'live');
+    favSeries = seriesList.filter(Boolean).map(s => { s.favorito = true; return s; });
+    State.favoritesCache = { favMovies, favLive, favSeries };
+  }
 
   if(favMovies.length===0 && favLive.length===0 && favSeries.length===0){
     container.appendChild(renderEmptyState('★','Nenhum favorito ainda','Marque filmes, séries ou canais como favoritos para vê-los aqui.'));
@@ -3443,19 +3930,32 @@ async function renderFavoritesView(container){
    ====================================================================== */
 async function renderContinueView(container){
   container.appendChild(el('div', { class:'section-header' }, [el('h2',{},['Continuar Assistindo'])]));
-  const loading = el('div', { class:'loader-inline' }, [el('div',{class:'spinner'}), 'Carregando...']);
-  container.appendChild(loading);
 
-  const list = await ProgressModule.getContinueWatchingList();
-  if(State.ui.currentView !== 'continue') return;
-  loading.remove();
+  let list;
+  if(State.continueCache){
+    list = State.continueCache;
+  } else {
+    const loading = el('div', { class:'loader-inline' }, [el('div',{class:'spinner'}), 'Carregando...']);
+    container.appendChild(loading);
+    list = await ProgressModule.getContinueWatchingList();
+    if(State.ui.currentView !== 'continue') return;
+    loading.remove();
+    State.continueCache = list;
+  }
 
   if(list.length===0){
     container.appendChild(renderEmptyState('⏱️','Nada por aqui ainda','Assista a filmes ou episódios para retomá-los depois.'));
     return;
   }
   const grid = el('div', { class:'card-grid' });
-  for(const { content } of list) grid.appendChild(renderContentCard(content));
+  for(const { content } of list){
+    grid.appendChild(renderContentCard(content, { showRemoveFromContinue:true, onRemoved: ()=>{
+      if(grid.children.length === 0){
+        grid.remove();
+        container.appendChild(renderEmptyState('⏱️','Nada por aqui ainda','Assista a filmes ou episódios para retomá-los depois.'));
+      }
+    }}));
+  }
   container.appendChild(grid);
 }
 
@@ -3997,15 +4497,7 @@ function setupEventListeners(){
   });
 
   qs('#player-back').addEventListener('click', function(){
-    const content = PlayerModule.currentContent;
-    if(content && content.tipo === 'series' && content.seriesKey){
-      // Assistir um episódio pelo Continuar Assistindo (dashboard ou tela
-      // própria) não guarda de qual série ele veio — sem isso, "voltar"
-      // deixava o usuário num limbo tendo que procurar a série de novo.
-      State.ui.activeSeriesKey = content.seriesKey;
-      State.ui.currentView = 'series-detail';
-    }
-    PlayerModule.close();
+    PlayerModule.goBack();
   });
 }
 
@@ -4042,6 +4534,8 @@ async function initApp(){
   try{ await ServerModule.loadProgressFromDB(); }catch(err){}
 
   setupEventListeners();
+  const versionLabel = qs('#app-version-label');
+  if(versionLabel) versionLabel.textContent = 'v' + APP_VERSION;
   Router.render();
 
   // Pré-carrega a página 1 de Filmes/Séries/Ao Vivo em segundo plano (fica
@@ -4085,4 +4579,3 @@ window.addEventListener('DOMContentLoaded', initApp);
 
 </body>
 </html>
- 
