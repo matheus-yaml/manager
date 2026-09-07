@@ -1,0 +1,4087 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>StreamManager - Gerenciador de Playlists M3U</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.5.13/hls.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.min.js"></script>
+<style>
+:root{
+  --bg-0:#06070c;
+  --bg-1:rgba(22,24,36,.55);
+  --bg-1-solid:#12141f;
+  --bg-2:rgba(255,255,255,.05);
+  --bg-3:rgba(255,255,255,.09);
+  --border:rgba(255,255,255,.09);
+  --border-strong:rgba(255,255,255,.18);
+  --text-0:#f5f6fb;
+  --text-1:#c3c7d6;
+  --text-2:#888ea2;
+  --accent:#7c5cff;
+  --accent-2:#22d3ee;
+  --fav:#ec4899;
+  --accent-3:#34d399;
+  --warn:#38bdf8;
+  --danger:#ef4444;
+  --radius:16px;
+  --radius-sm:10px;
+  --sidebar-w:260px;
+  --blur:22px;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+html,body{
+  height:100%;
+  color:var(--text-0);
+  font-family:'Manrope',-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  overflow:hidden;
+  letter-spacing:-.01em;
+}
+body{
+  background-color:var(--bg-0);
+  background-image:
+    radial-gradient(1100px 750px at 12% -8%, rgba(124,92,255,.32), transparent 60%),
+    radial-gradient(950px 700px at 108% 8%, rgba(34,211,238,.20), transparent 55%),
+    radial-gradient(900px 650px at 45% 115%, rgba(124,92,255,.16), transparent 60%),
+    radial-gradient(600px 500px at 85% 90%, rgba(236,72,153,.10), transparent 60%);
+  background-attachment:fixed;
+  background-repeat:no-repeat;
+}
+::-webkit-scrollbar{width:10px;height:10px;}
+::-webkit-scrollbar-track{background:transparent;}
+::-webkit-scrollbar-thumb{background:rgba(255,255,255,.12);border-radius:10px;background-clip:padding-box;}
+::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.2);}
+
+button{
+  font-family:inherit;
+  cursor:pointer;
+  border:none;
+  outline:none;
+  background:none;
+  color:inherit;
+}
+input,select{
+  font-family:inherit;
+  outline:none;
+  background:var(--bg-2);
+  border:1px solid var(--border);
+  color:var(--text-0);
+  border-radius:var(--radius-sm);
+  padding:10px 12px;
+  font-size:14px;
+  transition:border-color .15s, background .15s;
+}
+input:focus,select:focus{border-color:var(--accent);background:rgba(124,92,255,.08);}
+input::placeholder{color:var(--text-2);}
+a{color:inherit;text-decoration:none;}
+
+#app{
+  display:flex;
+  height:100vh;
+  width:100vw;
+  position:relative;
+}
+
+/* ===== SIDEBAR (vidro fosco) ===== */
+#sidebar{
+  width:var(--sidebar-w);
+  min-width:var(--sidebar-w);
+  background:var(--bg-1);
+  backdrop-filter:blur(var(--blur)) saturate(160%);
+  -webkit-backdrop-filter:blur(var(--blur)) saturate(160%);
+  border-right:1px solid var(--border);
+  display:flex;
+  flex-direction:column;
+  transition:transform .25s ease;
+  z-index:50;
+  box-shadow:inset -1px 0 0 rgba(255,255,255,.03);
+}
+#sidebar .brand{
+  display:flex;
+  align-items:center;
+  gap:11px;
+  padding:22px 20px;
+  border-bottom:1px solid var(--border);
+}
+#sidebar .brand .logo{
+  width:36px;height:36px;border-radius:11px;
+  background:linear-gradient(135deg,var(--accent),var(--accent-2));
+  display:flex;align-items:center;justify-content:center;
+  font-weight:800;font-size:16px;color:#fff;
+  box-shadow:0 4px 16px -2px rgba(124,92,255,.55), inset 0 1px 0 rgba(255,255,255,.35);
+}
+#sidebar .brand .name{font-weight:800;font-size:16.5px;letter-spacing:-.02em;}
+#sidebar .brand .name span{
+  background:linear-gradient(135deg,var(--accent),var(--accent-2));
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+}
+
+.nav-list{list-style:none;padding:12px;flex:1;overflow-y:auto;}
+.nav-item{
+  display:flex;align-items:center;gap:12px;
+  padding:11px 14px;
+  border-radius:var(--radius-sm);
+  color:var(--text-1);
+  font-size:14px;
+  font-weight:600;
+  cursor:pointer;
+  margin-bottom:3px;
+  transition:background .15s, color .15s;
+  position:relative;
+  user-select:none;
+}
+.nav-item .ic{width:18px;text-align:center;font-size:15px;opacity:.9;}
+.nav-item:hover{background:var(--bg-2);color:var(--text-0);}
+.nav-item.active{
+  background:linear-gradient(135deg, rgba(124,92,255,.22), rgba(34,211,238,.10));
+  color:var(--text-0);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.06), inset 0 0 0 1px rgba(124,92,255,.25);
+}
+.nav-item.active::before{
+  content:"";position:absolute;left:-10px;top:8px;bottom:8px;width:3px;
+  background:linear-gradient(180deg,var(--accent),var(--accent-2));border-radius:2px;
+}
+.nav-item .count{
+  margin-left:auto;font-size:11px;background:var(--bg-3);
+  color:var(--text-2);padding:2px 7px;border-radius:20px;font-weight:700;
+}
+.nav-item.active .count{background:var(--accent);color:#fff;}
+.nav-section-label{
+  font-size:11px;text-transform:uppercase;letter-spacing:.08em;
+  color:var(--text-2);padding:14px 14px 6px;font-weight:700;
+}
+
+#sidebar .footer-mini{
+  padding:14px 18px;border-top:1px solid var(--border);
+  font-size:11px;color:var(--text-2);
+}
+
+#sidebar-overlay{
+  display:none;position:fixed;inset:0;background:rgba(4,5,10,.6);backdrop-filter:blur(2px);z-index:40;
+}
+#menu-toggle{
+  display:none;position:fixed;top:14px;left:14px;z-index:60;
+  width:40px;height:40px;background:var(--bg-1);backdrop-filter:blur(var(--blur));
+  border:1px solid var(--border);
+  border-radius:12px;align-items:center;justify-content:center;font-size:18px;
+}
+
+/* ===== MAIN ===== */
+#main{
+  flex:1;
+  display:flex;
+  flex-direction:column;
+  overflow:hidden;
+  min-width:0;
+}
+#topbar{
+  display:flex;align-items:center;gap:16px;
+  padding:18px 28px;
+  border-bottom:1px solid var(--border);
+  background:rgba(10,11,18,.4);
+  backdrop-filter:blur(var(--blur)) saturate(160%);
+  -webkit-backdrop-filter:blur(var(--blur)) saturate(160%);
+}
+#topbar h1{font-size:20px;font-weight:800;white-space:nowrap;letter-spacing:-.02em;}
+#global-search-wrap{flex:1;max-width:520px;position:relative;}
+#global-search{
+  width:100%;padding:11px 14px 11px 40px;background:var(--bg-2);
+  border:1px solid var(--border);
+  border-radius:24px;font-size:14px;
+}
+#global-search-wrap .sic{
+  position:absolute;left:15px;top:50%;transform:translateY(-50%);
+  color:var(--text-2);font-size:14px;pointer-events:none;
+}
+#global-search-clear{
+  position:absolute;right:10px;top:50%;transform:translateY(-50%);
+  color:var(--text-2);font-size:16px;display:none;padding:4px;
+}
+
+#content-load-bar{
+  padding:9px 28px;background:rgba(124,92,255,.08);border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:12px;
+}
+#content-load-bar span{font-size:11.5px;color:var(--text-2);white-space:nowrap;}
+#content-load-bar .progress-track{flex:1;height:4px;}
+
+#content-area{
+  flex:1;
+  overflow-y:auto;
+  padding:24px 28px 60px;
+}
+
+/* section header row */
+.section-header{
+  display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:18px;
+}
+.section-header h2{font-size:18px;font-weight:800;margin-right:auto;letter-spacing:-.01em;}
+.btn{
+  padding:10px 17px;border-radius:var(--radius-sm);font-size:13px;font-weight:700;
+  background:var(--bg-2);color:var(--text-0);border:1px solid var(--border);
+  display:inline-flex;align-items:center;gap:8px;white-space:nowrap;
+  backdrop-filter:blur(8px);
+  transition:background .15s, border-color .15s, transform .1s;
+}
+.btn:hover{background:var(--bg-3);border-color:var(--border-strong);}
+.btn:active{transform:scale(.97);}
+.btn.primary{
+  background:linear-gradient(135deg,var(--accent),#6a4ce0);
+  border-color:transparent;color:#fff;
+  box-shadow:0 6px 20px -6px rgba(124,92,255,.65), inset 0 1px 0 rgba(255,255,255,.2);
+}
+.btn.primary:hover{filter:brightness(1.1);}
+.btn.danger{background:rgba(239,68,68,.08);border-color:rgba(239,68,68,.35);color:var(--danger);}
+.btn.danger:hover{background:rgba(239,68,68,.16);}
+.btn:disabled{opacity:.45;cursor:not-allowed;}
+.btn.small{padding:7px 12px;font-size:12px;}
+
+/* filter chip row */
+.chip-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;}
+.chip{
+  padding:8px 15px;border-radius:20px;font-size:12.5px;font-weight:700;
+  background:var(--bg-2);border:1px solid var(--border);color:var(--text-1);
+  white-space:nowrap;backdrop-filter:blur(8px);
+  transition:background .15s, color .15s, border-color .15s;
+}
+.chip:hover{background:var(--bg-3);color:var(--text-0);border-color:var(--border-strong);}
+.chip.active{
+  background:linear-gradient(135deg,var(--accent),var(--accent-2));
+  border-color:transparent;color:#fff;
+  box-shadow:0 4px 14px -4px rgba(124,92,255,.6);
+}
+
+.filter-row{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px;align-items:center;}
+.filter-row select{min-width:160px;}
+
+/* grid of cards */
+.card-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fill,minmax(164px,1fr));
+  gap:18px;
+}
+.content-card{
+  background:var(--bg-1);
+  backdrop-filter:blur(var(--blur));
+  -webkit-backdrop-filter:blur(var(--blur));
+  border:1px solid var(--border);
+  border-radius:var(--radius);
+  overflow:hidden;cursor:pointer;
+  transition:transform .22s cubic-bezier(.2,.8,.2,1), border-color .22s, box-shadow .22s;
+  display:flex;flex-direction:column;
+  position:relative;
+}
+.content-card::after{
+  content:"";position:absolute;inset:0;border-radius:var(--radius);
+  padding:1px;pointer-events:none;opacity:0;transition:opacity .22s;
+  background:linear-gradient(135deg,var(--accent),var(--accent-2));
+  -webkit-mask:linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite:xor;mask-composite:exclude;
+}
+.content-card:hover{
+  transform:translateY(-5px);
+  border-color:transparent;
+  box-shadow:0 16px 32px -12px rgba(0,0,0,.55), 0 0 0 1px rgba(124,92,255,.25), 0 0 24px -4px rgba(124,92,255,.35);
+}
+.content-card:hover::after{opacity:1;}
+.content-card .thumb{
+  width:100%;aspect-ratio:2/3;background:var(--bg-3);
+  display:flex;align-items:center;justify-content:center;
+  position:relative;overflow:hidden;
+}
+.content-card .thumb img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .3s;}
+.content-card:hover .thumb img{transform:scale(1.05);}
+.content-card .thumb::before{
+  content:"";position:absolute;left:0;right:0;bottom:0;height:55%;
+  background:linear-gradient(180deg,transparent,rgba(6,7,12,.75));
+  pointer-events:none;
+}
+.content-card .thumb .ph{font-size:30px;color:var(--text-2);z-index:1;}
+.content-card .fav-btn{
+  position:absolute;top:8px;right:8px;width:29px;height:29px;border-radius:50%;
+  background:rgba(10,11,18,.55);backdrop-filter:blur(6px);
+  border:1px solid rgba(255,255,255,.12);
+  display:flex;align-items:center;justify-content:center;
+  font-size:14px;color:#fff;z-index:2;transition:transform .15s, background .15s;
+}
+.content-card .fav-btn:hover{transform:scale(1.12);background:rgba(10,11,18,.8);}
+.content-card .fav-btn.active{color:var(--fav);}
+.content-card .progress-bar-mini{
+  position:absolute;bottom:0;left:0;right:0;height:4px;background:rgba(255,255,255,.18);z-index:1;
+}
+.content-card .progress-bar-mini .fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent-2));}
+.content-card .live-badge{
+  position:absolute;top:8px;left:8px;background:var(--danger);color:#fff;font-size:9px;
+  font-weight:800;padding:3px 7px;border-radius:5px;letter-spacing:.06em;z-index:1;
+  box-shadow:0 2px 8px -2px rgba(239,68,68,.7);
+}
+.content-card .info{padding:10px 11px 12px;display:flex;flex-direction:column;gap:5px;flex:1;}
+.content-card .info .name{font-size:12.5px;font-weight:700;line-height:1.35;color:var(--text-0);
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:2.5em;}
+.content-card .info .meta{display:flex;justify-content:space-between;align-items:center;gap:6px;margin-top:auto;}
+.content-card .info .server-tag{
+  font-size:10px;color:var(--text-2);background:var(--bg-2);padding:3px 8px;border-radius:7px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100px;font-weight:600;
+}
+.content-card .info .cat-tag{font-size:10px;color:var(--text-2);font-weight:600;}
+
+.empty-state{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  padding:70px 20px;color:var(--text-2);text-align:center;gap:10px;
+  background:var(--bg-1);backdrop-filter:blur(var(--blur));border:1px solid var(--border);border-radius:var(--radius);
+}
+.empty-state .big-ic{font-size:44px;opacity:.6;}
+.empty-state h3{color:var(--text-0);font-size:16px;font-weight:700;}
+.empty-state p{font-size:13px;max-width:360px;}
+
+/* pagination */
+.pagination{display:flex;align-items:center;justify-content:center;gap:6px;margin-top:26px;flex-wrap:wrap;}
+.pagination button{
+  min-width:36px;height:36px;border-radius:10px;background:var(--bg-1);backdrop-filter:blur(8px);
+  border:1px solid var(--border);font-size:13px;color:var(--text-1);font-weight:600;
+  transition:background .15s, border-color .15s;
+}
+.pagination button:hover:not(:disabled){background:var(--bg-3);border-color:var(--border-strong);}
+.pagination button.active{background:linear-gradient(135deg,var(--accent),var(--accent-2));border-color:transparent;color:#fff;}
+.pagination button:disabled{opacity:.35;}
+
+/* servers */
+.server-section-title{font-size:12.5px;font-weight:800;color:var(--text-2);text-transform:uppercase;
+  letter-spacing:.07em;margin:24px 0 12px;}
+.server-list{display:flex;flex-direction:column;gap:10px;}
+.server-item{
+  background:var(--bg-1);backdrop-filter:blur(var(--blur));
+  border:1px solid var(--border);border-radius:var(--radius);
+  padding:16px 18px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+  transition:border-color .15s;
+}
+.server-item:hover{border-color:var(--border-strong);}
+.server-item .sinfo{flex:1;min-width:180px;}
+.server-item .sname{font-weight:700;font-size:14.5px;display:flex;align-items:center;gap:9px;}
+.server-item .surl{font-size:11.5px;color:var(--text-2);word-break:break-all;margin-top:3px;max-width:520px;}
+.server-item .sstats{font-size:11.5px;color:var(--text-2);margin-top:6px;display:flex;gap:12px;flex-wrap:wrap;}
+.status-dot{width:8px;height:8px;border-radius:50%;background:var(--accent-3);display:inline-block;
+  box-shadow:0 0 8px 0 rgba(52,211,153,.7);}
+.status-dot.error{background:var(--danger);box-shadow:0 0 8px 0 rgba(239,68,68,.7);}
+.status-dot.processing{background:var(--warn);animation:pulse 1s infinite;box-shadow:0 0 8px 0 rgba(56,189,248,.7);}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.server-item .sactions{display:flex;gap:8px;}
+
+/* add server form */
+.form-card{
+  background:var(--bg-1);backdrop-filter:blur(var(--blur));
+  border:1px solid var(--border);border-radius:var(--radius);
+  padding:20px;margin-bottom:20px;
+}
+.form-row{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px;}
+.form-group{flex:1;min-width:200px;display:flex;flex-direction:column;gap:6px;}
+.form-group label{font-size:12.5px;color:var(--text-2);font-weight:700;}
+.form-group .hint{font-size:11px;color:var(--text-2);opacity:.8;}
+.checkbox-row{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-1);}
+.checkbox-row input{width:16px;height:16px;padding:0;}
+
+/* modal */
+.modal-overlay{
+  position:fixed;inset:0;background:rgba(4,5,10,.72);backdrop-filter:blur(6px);
+  display:flex;align-items:center;justify-content:center;z-index:200;padding:20px;
+}
+.modal-box{
+  background:rgba(20,22,34,.82);backdrop-filter:blur(28px) saturate(160%);
+  -webkit-backdrop-filter:blur(28px) saturate(160%);
+  border:1px solid var(--border-strong);border-radius:var(--radius);
+  width:100%;max-width:640px;max-height:88vh;overflow-y:auto;padding:24px;
+  box-shadow:0 24px 60px -12px rgba(0,0,0,.6), inset 0 1px 0 rgba(255,255,255,.06);
+}
+.modal-box h3{font-size:17px;margin-bottom:16px;display:flex;align-items:center;gap:10px;font-weight:800;}
+.modal-close-x{margin-left:auto;font-size:20px;color:var(--text-2);cursor:pointer;transition:color .15s;}
+.modal-close-x:hover{color:var(--text-0);}
+
+/* progress modal */
+.progress-overall{margin-bottom:16px;}
+.progress-overall .plabel{display:flex;justify-content:space-between;font-size:12.5px;color:var(--text-2);margin-bottom:6px;}
+.progress-track{width:100%;height:8px;background:rgba(255,255,255,.07);border-radius:6px;overflow:hidden;}
+.progress-track .pfill{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent-2));border-radius:6px;transition:width .2s;}
+.server-progress-list{display:flex;flex-direction:column;gap:10px;max-height:340px;overflow-y:auto;}
+.sp-item{background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:11px 13px;}
+.sp-item .sp-top{display:flex;justify-content:space-between;align-items:center;font-size:12.5px;margin-bottom:6px;}
+.sp-item .sp-name{font-weight:700;display:flex;align-items:center;gap:7px;}
+.sp-item .sp-status{color:var(--text-2);}
+.sp-item .sp-status.ok{color:var(--accent-3);}
+.sp-item .sp-status.err{color:var(--danger);}
+.sp-item .sp-status.proc{color:var(--warn);}
+.sp-item .progress-track{height:5px;}
+.sp-item .sp-detail{font-size:11px;color:var(--text-2);margin-top:5px;display:flex;gap:10px;flex-wrap:wrap;}
+
+/* series detail */
+.series-header{display:flex;gap:22px;margin-bottom:26px;flex-wrap:wrap;}
+.series-header .cover{width:180px;min-width:140px;aspect-ratio:2/3;border-radius:var(--radius);
+  background:var(--bg-2);overflow:hidden;border:1px solid var(--border);
+  box-shadow:0 16px 40px -12px rgba(0,0,0,.6);}
+.series-header .cover img{width:100%;height:100%;object-fit:cover;}
+.series-header .sinfo2{flex:1;min-width:220px;}
+.series-header .sinfo2 h2{font-size:23px;margin-bottom:9px;font-weight:800;letter-spacing:-.01em;}
+.season-block h4{font-size:14.5px;margin:0;color:var(--text-0);font-weight:800;}
+.episode-row{
+  display:flex;align-items:center;gap:12px;background:var(--bg-2);border:1px solid var(--border);
+  border-radius:var(--radius-sm);padding:11px 13px;margin-bottom:8px;cursor:pointer;
+  transition:border-color .15s, background .15s;
+}
+.episode-row:hover{border-color:var(--accent);background:rgba(124,92,255,.08);}
+.episode-row .eth{width:60px;height:38px;border-radius:7px;background:var(--bg-3);overflow:hidden;flex-shrink:0;}
+.episode-row .eth img{width:100%;height:100%;object-fit:cover;}
+.episode-row .ename{flex:1;font-size:13px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;}
+.episode-row .estatus{font-size:11.5px;color:var(--text-2);white-space:nowrap;}
+.episode-row .estatus.done{color:var(--accent-3);}
+.episode-row .eprog{width:80px;height:4px;background:var(--bg-3);border-radius:4px;overflow:hidden;flex-shrink:0;}
+.episode-row .eprog .f{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent-2));}
+
+/* player */
+#player-overlay{
+  position:fixed;inset:0;background:#000;z-index:300;display:none;flex-direction:column;
+}
+#player-overlay video{flex:1;width:100%;height:100%;background:#000;}
+#player-buffering{
+  position:absolute;top:0;left:0;right:0;bottom:0;display:none;
+  align-items:center;justify-content:center;flex-direction:column;gap:12px;
+  background:rgba(0,0,0,.4);backdrop-filter:blur(4px);z-index:1;pointer-events:none;
+}
+#player-buffering .spinner{width:34px;height:34px;border-width:3px;}
+#player-buffering span{color:#fff;font-size:13px;}
+#player-topbar{
+  position:absolute;top:0;left:0;right:0;padding:18px 22px;display:flex;align-items:center;gap:14px;
+  background:linear-gradient(180deg,rgba(0,0,0,.82),transparent);z-index:2;
+}
+#player-topbar .ptitle{font-size:15px;font-weight:700;}
+#player-close{font-size:22px;background:rgba(255,255,255,.12);backdrop-filter:blur(8px);width:38px;height:38px;border-radius:50%;transition:background .15s;}
+#player-close:hover{background:rgba(255,255,255,.2);}
+#player-back{font-size:20px;background:rgba(255,255,255,.12);backdrop-filter:blur(8px);width:38px;height:38px;border-radius:50%;flex-shrink:0;transition:background .15s;}
+#player-back:hover{background:rgba(255,255,255,.2);}
+
+/* sidebar-search counters */
+.search-counters{padding:8px 14px;font-size:11.5px;color:var(--text-2);}
+.search-counters .sc-line{display:flex;justify-content:space-between;padding:3px 0;}
+
+/* toast */
+#toast-wrap{position:fixed;bottom:20px;right:20px;z-index:500;display:flex;flex-direction:column;gap:10px;}
+.toast{
+  background:rgba(20,22,34,.85);backdrop-filter:blur(20px) saturate(160%);
+  border:1px solid var(--border-strong);border-radius:var(--radius-sm);
+  padding:13px 17px;font-size:13px;max-width:320px;box-shadow:0 12px 32px -8px rgba(0,0,0,.55);
+  animation:toastIn .2s ease;font-weight:600;
+}
+.toast.error{border-color:rgba(239,68,68,.5);}
+.toast.success{border-color:rgba(52,211,153,.5);}
+@keyframes toastIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+
+.dash-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:28px;}
+.dash-card{background:var(--bg-1);backdrop-filter:blur(var(--blur));border:1px solid var(--border);border-radius:var(--radius);padding:19px;
+  transition:border-color .15s, transform .15s;}
+.dash-card:hover{border-color:var(--border-strong);transform:translateY(-2px);}
+.dash-card .dnum{font-size:27px;font-weight:800;background:linear-gradient(135deg,var(--text-0),var(--text-1));
+  -webkit-background-clip:text;background-clip:text;}
+.dash-card .dlabel{font-size:12.5px;color:var(--text-2);margin-top:4px;font-weight:600;}
+
+.settings-block{background:var(--bg-1);backdrop-filter:blur(var(--blur));border:1px solid var(--border);border-radius:var(--radius);
+  padding:22px;margin-bottom:20px;}
+.settings-block h3{font-size:15px;margin-bottom:16px;font-weight:800;}
+
+/* responsive */
+@media(max-width:900px){
+  #sidebar{position:fixed;top:0;left:0;bottom:0;transform:translateX(-100%);}
+  #sidebar.open{transform:translateX(0);}
+  #sidebar-overlay.open{display:block;}
+  #menu-toggle{display:flex;}
+  #topbar{padding:14px 16px 14px 62px;}
+  #content-area{padding:16px 16px 60px;}
+  #topbar h1{display:none;}
+  .card-grid{grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;}
+}
+@media(max-width:480px){
+  .modal-box{padding:18px;}
+  .form-group{min-width:100%;}
+}
+
+.loader-inline{display:flex;align-items:center;gap:10px;color:var(--text-2);font-size:13px;padding:30px;justify-content:center;}
+.spinner{width:16px;height:16px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+
+<div id="app">
+  <div id="sidebar-overlay"></div>
+  <button id="menu-toggle">&#9776;</button>
+
+  <nav id="sidebar">
+    <div class="brand">
+      <div class="logo">SM</div>
+      <div class="name">Stream<span>Manager</span></div>
+    </div>
+    <ul class="nav-list" id="nav-list">
+      <li class="nav-item" data-view="dashboard"><span class="ic">&#9635;</span>Dashboard</li>
+      <li class="nav-item" data-view="live"><span class="ic">&#9679;</span>Ao Vivo<span class="count" id="cnt-live">0</span></li>
+      <li class="nav-item" data-view="series"><span class="ic">&#127909;</span>Séries<span class="count" id="cnt-series">0</span></li>
+      <li class="nav-item" data-view="movies"><span class="ic">&#127916;</span>Filmes<span class="count" id="cnt-movies">0</span></li>
+      <li class="nav-item" data-view="favorites"><span class="ic">&#9733;</span>Favoritos<span class="count" id="cnt-favs">0</span></li>
+      <li class="nav-item" data-view="continue"><span class="ic">&#9199;</span>Continuar Assistindo<span class="count" id="cnt-continue">0</span></li>
+      <li class="nav-item" data-view="servers"><span class="ic">&#128421;</span>Servidores<span class="count" id="cnt-servers">0</span></li>
+      <li class="nav-item" data-view="settings"><span class="ic">&#9881;</span>Configurações</li>
+    </ul>
+    <div id="sidebar-search-counters" class="search-counters" style="display:none;"></div>
+    <div class="footer-mini">StreamManager &middot; local &amp; offline-first</div>
+  </nav>
+
+  <div id="main">
+    <div id="topbar">
+      <h1 id="page-title">Dashboard</h1>
+      <div id="global-search-wrap">
+        <span class="sic">&#128269;</span>
+        <input id="global-search" type="text" placeholder="Pesquisar em Filmes, Séries e Ao Vivo...">
+        <button id="global-search-clear">&times;</button>
+      </div>
+    </div>
+    <div id="content-load-bar" style="display:none;">
+      <span id="content-load-label">Carregando biblioteca...</span>
+      <div class="progress-track"><div class="pfill" id="content-load-fill" style="width:0%"></div></div>
+    </div>
+    <div id="content-area"></div>
+  </div>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-wrap"></div>
+
+<div id="player-overlay">
+  <div id="player-topbar">
+    <button id="player-back">&#8592;</button>
+    <div class="ptitle" id="player-title"></div>
+    <div style="margin-left:auto;display:flex;align-items:center;gap:10px;">
+      <button id="player-next-episode" class="btn small" style="display:none;">Próximo Episódio &#9654;</button>
+      <button id="player-close">&times;</button>
+    </div>
+  </div>
+  <div id="player-buffering">
+    <div class="spinner"></div>
+    <span>Carregando stream...</span>
+  </div>
+  <video id="video-player" controls playsinline></video>
+</div>
+
+<script>
+/* ======================================================================
+   STREAMMANAGER - App state & constants
+   ====================================================================== */
+'use strict';
+
+const DB_NAME = 'StreamManagerDB';
+const DB_VERSION = 3;
+const STORES = {
+  servers: 'servers',
+  contents: 'contents',
+  progress: 'progress',
+  settings: 'settings',
+  favorites: 'favorites',
+  seriesSummary: 'seriesSummary'
+};
+
+const PAGE_SIZE_DEFAULT = 50;
+const MAX_CONCURRENT_DOWNLOADS = 10; // não usado mais como limite (downloads são todos simultâneos), mantido por compatibilidade
+const MAX_CONCURRENT_PROCESSING = 1; // processamento sequencial (1 playlist por vez); download continua ilimitado
+
+const DEFAULT_SETTINGS = {
+  id: 'app',
+  pageSize: 50,
+  rawUrl: 'https://matheus.aulas.arquitetura.com/lista_com_aulas.txt',
+  rawUser: '111111',
+  rawPass: 'xxx',
+  autoSaveServers: true
+};
+
+/* Global in-memory state */
+const State = {
+  db: null,
+  servers: new Map(),       // serverId -> server object
+  contentsById: new Map(),  // contentId -> content object
+  indexes: {
+    contentsByType: { movie: new Set(), series: new Set(), live: new Set() },
+    contentsByServer: new Map(),      // serverId -> Set(contentId)
+    contentsByCategory: new Map(),    // type::category -> Set(contentId)
+    contentsByTypeServer: new Map(),  // type::serverId -> Set(contentId)
+    contentsByTypeCategory: new Map(),// type::category -> Set(contentId) (alias, kept for clarity)
+    favoritesIndex: new Set(),        // contentId set (favorited movies/live) + series base names
+    seriesIndex: new Map(),           // seriesKey -> {name, serverId, items:[contentIds], categories:Set, logo}
+    searchIndex: new Map()            // contentId -> normalized searchable string
+  },
+  favoriteSeries: new Set(), // seriesKey set for favorited series
+  recentlyAddedByServer: new Map(), // serverId -> array of {type, id}, mais recente no FIM
+  progress: new Map(), // contentId -> progress object
+  settings: { ...DEFAULT_SETTINGS },
+  pageCache: new Map(), // cache em memória: chave -> {items,total,catOptions,serverIds}
+  dashboardCache: null, // {continueList, recentGroups}
+  contentLoad: {
+    isLoading: false,
+    processed: 0,
+    total: 0
+  },
+  ui: {
+    currentView: 'dashboard',
+    searchTerm: '',
+    filters: {
+      movie: { server: 'all', category: 'all', page: 1, favoritesOnly:false },
+      series: { server: 'all', category: 'all', page: 1, favoritesOnly:false },
+      live: { server: 'all', category: 'all', page: 1, favoritesOnly:false }
+    },
+    categoryFilterText: { movie:'', series:'', live:'' },
+    isImporting: false,
+    activeSeriesKey: null
+  }
+};
+
+function pageCacheKey(type, filters){
+  const pageSize = State.settings.pageSize || PAGE_SIZE_DEFAULT;
+  return type + '|' + filters.server + '|' + filters.category + '|' + filters.favoritesOnly + '|' + filters.page + '|' + pageSize;
+}
+function invalidatePageCache(type){
+  for(const k of Array.from(State.pageCache.keys())){
+    if(!type || k.indexOf(type + '|') === 0) State.pageCache.delete(k);
+  }
+}
+
+function pushRecentlyAdded(serverId, type, id){
+  let list = State.recentlyAddedByServer.get(serverId);
+  if(!list){ list = []; State.recentlyAddedByServer.set(serverId, list); }
+  const idx = list.findIndex(e => e.type === type && e.id === id);
+  if(idx !== -1) list.splice(idx, 1);
+  list.push({ type: type, id: id });
+  if(list.length > 12) list.shift();
+}
+function removeRecentlyAdded(serverId, type, id){
+  const list = State.recentlyAddedByServer.get(serverId);
+  if(!list) return;
+  const idx = list.findIndex(e => e.type === type && e.id === id);
+  if(idx !== -1) list.splice(idx, 1);
+  if(list.length === 0) State.recentlyAddedByServer.delete(serverId);
+}
+
+function qs(sel, root){ return (root||document).querySelector(sel); }
+function qsa(sel, root){ return Array.from((root||document).querySelectorAll(sel)); }
+function el(tag, attrs, children){
+  const e = document.createElement(tag);
+  if(attrs) for(const k in attrs){
+    const v = attrs[k];
+    if(v === null || v === undefined || v === false) continue;
+    if(k === 'class') e.className = v;
+    else if(k === 'html') e.innerHTML = v;
+    else if(k.startsWith('on') && typeof v === 'function') e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v);
+  }
+  if(children) for(const c of children){ if(c) e.appendChild(typeof c === 'string' ? document.createTextNode(c) : c); }
+  return e;
+}
+function escapeHtml(str){
+  if(str === null || str === undefined) return '';
+  return String(str).replace(/[&<>"']/g, function(m){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m];
+  });
+}
+function uid(prefix){
+  return (prefix||'id') + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,9);
+}
+function showToast(msg, type){
+  const wrap = qs('#toast-wrap');
+  const t = el('div', { class: 'toast' + (type ? ' ' + type : '') }, [msg]);
+  wrap.appendChild(t);
+  setTimeout(()=>{ t.style.opacity='0'; t.style.transition='opacity .3s'; setTimeout(()=>t.remove(), 300); }, 4000);
+}
+function formatBytes(bytes){
+  if(!bytes && bytes !== 0) return '--';
+  if(bytes < 1024) return bytes + ' B';
+  if(bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KB';
+  return (bytes/(1024*1024)).toFixed(2) + ' MB';
+}
+function formatSpeed(bytesPerSec){
+  if(!bytesPerSec) return '--';
+  return formatBytes(bytesPerSec) + '/s';
+}
+function normalizeText(str){
+  if(!str) return '';
+  return String(str)
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
+
+/**
+ * Yields control back to the browser between processing batches, keeping
+ * the UI responsive during large imports. Uses a MessageChannel instead of
+ * setTimeout(fn, 0): after a handful of consecutive setTimeout(0) calls in
+ * the same tick chain, browsers clamp the delay to ~4ms minimum, which adds
+ * up to real wall-clock slowdown over thousands of batches. postMessage via
+ * MessageChannel isn't subject to that clamp, so batched processing finishes
+ * noticeably faster while still ceding the thread between batches.
+ */
+function fastYield(){
+  return new Promise(function(resolve){
+    const channel = new MessageChannel();
+    channel.port2.onmessage = function(){ resolve(); };
+    channel.port1.postMessage(null);
+  });
+}
+
+/* ======================================================================
+   INDEXEDDB MODULE
+   ====================================================================== */
+const IDB = {
+  open(){
+    return new Promise((resolve, reject)=>{
+      const req = indexedDB.open(DB_NAME, DB_VERSION);
+      req.onupgradeneeded = function(e){
+        const db = e.target.result;
+        const tx = e.target.transaction;
+        if(!db.objectStoreNames.contains(STORES.servers)){
+          db.createObjectStore(STORES.servers, { keyPath: 'id' });
+        }
+        let cs;
+        if(!db.objectStoreNames.contains(STORES.contents)){
+          cs = db.createObjectStore(STORES.contents, { keyPath: 'id' });
+        } else {
+          cs = tx.objectStore(STORES.contents);
+        }
+        // v3: 'tipo' e 'serverId' sozinhos foram removidos — cada índice
+        // extra na store de conteúdos é uma árvore a mais pra atualizar em
+        // TODA gravação, e isso pesa muito em bibliotecas grandes (é a
+        // causa raiz do "salvando" lento). tipo_serverId cobre os dois
+        // casos sozinho (via range de servidor "vazio" a "fim") sem
+        // precisar de índices próprios pra cada um.
+        if(cs.indexNames.contains('tipo')) cs.deleteIndex('tipo');
+        if(cs.indexNames.contains('serverId')) cs.deleteIndex('serverId');
+        if(!cs.indexNames.contains('seriesKey')) cs.createIndex('seriesKey', 'seriesKey', { unique:false });
+        if(!cs.indexNames.contains('tipo_serverId')) cs.createIndex('tipo_serverId', ['tipo','serverId'], { unique:false });
+        if(!cs.indexNames.contains('tipo_categoria')) cs.createIndex('tipo_categoria', ['tipo','categoria'], { unique:false });
+
+        if(!db.objectStoreNames.contains(STORES.progress)){
+          db.createObjectStore(STORES.progress, { keyPath: 'contentId' });
+        }
+        if(!db.objectStoreNames.contains(STORES.settings)){
+          db.createObjectStore(STORES.settings, { keyPath: 'id' });
+        }
+        if(!db.objectStoreNames.contains(STORES.favorites)){
+          db.createObjectStore(STORES.favorites, { keyPath: 'id' });
+        }
+        if(!db.objectStoreNames.contains(STORES.seriesSummary)){
+          const ss = db.createObjectStore(STORES.seriesSummary, { keyPath: 'key' });
+          ss.createIndex('serverId', 'serverId', { unique:false });
+          ss.createIndex('categorias', 'categorias', { unique:false, multiEntry:true });
+        }
+      };
+      req.onsuccess = function(e){ resolve(e.target.result); };
+      req.onerror = function(e){ reject(e.target.error); };
+    });
+  },
+  tx(storeNames, mode, options){
+    // `options` (e.g. { durability: 'relaxed' }) is supported by modern
+    // browsers for the readwrite transactions used in bulk imports — it
+    // tells the engine it doesn't need to guarantee the write is durably
+    // flushed to disk before completing, which is significantly faster for
+    // importing hundreds of thousands of records. Browsers that don't
+    // recognize the extra parameter simply ignore it and behave as before.
+    if(options){
+      return State.db.transaction(storeNames, mode || 'readonly', options);
+    }
+    return State.db.transaction(storeNames, mode || 'readonly');
+  },
+  getAll(storeName){
+    return new Promise((resolve, reject)=>{
+      try{
+        const store = IDB.tx([storeName]).objectStore(storeName);
+        const req = store.getAll();
+        req.onsuccess = ()=> resolve(req.result || []);
+        req.onerror = (e)=> reject(e.target.error);
+      }catch(err){ reject(err); }
+    });
+  },
+  put(storeName, value){
+    return new Promise((resolve, reject)=>{
+      try{
+        const store = IDB.tx([storeName], 'readwrite').objectStore(storeName);
+        const req = store.put(value);
+        req.onsuccess = ()=> resolve(value);
+        req.onerror = (e)=> reject(e.target.error);
+      }catch(err){ reject(err); }
+    });
+  },
+  putMany(storeName, values){
+    return new Promise((resolve, reject)=>{
+      if(!values || !values.length) return resolve();
+      try{
+        // Relaxed durability: this is a bulk cache rebuild, not
+        // safety-critical data — trading a strict fsync-before-commit
+        // guarantee for meaningfully faster bulk writes is a good trade
+        // here (worst case on an actual crash mid-import is a re-import).
+        const tx = IDB.tx([storeName], 'readwrite', { durability: 'relaxed' });
+        const store = tx.objectStore(storeName);
+        for(const v of values) store.put(v);
+        tx.oncomplete = ()=> resolve();
+        tx.onerror = (e)=> reject(e.target.error);
+      }catch(err){ reject(err); }
+    });
+  },
+  delete(storeName, key){
+    return new Promise((resolve, reject)=>{
+      try{
+        const store = IDB.tx([storeName], 'readwrite').objectStore(storeName);
+        const req = store.delete(key);
+        req.onsuccess = ()=> resolve();
+        req.onerror = (e)=> reject(e.target.error);
+      }catch(err){ reject(err); }
+    });
+  },
+  deleteMany(storeName, keys){
+    return new Promise((resolve, reject)=>{
+      if(!keys || !keys.length) return resolve();
+      try{
+        const tx = IDB.tx([storeName], 'readwrite', { durability: 'relaxed' });
+        const store = tx.objectStore(storeName);
+        for(const k of keys) store.delete(k);
+        tx.oncomplete = ()=> resolve();
+        tx.onerror = (e)=> reject(e.target.error);
+      }catch(err){ reject(err); }
+    });
+  },
+  deleteByIndex(storeName, indexName, value){
+    return new Promise((resolve, reject)=>{
+      try{
+        const tx = IDB.tx([storeName], 'readwrite', { durability: 'relaxed' });
+        const store = tx.objectStore(storeName);
+        const idx = store.index(indexName);
+        // openKeyCursor only enumerates keys, skipping deserialization of
+        // the full record value — meaningfully faster than openCursor when
+        // all we need is to delete matching records.
+        const req = idx.openKeyCursor(IDBKeyRange.only(value));
+        req.onsuccess = function(e){
+          const cursor = e.target.result;
+          if(cursor){ store.delete(cursor.primaryKey); cursor.continue(); }
+        };
+        tx.oncomplete = ()=> resolve();
+        tx.onerror = (e)=> reject(e.target.error);
+      }catch(err){ reject(err); }
+    });
+  },
+  getByIndex(storeName, indexName, value){
+    return new Promise((resolve, reject)=>{
+      try{
+        const store = IDB.tx([storeName]).objectStore(storeName);
+        const idx = store.index(indexName);
+        const req = idx.getAll(IDBKeyRange.only(value));
+        req.onsuccess = ()=> resolve(req.result || []);
+        req.onerror = (e)=> reject(e.target.error);
+      }catch(err){ reject(err); }
+    });
+  },
+  getByKey(storeName, key){
+    return new Promise((resolve, reject)=>{
+      try{
+        const store = IDB.tx([storeName]).objectStore(storeName);
+        const req = store.get(key);
+        req.onsuccess = ()=> resolve(req.result || null);
+        req.onerror = (e)=> reject(e.target.error);
+      }catch(err){ reject(err); }
+    });
+  },
+  getKeysByIndex(storeName, indexName, value){
+    return new Promise((resolve, reject)=>{
+      try{
+        const store = IDB.tx([storeName]).objectStore(storeName);
+        const idx = store.index(indexName);
+        const req = idx.openKeyCursor(IDBKeyRange.only(value));
+        const keys = [];
+        req.onsuccess = function(e){
+          const cursor = e.target.result;
+          if(cursor){ keys.push(cursor.primaryKey); cursor.continue(); }
+          else resolve(keys);
+        };
+        req.onerror = (e)=> reject(e.target.error);
+      }catch(err){ reject(err); }
+    });
+  },
+  /**
+   * Deleta todos os registros de storeName cujo indexName == value, numa
+   * ÚNICA varredura do índice (que já deleta cada um encontrado), e
+   * retorna as chaves primárias deletadas — pra quem precisa saber quais
+   * IDs sumiram (ex: limpar progresso associado) sem precisar percorrer o
+   * mesmo índice DUAS vezes (uma pra coletar, outra pra deletar).
+   */
+  deleteByIndexCombined(storeName, indexName, value){
+    return new Promise((resolve, reject)=>{
+      try{
+        const tx = IDB.tx([storeName], 'readwrite', { durability:'relaxed' });
+        const store = tx.objectStore(storeName);
+        const idx = store.index(indexName);
+        const req = idx.openKeyCursor(IDBKeyRange.only(value));
+        const keys = [];
+        req.onsuccess = function(e){
+          const cursor = e.target.result;
+          if(cursor){ keys.push(cursor.primaryKey); store.delete(cursor.primaryKey); cursor.continue(); }
+        };
+        tx.oncomplete = () => resolve(keys);
+        tx.onerror = (e) => reject(e.target.error);
+      }catch(err){ reject(err); }
+    });
+  },
+  /**
+   * Deleta TODO o conteúdo de um servidor (Filmes+Séries+AoVivo), numa
+   * única transação, usando o índice composto tipo_serverId em vez de um
+   * índice 'serverId' solto (removido de propósito — cada índice a menos
+   * na store de conteúdos acelera toda gravação). Varre os 3 tipos em
+   * sequência dentro da MESMA transação.
+   */
+  deleteAllContentForServer(serverId){
+    return new Promise((resolve, reject)=>{
+      try{
+        const tx = IDB.tx([STORES.contents], 'readwrite', { durability:'relaxed' });
+        const store = tx.objectStore(STORES.contents);
+        const idx = store.index('tipo_serverId');
+        const types = ['movie','live','series'];
+        const keys = [];
+        let ti = 0;
+        function walkNextType(){
+          if(ti >= types.length) return; // transação completa quando não sobrar cursor pendente
+          const req = idx.openKeyCursor(IDBKeyRange.only([types[ti], serverId]));
+          req.onsuccess = function(e){
+            const cursor = e.target.result;
+            if(cursor){ keys.push(cursor.primaryKey); store.delete(cursor.primaryKey); cursor.continue(); }
+            else { ti++; walkNextType(); }
+          };
+        }
+        walkNextType();
+        tx.oncomplete = () => resolve(keys);
+        tx.onerror = (e) => reject(e.target.error);
+      }catch(err){ reject(err); }
+    });
+  },
+  /**
+   * Distinct values of an indexed field within an optional key range, using
+   * a 'nextunique' cursor — the browser engine skips duplicate keys
+   * internally, which is much cheaper than reading every record.
+   */
+  getDistinctIndexValues(storeName, indexName, range){
+    return new Promise((resolve, reject)=>{
+      try{
+        const store = IDB.tx([storeName]).objectStore(storeName);
+        const idx = store.index(indexName);
+        const req = idx.openKeyCursor(range || null, 'nextunique');
+        const values = [];
+        req.onsuccess = function(e){
+          const cursor = e.target.result;
+          if(cursor){ values.push(cursor.key); cursor.continue(); }
+          else resolve(values);
+        };
+        req.onerror = (e)=> reject(e.target.error);
+      }catch(err){ reject(err); }
+    });
+  },
+  clear(storeName){
+    return new Promise((resolve, reject)=>{
+      try{
+        const store = IDB.tx([storeName], 'readwrite').objectStore(storeName);
+        const req = store.clear();
+        req.onsuccess = ()=> resolve();
+        req.onerror = (e)=> reject(e.target.error);
+      }catch(err){ reject(err); }
+    });
+  },
+  count(storeName){
+    return new Promise((resolve, reject)=>{
+      try{
+        const store = IDB.tx([storeName]).objectStore(storeName);
+        const req = store.count();
+        req.onsuccess = ()=> resolve(req.result || 0);
+        req.onerror = (e)=> reject(e.target.error);
+      }catch(err){ reject(err); }
+    });
+  },
+  countByIndex(storeName, indexName, value){
+    return new Promise((resolve, reject)=>{
+      try{
+        const store = IDB.tx([storeName]).objectStore(storeName);
+        const idx = store.index(indexName);
+        const req = idx.count(IDBKeyRange.only(value));
+        req.onsuccess = ()=> resolve(req.result || 0);
+        req.onerror = (e)=> reject(e.target.error);
+      }catch(err){ reject(err); }
+    });
+  },
+  countByIndexRange(storeName, indexName, range){
+    return new Promise((resolve, reject)=>{
+      try{
+        const store = IDB.tx([storeName]).objectStore(storeName);
+        const idx = store.index(indexName);
+        const req = idx.count(range);
+        req.onsuccess = ()=> resolve(req.result || 0);
+        req.onerror = (e)=> reject(e.target.error);
+      }catch(err){ reject(err); }
+    });
+  },
+  /**
+   * Reads up to `limit` records from storeName whose primary key comes after
+   * `afterKey` (exclusive), using a cursor within a short-lived transaction
+   * scoped to just this batch. Returns { records, lastKey, done }.
+   *
+   * This is used instead of a single bulk getAll() for very large stores:
+   * getAll() on a store with millions of records has to read everything
+   * before resolving, which blocks any progress feedback until it's fully
+   * done. Reading in small batches (each its own quick transaction) lets us
+   * report real progress from the very first batch, and — critically — lets
+   * us yield back to the browser (via setTimeout) BETWEEN batches without
+   * hitting IndexedDB's "transaction auto-commits after a task boundary"
+   * behavior, since no transaction stays open across the yield.
+   */
+  getBatchAfter(storeName, afterKey, limit){
+    return new Promise((resolve, reject)=>{
+      try{
+        const store = IDB.tx([storeName]).objectStore(storeName);
+        const range = (afterKey !== null && afterKey !== undefined) ? IDBKeyRange.lowerBound(afterKey, true) : null;
+        const req = store.openCursor(range);
+        const records = [];
+        let lastKey = afterKey;
+        req.onsuccess = function(e){
+          const cursor = e.target.result;
+          if(cursor && records.length < limit){
+            records.push(cursor.value);
+            lastKey = cursor.key;
+            cursor.continue();
+          } else {
+            resolve({ records: records, lastKey: lastKey, done: !cursor });
+          }
+        };
+        req.onerror = function(e){ reject(e.target.error); };
+      }catch(err){ reject(err); }
+    });
+  }
+};
+
+/* ======================================================================
+   INDEX MODULE (in-memory indexes for performance)
+   ====================================================================== */
+/* ======================================================================
+   QUERY MODULE — consultas paginadas direto no IndexedDB
+   ====================================================================== */
+const QueryModule = {
+  /** Range que cobre "qualquer servidor" pra um tipo, usando o índice
+   * composto tipo_serverId — substitui o antigo índice 'tipo' sozinho. */
+  _typeRange(type){
+    return IDBKeyRange.bound([type, ''], [type, '\uffff']);
+  },
+
+  /**
+   * Escolhe o índice mais seletivo pros filtros ativos. Quando os dois
+   * filtros (servidor E categoria) estão ativos ao mesmo tempo, aplicamos o
+   * segundo como pós-filtro durante a varredura do cursor (registros por
+   * página são poucos, então isso é barato).
+   */
+  _pickIndex(type, filters){
+    if(filters.server && filters.server !== 'all'){
+      return { indexName:'tipo_serverId', range: IDBKeyRange.only([type, filters.server]), extraServer:false, extraCategory: !!(filters.category && filters.category !== 'all') };
+    }
+    if(filters.category && filters.category !== 'all'){
+      return { indexName:'tipo_categoria', range: IDBKeyRange.only([type, filters.category]), extraServer:true, extraCategory:false };
+    }
+    return { indexName:'tipo_serverId', range: this._typeRange(type), extraServer:false, extraCategory:true };
+  },
+
+  async _favoriteIdSet(type){
+    const list = await IDB.getAll(STORES.favorites);
+    return new Set(list.filter(f => f.type === type).map(f => f.id));
+  },
+
+  /**
+   * Retorna { items, total } para a página pedida de Filmes/Ao Vivo.
+   */
+  async getContentPage(type, filters, page, pageSize){
+    const favSet = filters.favoritesOnly ? await this._favoriteIdSet(type) : null;
+    const { indexName, range, extraServer, extraCategory } = this._pickIndex(type, filters);
+    const targetStart = (page - 1) * pageSize;
+
+    return new Promise((resolve, reject) => {
+      try{
+        const store = IDB.tx([STORES.contents]).objectStore(STORES.contents);
+        const idx = store.index(indexName);
+        const req = idx.openCursor(range);
+        const collected = [];
+        let matched = 0, total = 0;
+        req.onsuccess = function(e){
+          const cursor = e.target.result;
+          if(!cursor){ resolve({ items: collected, total: total }); return; }
+          const rec = cursor.value;
+          let ok = true;
+          if(extraServer && filters.server && filters.server !== 'all' && rec.serverId !== filters.server) ok = false;
+          if(extraCategory && filters.category && filters.category !== 'all' && rec.categoria !== filters.category) ok = false;
+          if(ok && favSet && !favSet.has(rec.id)) ok = false;
+          if(ok){
+            total++;
+            if(matched >= targetStart && collected.length < pageSize){ collected.push(rec); }
+            matched++;
+          }
+          cursor.continue();
+        };
+        req.onerror = (e) => reject(e.target.error);
+      }catch(err){ reject(err); }
+    });
+  },
+
+  async getCategoriesForType(type){
+    const values = await IDB.getDistinctIndexValues(STORES.contents, 'tipo_categoria', IDBKeyRange.bound([type,''], [type,'\uffff']));
+    return values.map(v => v[1]).filter(Boolean).sort();
+  },
+
+  async getServersForType(type){
+    const values = await IDB.getDistinctIndexValues(STORES.contents, 'tipo_serverId', IDBKeyRange.bound([type,''], [type,'\uffff']));
+    return values.map(v => v[1]).filter(Boolean);
+  },
+
+  /**
+   * Mesma lógica de página/filtros, mas sobre o resumo de séries
+   * (seriesSummary), que já vem uma linha por série (não por episódio).
+   */
+  async getSeriesPage(filters, page, pageSize){
+    const favIds = new Set((await IDB.getAll(STORES.favorites)).filter(f=>f.type==='series').map(f=>f.id));
+    const favSet = filters.favoritesOnly ? favIds : null;
+    const targetStart = (page - 1) * pageSize;
+    const useServer = filters.server && filters.server !== 'all';
+    const useCategory = !useServer && filters.category && filters.category !== 'all';
+
+    return new Promise((resolve, reject) => {
+      try{
+        const store = IDB.tx([STORES.seriesSummary]).objectStore(STORES.seriesSummary);
+        let req;
+        if(useServer) req = store.index('serverId').openCursor(IDBKeyRange.only(filters.server));
+        else if(useCategory) req = store.index('categorias').openCursor(IDBKeyRange.only(filters.category));
+        else req = store.openCursor();
+
+        const collected = [];
+        let matched = 0, total = 0;
+        const seen = new Set(); // multiEntry index pode repetir a mesma série p/ cada categoria
+        req.onsuccess = function(e){
+          const cursor = e.target.result;
+          if(!cursor){ resolve({ items: collected, total: total }); return; }
+          const rec = cursor.value;
+          let ok = !seen.has(rec.key);
+          seen.add(rec.key);
+          if(ok && useServer && filters.category && filters.category !== 'all' && rec.categorias.indexOf(filters.category) === -1) ok = false;
+          if(ok && favSet && !favSet.has(rec.key)) ok = false;
+          if(ok){
+            total++;
+            if(matched >= targetStart && collected.length < pageSize){ rec.favorito = favIds.has(rec.key); collected.push(rec); }
+            matched++;
+          }
+          cursor.continue();
+        };
+        req.onerror = (e) => reject(e.target.error);
+      }catch(err){ reject(err); }
+    });
+  },
+
+  async getCategoriesForSeries(){
+    const values = await IDB.getDistinctIndexValues(STORES.seriesSummary, 'categorias');
+    return values.filter(Boolean).sort();
+  },
+
+  async getServersForSeries(){
+    const values = await IDB.getDistinctIndexValues(STORES.seriesSummary, 'serverId');
+    return values;
+  },
+
+  /** Todos os episódios de uma série específica (usado na tela de detalhes). */
+  async getEpisodesForSeries(seriesKey){
+    return IDB.getByIndex(STORES.contents, 'seriesKey', seriesKey);
+  },
+
+  /** Últimos itens adicionados a um servidor (id embute timestamp, então ordem desc de chave ≈ mais recentes primeiro). */
+  async getRecentForServer(type, serverId, limit){
+    return new Promise((resolve, reject) => {
+      try{
+        const store = IDB.tx([STORES.contents]).objectStore(STORES.contents);
+        const idx = store.index('tipo_serverId');
+        const req = idx.openCursor(IDBKeyRange.only([type, serverId]), 'prev');
+        const items = [];
+        req.onsuccess = function(e){
+          const cursor = e.target.result;
+          if(!cursor || items.length >= limit){ resolve(items); return; }
+          items.push(cursor.value);
+          cursor.continue();
+        };
+        req.onerror = (e) => reject(e.target.error);
+      }catch(err){ reject(err); }
+    });
+  },
+
+  async getRecentSeriesForServer(serverId, limit){
+    const all = await IDB.getByIndex(STORES.seriesSummary, 'serverId', serverId);
+    all.sort((a,b) => (b.updatedAt||0) - (a.updatedAt||0));
+    return all.slice(0, limit);
+  }
+};
+
+/* ======================================================================
+   SEARCH MODULE (on-demand, varre o IndexedDB ao digitar — ver popup de busca)
+   ====================================================================== */
+const GlobalSearchModule = {
+  async search(term, maxPerType){
+    maxPerType = maxPerType || 40;
+    const norm = normalizeText(term);
+    const result = { movie:[], live:[], series:[] };
+    if(!norm) return result;
+
+    const contentScan = (type) => new Promise((resolve) => {
+      const store = IDB.tx([STORES.contents]).objectStore(STORES.contents);
+      const idx = store.index('tipo_serverId');
+      const req = idx.openCursor(QueryModule._typeRange(type));
+      req.onsuccess = function(e){
+        const cursor = e.target.result;
+        if(!cursor || result[type].length >= maxPerType){ resolve(); return; }
+        const rec = cursor.value;
+        if(normalizeText(rec.nome).indexOf(norm) !== -1 || normalizeText(rec.categoria||'').indexOf(norm) !== -1){
+          result[type].push(rec);
+        }
+        cursor.continue();
+      };
+      req.onerror = () => resolve();
+    });
+
+    const seriesScan = new Promise((resolve) => {
+      const store = IDB.tx([STORES.seriesSummary]).objectStore(STORES.seriesSummary);
+      const req = store.openCursor();
+      req.onsuccess = function(e){
+        const cursor = e.target.result;
+        if(!cursor || result.series.length >= maxPerType){ resolve(); return; }
+        const rec = cursor.value;
+        if(normalizeText(rec.name).indexOf(norm) !== -1){
+          result.series.push(rec);
+        }
+        cursor.continue();
+      };
+      req.onerror = () => resolve();
+    });
+
+    // As três varreduras rodam em paralelo (transações de leitura do
+    // IndexedDB não bloqueiam entre si), em vez de uma esperar a outra.
+    await Promise.all([contentScan('movie'), contentScan('live'), seriesScan]);
+
+    return result;
+  }
+};
+
+const IndexModule = {
+
+  clearAll(){
+    State.contentsById.clear();
+    State.indexes.contentsByType.movie.clear();
+    State.indexes.contentsByType.series.clear();
+    State.indexes.contentsByType.live.clear();
+    State.indexes.contentsByServer.clear();
+    State.indexes.contentsByCategory.clear();
+    State.indexes.contentsByTypeServer.clear();
+    State.indexes.favoritesIndex.clear();
+    State.indexes.seriesIndex.clear();
+    State.indexes.searchIndex.clear();
+    State.favoriteSeries.clear();
+    State.recentlyAddedByServer.clear();
+  },
+
+  _addToSetMap(map, key, id){
+    let s = map.get(key);
+    if(!s){ s = new Set(); map.set(key, s); }
+    s.add(id);
+  },
+  _removeFromSetMap(map, key, id){
+    const s = map.get(key);
+    if(s){ s.delete(id); if(s.size===0) map.delete(key); }
+  },
+
+  seriesBaseKey(name, serverId){
+    const base = ParserModule.extractSeriesBaseName(name);
+    return serverId + '::' + normalizeText(base);
+  },
+
+  addContent(content){
+    if(!content || !content.id) return;
+    State.contentsById.set(content.id, content);
+    if(content.tipo && State.indexes.contentsByType[content.tipo]){
+      State.indexes.contentsByType[content.tipo].add(content.id);
+    }
+    this._addToSetMap(State.indexes.contentsByServer, content.serverId, content.id);
+    const catKey = content.tipo + '::' + (content.categoria || 'Sem categoria');
+    this._addToSetMap(State.indexes.contentsByCategory, catKey, content.id);
+    const tsKey = content.tipo + '::' + content.serverId;
+    this._addToSetMap(State.indexes.contentsByTypeServer, tsKey, content.id);
+
+    if(content.favorito){ State.indexes.favoritesIndex.add(content.id); }
+
+    // search index - normalized text precomputed
+    const searchStr = normalizeText((content.nome||'') + ' ' + (content.categoria||''));
+    State.indexes.searchIndex.set(content.id, searchStr);
+
+    if(content.tipo === 'series'){
+      const baseName = ParserModule.extractSeriesBaseName(content.nome);
+      const key = content.serverId + '::' + normalizeText(baseName);
+      let entry = State.indexes.seriesIndex.get(key);
+      if(!entry){
+        entry = {
+          key: key,
+          name: baseName,
+          serverId: content.serverId,
+          items: new Set(),
+          categories: new Set(),
+          logo: content.logo || ''
+        };
+        State.indexes.seriesIndex.set(key, entry);
+      }
+      entry.items.add(content.id);
+      if(content.categoria) entry.categories.add(content.categoria);
+      if(!entry.logo && content.logo) entry.logo = content.logo;
+      pushRecentlyAdded(content.serverId, 'series', key);
+    } else if(content.tipo === 'movie' || content.tipo === 'live'){
+      pushRecentlyAdded(content.serverId, content.tipo, content.id);
+    }
+  },
+
+  removeContent(content){
+    if(!content || !content.id) return;
+    State.contentsById.delete(content.id);
+    if(content.tipo && State.indexes.contentsByType[content.tipo]){
+      State.indexes.contentsByType[content.tipo].delete(content.id);
+    }
+    this._removeFromSetMap(State.indexes.contentsByServer, content.serverId, content.id);
+    const catKey = content.tipo + '::' + (content.categoria || 'Sem categoria');
+    this._removeFromSetMap(State.indexes.contentsByCategory, catKey, content.id);
+    const tsKey = content.tipo + '::' + content.serverId;
+    this._removeFromSetMap(State.indexes.contentsByTypeServer, tsKey, content.id);
+    State.indexes.favoritesIndex.delete(content.id);
+    State.indexes.searchIndex.delete(content.id);
+
+    if(content.tipo === 'series'){
+      const baseName = ParserModule.extractSeriesBaseName(content.nome);
+      const key = content.serverId + '::' + normalizeText(baseName);
+      const entry = State.indexes.seriesIndex.get(key);
+      if(entry){
+        entry.items.delete(content.id);
+        if(entry.items.size === 0){
+          State.indexes.seriesIndex.delete(key);
+          removeRecentlyAdded(content.serverId, 'series', key);
+        }
+      }
+    } else if(content.tipo === 'movie' || content.tipo === 'live'){
+      removeRecentlyAdded(content.serverId, content.tipo, content.id);
+    }
+  },
+
+  // Remove all content/index entries belonging to a server (used before re-importing a server)
+  removeAllForServer(serverId){
+    const ids = State.indexes.contentsByServer.get(serverId);
+    if(!ids) return;
+    const idsCopy = Array.from(ids);
+    for(const id of idsCopy){
+      const content = State.contentsById.get(id);
+      if(content) this.removeContent(content);
+    }
+    State.indexes.contentsByServer.delete(serverId);
+  },
+
+  async toggleFavoriteContent(content){
+    content.favorito = !content.favorito;
+    try{
+      await IDB.put(STORES.contents, content);
+      if(content.favorito) await IDB.put(STORES.favorites, { id: content.id, type: content.tipo });
+      else await IDB.delete(STORES.favorites, content.id);
+    }catch(e){}
+    // Sem invalidar o cache de página: o objeto `content` já é a MESMA
+    // referência guardada em State.pageCache (veio de lá), então a mutação
+    // acima já reflete pra próxima vez que a página for renderizada — sem
+    // precisar refazer a consulta ao banco (o que causava aquele "reload"
+    // visual da tela inteira só por favoritar um item).
+    State.dashboardCache = null;
+  },
+
+  async toggleFavoriteSeries(seriesKey){
+    const existing = await IDB.getByKey(STORES.favorites, seriesKey).catch(()=>null);
+    try{
+      if(existing){ await IDB.delete(STORES.favorites, seriesKey); }
+      else{ await IDB.put(STORES.favorites, { id: seriesKey, type: 'series' }); }
+    }catch(e){}
+    State.dashboardCache = null;
+  },
+
+  rebuildFromScratch(allContents){
+    this.clearAll();
+    for(const c of allContents){
+      this.addContent(c);
+    }
+  },
+
+  // get set of ids for type + optional server/category filters, returns Set
+  getFilteredIds(type, opts){
+    opts = opts || {};
+    let base;
+    if(opts.server && opts.server !== 'all'){
+      base = State.indexes.contentsByTypeServer.get(type + '::' + opts.server) || new Set();
+    } else {
+      base = State.indexes.contentsByType[type] || new Set();
+    }
+    let result = base;
+    if(opts.category && opts.category !== 'all'){
+      const catSet = State.indexes.contentsByCategory.get(type + '::' + opts.category) || new Set();
+      result = intersectSets(result, catSet);
+    }
+    if(opts.favoritesOnly){
+      result = intersectSets(result, State.indexes.favoritesIndex);
+    }
+    if(opts.searchIds){
+      result = intersectSets(result, opts.searchIds);
+    }
+    return result;
+  }
+};
+
+function intersectSets(a, b){
+  if(!a || !b) return new Set();
+  const [small, big] = a.size <= b.size ? [a,b] : [b,a];
+  const out = new Set();
+  for(const v of small){ if(big.has(v)) out.add(v); }
+  return out;
+}
+
+/* ======================================================================
+   SEARCH MODULE
+   ====================================================================== */
+let searchDebounceTimer = null;
+let activeSearchOverlay = null;
+let lastSearchState = null; // { term, results } — evita repetir a mesma busca no banco
+
+function openSearchPopup(term){
+  if(activeSearchOverlay) return activeSearchOverlay; // já tem um aberto, não duplica
+  let currentResults = { movie:[], live:[], series:[] };
+  let activeType = 'all';
+  let activeServer = 'all';
+  let searchToken = 0;
+  let debounceT = null;
+
+  const overlay = el('div', { class:'modal-overlay' });
+  const box = el('div', { class:'modal-box', style:'max-width:min(92vw, 960px);' });
+
+  function closePopup(preserveInput){
+    overlay.remove();
+    activeSearchOverlay = null;
+    if(!preserveInput){
+      const topbarInput = qs('#global-search');
+      if(topbarInput){ topbarInput.value = ''; }
+      const clearBtn = qs('#global-search-clear');
+      if(clearBtn){ clearBtn.style.display = 'none'; }
+    }
+  }
+
+  const closeBtn = el('span', { class:'modal-close-x' }, ['×']);
+  closeBtn.addEventListener('click', ()=>closePopup(false));
+  box.appendChild(el('h3', {}, ['Buscar', closeBtn]));
+
+  const input = el('input', { type:'text', placeholder:'Buscar filmes, séries, canais...', style:'width:100%;margin-bottom:12px;' });
+  box.appendChild(input);
+
+  const tabsRow = el('div', { class:'chip-row' });
+  const serverRow = el('div', { class:'chip-row', style:'flex-wrap:wrap;' });
+  const body = el('div');
+  box.appendChild(tabsRow);
+  box.appendChild(serverRow);
+  box.appendChild(body);
+
+  overlay.appendChild(box);
+  qs('#modal-root').appendChild(overlay);
+
+  // Clicar fora da caixa (no fundo escurecido) fecha o popup, igual ao X.
+  overlay.addEventListener('mousedown', function(e){ if(e.target === overlay) closePopup(false); });
+
+  function countByServer(items){
+    return activeServer==='all' ? items.length : items.filter(i => i.serverId===activeServer).length;
+  }
+
+  function renderTabs(){
+    tabsRow.innerHTML = '';
+    const counts = {
+      all: countByServer(currentResults.movie) + countByServer(currentResults.live) + countByServer(currentResults.series),
+      series: countByServer(currentResults.series), movie: countByServer(currentResults.movie), live: countByServer(currentResults.live)
+    };
+    const labels = [['all','Tudo'], ['series','Séries'], ['movie','Filmes'], ['live','Ao Vivo']];
+    for(const [key,label] of labels){
+      tabsRow.appendChild(el('button', { class:'chip'+(activeType===key?' active':''), onclick:((k)=>()=>{ activeType=k; renderResults(); })(key) }, [label + ' (' + counts[key] + ')']));
+    }
+  }
+
+  function renderServerChips(){
+    serverRow.innerHTML = '';
+    if(State.servers.size === 0) return;
+    serverRow.appendChild(el('button', { class:'chip'+(activeServer==='all'?' active':''), onclick:()=>{ activeServer='all'; renderServerChips(); renderResults(); } }, ['Todos os servidores']));
+    for(const [id, s] of State.servers){
+      serverRow.appendChild(el('button', { class:'chip'+(activeServer===id?' active':''), onclick:((sid)=>()=>{ activeServer=sid; renderServerChips(); renderResults(); })(id) }, [s.nome]));
+    }
+  }
+
+  function renderResults(){
+    body.innerHTML = '';
+    renderTabs();
+    const groups = [];
+    if(activeType==='all' || activeType==='series') groups.push(['Séries', currentResults.series, renderSeriesCard]);
+    if(activeType==='all' || activeType==='movie') groups.push(['Filmes', currentResults.movie, renderContentCard]);
+    if(activeType==='all' || activeType==='live') groups.push(['Ao Vivo', currentResults.live, renderContentCard]);
+
+    let any = false;
+    for(const [label, items, renderFn] of groups){
+      const filtered = activeServer==='all' ? items : items.filter(i => i.serverId===activeServer);
+      if(filtered.length===0) continue;
+      any = true;
+      body.appendChild(el('div', { class:'server-section-title' }, [label + ' (' + filtered.length + ')']));
+      const grid = el('div', { class:'card-grid' });
+      for(const item of filtered){ grid.appendChild(renderFn(item)); }
+      body.appendChild(grid);
+    }
+    if(!any) body.appendChild(renderEmptyState('🔍', 'Nada encontrado', 'Nenhum resultado com esses filtros.'));
+  }
+
+  function runSearch(val){
+    if(lastSearchState && lastSearchState.term === val){
+      currentResults = lastSearchState.results;
+      activeType = 'all';
+      renderServerChips();
+      renderResults();
+      return;
+    }
+    const myToken = ++searchToken;
+    body.innerHTML = '';
+    body.appendChild(el('div', { class:'loader-inline' }, [el('div',{class:'spinner'}), 'Buscando...']));
+    GlobalSearchModule.search(val).then(function(results){
+      if(myToken !== searchToken) return; // usuário já digitou de novo
+      currentResults = results;
+      lastSearchState = { term: val, results: results };
+      activeType = 'all';
+      renderServerChips(); // usa State.servers, já em memória — instantâneo
+      renderResults();
+    }).catch(function(){
+      if(myToken !== searchToken) return;
+      body.innerHTML = '';
+      body.appendChild(renderEmptyState('⚠️', 'Erro na busca', 'Não foi possível concluir a busca.'));
+    });
+  }
+
+  // Único ponto de debounce (500ms sem digitar): toda entrada de texto
+  // — inclusive o texto inicial vindo da caixa da topbar — passa por aqui.
+  function scheduleSearch(val){
+    clearTimeout(debounceT);
+    if(!val){ searchToken++; body.innerHTML = ''; tabsRow.innerHTML=''; renderServerChips(); return; }
+    debounceT = setTimeout(function(){ runSearch(val); }, 500);
+  }
+
+  input.addEventListener('input', function(e){
+    const val = e.target.value;
+    const topbarInput = qs('#global-search');
+    if(topbarInput) topbarInput.value = val; // mantém sincronizado pra não "perder" o texto ao reabrir
+    scheduleSearch(val.trim());
+  });
+
+  renderServerChips();
+  if(term){
+    input.value = term;
+    input.focus();
+    input.setSelectionRange(term.length, term.length); // cursor no fim, não no início
+    scheduleSearch(term);
+  } else {
+    input.focus();
+  }
+
+  activeSearchOverlay = { overlay, input, close: closePopup };
+  return activeSearchOverlay;
+}
+
+/* ======================================================================
+   PARSER MODULE - M3U/M3U8 parsing & classification
+   ====================================================================== */
+const VIDEO_EXTENSIONS = ['.mp4','.mkv','.avi','.mov','.webm','.m4v','.mpg','.mpeg','.flv','.wmv'];
+const SERIES_PATTERNS = [
+  /s\d{1,2}\s?e\d{1,3}/i,
+  /epis[oó]dio/i,
+  /episode/i,
+  /season/i
+];
+
+// Palavras/frases no group-title que indicam Ao Vivo. Comparação é feita
+// após normalizar (minúsculas, sem acento, sem pontuação/espaços) tanto a
+// categoria quanto estas palavras, então maiúsculas/minúsculas e acentos não importam.
+const LIVE_GROUP_KEYWORDS = [
+  'FILMES','CINE','TELECINE','HBO','SERIES','SÉRIES','24H','ANIME','DESENHO','CANAIS',
+  'ABERTOS','BAND','GLOBO','RECORD','RECORDTV','SBT',
+  'NOTICIAS','ESPORTES','PAY-PER-VIEW','PPV','ESPN','SPORTV','PREMIERE','DAZN','UFC','COMBATE','LUTAS','NBA','CHAMPIONS LEAGUE','JOGOS DO DIA','CAZÉ TV','GOAT','SPORTS','SPORTYNET','PARAMOUNT','DISNEY','MAX','HBO MAX','APPLE TV','YOUTUBE',
+  'RELIGIOSOS','CATOLICOS','ESPIRITA','RADIOS','RADIO',
+  'AGRO','DISCOVERY','DOCUMENTÁRIOS','INFANTIS','MUSICA','VARIEDADES','PUBLICOS','PLUTO TV','PORTUGAL','ARGENTINA','CANADA','U.S.A'
+];
+
+function normalizeForKeywordMatch(str){
+  return normalizeText(str).replace(/[^a-z0-9]/g, '');
+}
+
+const LIVE_GROUP_KEYWORDS_NORMALIZED = LIVE_GROUP_KEYWORDS.map(normalizeForKeywordMatch);
+
+const ParserModule = {
+
+  /**
+   * Parses raw M3U text into array of raw entries: { attrs: {}, name, url }
+   * Ignores invalid entries individually without stopping the whole parse.
+   */
+  parseM3U(text){
+    const entries = [];
+    if(!text) return entries;
+    // Normalize line endings
+    const lines = text.split(/\r\n|\r|\n/);
+    let pendingExtinf = null;
+
+    for(let i=0;i<lines.length;i++){
+      const line = lines[i];
+      if(line === undefined) continue;
+      const trimmed = line.trim();
+      if(!trimmed) continue;
+
+      if(trimmed.charAt(0) === '#'){
+        if(/^#EXTINF/i.test(trimmed)){
+          try{
+            pendingExtinf = ParserModule.parseExtinfLine(trimmed);
+          }catch(err){
+            pendingExtinf = null;
+          }
+        }
+        // ignore other directives (#EXTM3U, #EXTGRP, #EXTVLCOPT, etc.)
+        continue;
+      }
+
+      // This is a URL line (not starting with #)
+      if(pendingExtinf){
+        try{
+          const url = trimmed;
+          if(url){
+            entries.push({
+              url: url,
+              name: pendingExtinf.name || url,
+              tvgId: pendingExtinf.tvgId || '',
+              tvgName: pendingExtinf.tvgName || '',
+              tvgLogo: pendingExtinf.tvgLogo || '',
+              groupTitle: pendingExtinf.groupTitle || 'Sem categoria'
+            });
+          }
+        }catch(err){
+          // ignore invalid entry, continue parsing
+        }
+        pendingExtinf = null;
+      }
+      // If there's a URL line with no preceding EXTINF, skip it individually.
+    }
+    return entries;
+  },
+
+  /**
+   * Parses a single #EXTINF line into attributes + display name.
+   * Supports quotes, unicode, emojis, extra params, different real-world formats.
+   */
+  parseExtinfLine(line){
+    const result = { tvgId:'', tvgName:'', tvgLogo:'', groupTitle:'', name:'' };
+    // Attributes are of the form key="value" (value may contain anything except unescaped quotes)
+    const attrRegex = /([a-zA-Z0-9\-]+)="([^"]*)"/g;
+    let m;
+    while((m = attrRegex.exec(line)) !== null){
+      const key = m[1].toLowerCase();
+      const val = m[2];
+      if(key === 'tvg-id') result.tvgId = val;
+      else if(key === 'tvg-name') result.tvgName = val;
+      else if(key === 'tvg-logo') result.tvgLogo = val;
+      else if(key === 'group-title') result.groupTitle = val;
+    }
+    // The display name is everything after the LAST comma in the line
+    const lastComma = line.lastIndexOf(',');
+    if(lastComma !== -1 && lastComma < line.length - 1){
+      result.name = line.substring(lastComma + 1).trim();
+    } else if(result.tvgName){
+      result.name = result.tvgName;
+    }
+    if(!result.name) result.name = result.tvgName || 'Sem nome';
+    return result;
+  },
+
+  /**
+   * Classification order:
+   *   1. Séries — padrões no nome (SxxExx, "episódio", "episode", "season").
+   *   2. Filmes — URL termina em extensão de vídeo conhecida.
+   *   3. Ao Vivo — URL termina em "/ts", contém "m3u8", ou termina em ".ts".
+   *   4. Ao Vivo — group-title contém alguma palavra-chave de canal ao vivo.
+   *   5. Padrão (o que sobrar de tudo acima): Filme.
+   */
+  classify(name, url, categoria){
+    const lowerName = (name || '').toLowerCase();
+    const rawUrl = url || '';
+    const lowerUrl = rawUrl.toLowerCase();
+
+    // 1. Series check (highest priority)
+    for(const pattern of SERIES_PATTERNS){
+      if(pattern.test(lowerName)){
+        return 'series';
+      }
+    }
+
+    // 2. Movie check via video extension in URL
+    for(const ext of VIDEO_EXTENSIONS){
+      if(lowerUrl.indexOf(ext) !== -1){
+        return 'movie';
+      }
+    }
+
+    // 3. URL shape typical of raw live streams: ends with "/ts", contains
+    // "m3u8" anywhere, or ends with ".ts". Only reads the URL — never
+    // modifies/strips it.
+    if(/\/ts(\?.*)?$/i.test(rawUrl) || lowerUrl.indexOf('m3u8') !== -1 || /\.ts(\?.*)?$/i.test(rawUrl)){
+      return 'live';
+    }
+
+    // 4. group-title contains a known live-channel keyword
+    if(categoria){
+      const normCat = normalizeForKeywordMatch(categoria);
+      for(const kw of LIVE_GROUP_KEYWORDS_NORMALIZED){
+        if(kw && normCat.indexOf(kw) !== -1){
+          return 'live';
+        }
+      }
+    }
+
+    // 5. Default: everything else falls into Filmes
+    return 'movie';
+  },
+
+  /**
+   * Extracts the base series name by removing episode patterns.
+   * Does not mutate the original stored name; used only for grouping/display.
+   */
+  extractSeriesBaseName(name){
+    if(!name) return 'Desconhecida';
+    let base = name;
+    base = base.replace(/s\d{1,2}\s?e\d{1,3}/gi, '');
+    base = base.replace(/\b\d{1,2}x\d{1,3}\b/gi, '');
+    base = base.replace(/temporada\s?\d+/gi, '');
+    base = base.replace(/season\s?\d+/gi, '');
+    base = base.replace(/epis[oó]dio\s?\d*/gi, '');
+    base = base.replace(/episode\s?\d*/gi, '');
+    base = base.replace(/[-_.]+$/g, '');
+    base = base.replace(/\s{2,}/g, ' ').trim();
+    base = base.replace(/[\-\|]+$/,'').trim();
+    if(!base) base = name.trim();
+    return base;
+  },
+
+  /**
+   * Extracts season/episode numbers from a name for sorting/display purposes.
+   */
+  extractSeasonEpisode(name){
+    if(!name) return { season: 1, episode: 0 };
+    let m = name.match(/s(\d{1,2})\s?e(\d{1,3})/i);
+    if(m) return { season: parseInt(m[1],10), episode: parseInt(m[2],10) };
+    m = name.match(/\b(\d{1,2})x(\d{1,3})\b/i);
+    if(m) return { season: parseInt(m[1],10), episode: parseInt(m[2],10) };
+    m = name.match(/temporada\s?(\d+).*?epis[oó]dio\s?(\d+)/i);
+    if(m) return { season: parseInt(m[1],10), episode: parseInt(m[2],10) };
+    return { season: 1, episode: 0 };
+  },
+
+  /**
+   * Converts a raw parsed entry + serverId into a content object ready for storage.
+   * Returns null if entry is invalid (missing url/name).
+   */
+  buildContent(entry, serverId){
+    try{
+      if(!entry || !entry.url) return null;
+      const name = entry.name || entry.tvgName || '';
+      if(!name) return null;
+      const categoria = entry.groupTitle || 'Sem categoria';
+      const tipo = ParserModule.classify(name, entry.url, categoria);
+      const seriesKey = tipo === 'series' ? (serverId + '::' + normalizeText(ParserModule.extractSeriesBaseName(name))) : null;
+      return {
+        id: uid('c'),
+        serverId: serverId,
+        nome: name,
+        url: entry.url,
+        logo: entry.tvgLogo || '',
+        tipo: tipo,
+        categoria: categoria,
+        seriesKey: seriesKey,
+        favorito: false
+      };
+    }catch(err){
+      return null;
+    }
+  },
+
+  /** Constrói os registros de resumo de série (1 por série) a partir de um lote de conteúdos recém-processados. */
+  buildSeriesSummaries(contents, serverId){
+    const map = new Map();
+    const now = Date.now();
+    for(const c of contents){
+      if(c.tipo !== 'series') continue;
+      let s = map.get(c.seriesKey);
+      if(!s){
+        s = { key: c.seriesKey, serverId: serverId, name: ParserModule.extractSeriesBaseName(c.nome), logo: c.logo || '', categorias: [], episodeCount: 0, updatedAt: now, _seasons: new Set() };
+        map.set(c.seriesKey, s);
+      }
+      s.episodeCount++;
+      if(!s.logo && c.logo) s.logo = c.logo;
+      if(c.categoria && s.categorias.indexOf(c.categoria) === -1) s.categorias.push(c.categoria);
+      const se = ParserModule.extractSeasonEpisode(c.nome);
+      s._seasons.add(se.season);
+    }
+    return Array.from(map.values()).map(s => {
+      s.seasonCount = s._seasons.size;
+      delete s._seasons; // Set não vai pro IndexedDB, só o número interessa
+      return s;
+    });
+  }
+};
+
+/**
+ * Saves content objects to IndexedDB and adds them to the in-memory indexes
+ * in batches, yielding between each. Without this, saving+indexing tens of
+ * thousands of items from a single freshly-processed playlist in one
+ * unbatched synchronous loop is exactly the "trava um pouquinho ao finalizar
+ * cada playlist" freeze — this spreads that same work across yielded chunks.
+ *
+ * Batch size here is much larger than the parse/build batching: each batch
+ * is its own IndexedDB transaction, and every transaction has a fixed
+ * commit overhead. Too many small transactions (e.g. one every 4000 items)
+ * adds that overhead up hundreds of times over for a large library. Bigger
+ * batches means far fewer transactions/commits, which is the main lever for
+ * making this phase noticeably faster — combined with relaxed durability
+ * on the transaction itself (see IDB.putMany).
+ */
+async function saveAndIndexContentsBatched(contents, batchSize, onProgress){
+  batchSize = batchSize || 75000;
+  const total = contents.length;
+  for(let i=0; i<total; i+=batchSize){
+    const batch = contents.slice(i, i+batchSize);
+    await IDB.putMany(STORES.contents, batch);
+    const saved = Math.min(i+batchSize, total);
+    if(onProgress) onProgress(saved, total);
+    if(saved < total) await fastYield(); // no need to yield after the last batch
+  }
+}
+
+function tallyCounts(contents){
+  const counts = { movie:0, series:0, live:0 };
+  for(const c of contents){ if(counts[c.tipo] !== undefined) counts[c.tipo]++; }
+  return counts;
+}
+
+/* ======================================================================
+   SERVER MODULE
+   ====================================================================== */
+const ServerModule = {
+
+  async loadAllFromDB(){
+    const servers = await IDB.getAll(STORES.servers);
+    State.servers.clear();
+    for(const s of servers){ State.servers.set(s.id, s); }
+    return servers;
+  },
+
+  /**
+   * Loads all contents from IndexedDB and builds in-memory indexes, reading
+   * them in real batches straight from disk via a cursor (see
+   * IDB.getBatchAfter) instead of one giant getAll() covering the whole
+   * store. A single getAll() on a store with millions of records has to
+   * finish reading everything before it resolves at all, which means no
+   * progress can be shown until that huge read completes — exactly the
+   * "stuck at 0, then jumps to the end" behavior. Batched cursor reads give
+   * real, continuous progress from the very first batch, and each batch's
+   * transaction is short-lived so yielding to the browser between batches
+   * (via setTimeout) never gets caught by IndexedDB's transaction-lifetime
+   * rules.
+   */
+  async loadAllContentsFromDB(onProgress){
+    IndexModule.clearAll();
+    const total = await IDB.count(STORES.contents);
+    if(onProgress) onProgress(0, total);
+    const batchSize = 15000;
+    let afterKey = null;
+    let processed = 0;
+
+    while(true){
+      const { records, lastKey, done } = await IDB.getBatchAfter(STORES.contents, afterKey, batchSize);
+      for(const c of records){ IndexModule.addContent(c); }
+      processed += records.length;
+      afterKey = lastKey;
+      if(onProgress) onProgress(processed, total);
+      if(done || records.length === 0) break;
+      // Yield to the browser so scrolling/clicking/rendering stays smooth
+      // even while importing millions of records. Safe here because the
+      // previous batch's transaction has already completed by this point.
+      await fastYield();
+    }
+    return processed;
+  },
+
+  async loadProgressFromDB(){
+    const list = await IDB.getAll(STORES.progress);
+    State.progress.clear();
+    for(const p of list){ State.progress.set(p.contentId, p); }
+  },
+
+  async loadFavoriteSeriesFromDB(){
+    const list = await IDB.getAll(STORES.favorites);
+    State.favoriteSeries.clear();
+    for(const f of list){
+      if(f.type === 'series' && f.favorito) State.favoriteSeries.add(f.key);
+    }
+  },
+
+  async addManualServer(nome, url){
+    const server = {
+      id: uid('srv'),
+      nome: nome,
+      url: url,
+      permanente: true,
+      tipoOrigem: 'manual',
+      dataCadastro: Date.now()
+    };
+    await IDB.put(STORES.servers, server);
+    State.servers.set(server.id, server);
+    return server;
+  },
+
+  async upsertAutoServer(nome, url, rawMeta){
+    // find existing automatic server with same name (to avoid duplicates)
+    let existing = null;
+    for(const [, s] of State.servers){
+      if(s.tipoOrigem === 'automatico' && s.nome === nome){
+        existing = s; break;
+      }
+    }
+    if(existing){
+      existing.url = url;
+      existing.rawMeta = rawMeta;
+      await IDB.put(STORES.servers, existing);
+      return existing;
+    }
+    const server = {
+      id: uid('srv'),
+      nome: nome,
+      url: url,
+      permanente: true,
+      tipoOrigem: 'automatico',
+      dataCadastro: Date.now(),
+      rawMeta: rawMeta
+    };
+    await IDB.put(STORES.servers, server);
+    State.servers.set(server.id, server);
+    return server;
+  },
+
+  async deleteServer(serverId){
+    const idsToRemove = await IDB.deleteAllContentForServer(serverId);
+    const idsWithProgress = idsToRemove.filter(id => State.progress.has(id));
+    for(const id of idsWithProgress){ State.progress.delete(id); }
+    await IDB.deleteMany(STORES.progress, idsWithProgress).catch(()=>{});
+
+    await IDB.delete(STORES.servers, serverId);
+    State.servers.delete(serverId);
+    await IDB.deleteByIndex(STORES.seriesSummary, 'serverId', serverId);
+    State.pageCache.clear(); State.dashboardCache = null;
+  },
+
+  substituteCredentials(url, user, pass){
+    if(!url) return url;
+    try{
+      let result = url;
+      const safeUser = encodeURIComponent(user || '');
+      const safePass = encodeURIComponent(pass || '');
+      result = result.replace(/username=xxx/gi, 'username=' + safeUser);
+      result = result.replace(/password=yyy/gi, 'password=' + safePass);
+      return result;
+    }catch(err){
+      return url;
+    }
+  },
+
+  /**
+   * Downloads a playlist with progress reporting. Returns text content.
+   * onProgress(loaded, total|null)
+   */
+  async downloadPlaylist(url, onProgress){
+    const response = await fetch(url);
+    if(!response.ok){
+      const err = new Error('HTTP ' + response.status);
+      err.status = response.status;
+      throw err;
+    }
+    const contentLengthHeader = response.headers.get('Content-Length');
+    const total = contentLengthHeader ? parseInt(contentLengthHeader, 10) : null;
+
+    if(!response.body || !response.body.getReader){
+      // fallback for environments without streaming support
+      const text = await response.text();
+      if(onProgress) onProgress(text.length, total);
+      return text;
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let received = 0;
+    let resultText = '';
+    while(true){
+      const { done, value } = await reader.read();
+      if(done) break;
+      received += value.length;
+      resultText += decoder.decode(value, { stream: true });
+      if(onProgress) onProgress(received, total);
+    }
+    resultText += decoder.decode();
+    return resultText;
+  },
+
+  /**
+   * Processes raw M3U text into content objects for a server, in batches,
+   * reporting progress. Returns array of content objects.
+   *
+   * Parsing and content-building are merged into a single batched pass over
+   * the raw lines (instead of first parsing the whole file into an `entries`
+   * array in one synchronous call, then batching over that array). For very
+   * large playlists, that upfront full-file parse was itself a long
+   * synchronous block with no progress feedback — exactly the "freezes,
+   * then the bar jumps near the end" symptom.
+   */
+  async processPlaylistText(text, serverId, onProgress){
+    const lines = text ? text.split(/\r\n|\r|\n/) : [];
+    const totalLines = lines.length;
+
+    // Fast upfront pass just to get an accurate total item count for the
+    // progress bar — cheap (no regex, no attribute parsing), unlike a full parse.
+    let total = 0;
+    for(let i=0;i<totalLines;i++){
+      const l = lines[i];
+      if(l && l.length >= 7 && l.charCodeAt(0) === 35 /* '#' */ && l.slice(0,7).toUpperCase() === '#EXTINF'){
+        total++;
+      }
+    }
+
+    const contents = [];
+    const batchSize = 4000; // lines per batch
+    let pendingExtinf = null;
+    let counts = { movie:0, series:0, live:0 };
+    let processed = 0;
+
+    for(let i=0; i<totalLines; i+=batchSize){
+      const end = Math.min(i+batchSize, totalLines);
+      for(let j=i; j<end; j++){
+        const line = lines[j];
+        if(!line) continue;
+        const trimmed = line.trim();
+        if(!trimmed) continue;
+
+        if(trimmed.charAt(0) === '#'){
+          if(/^#EXTINF/i.test(trimmed)){
+            try{ pendingExtinf = ParserModule.parseExtinfLine(trimmed); }
+            catch(err){ pendingExtinf = null; }
+          }
+          continue;
+        }
+
+        if(pendingExtinf){
+          const url = trimmed;
+          if(url){
+            try{
+              const entry = {
+                url: url,
+                name: pendingExtinf.name || url,
+                tvgId: pendingExtinf.tvgId || '',
+                tvgName: pendingExtinf.tvgName || '',
+                tvgLogo: pendingExtinf.tvgLogo || '',
+                groupTitle: pendingExtinf.groupTitle || 'Sem categoria'
+              };
+              const content = ParserModule.buildContent(entry, serverId);
+              if(content){
+                contents.push(content);
+                counts[content.tipo]++;
+              }
+              processed++;
+            }catch(err){
+              // ignore invalid entry individually, keep parsing the rest
+            }
+          }
+          pendingExtinf = null;
+        }
+      }
+      if(onProgress) onProgress(processed, total, counts);
+      await fastYield();
+    }
+    return contents;
+  },
+
+  /**
+   * Full pipeline for one server: download -> process -> save -> update indexes.
+   * statusCallback receives status updates for UI progress rendering.
+   */
+  async importServerContent(server, statusCallback){
+    const report = (patch) => { if(statusCallback) statusCallback(patch); };
+    try{
+      report({ phase:'download', status:'processing', downloaded:0, total:null, speed:0 });
+      const startTime = Date.now();
+      let lastLoaded = 0;
+      let lastTime = startTime;
+
+      const text = await ServerModule.downloadPlaylist(server.url, (loaded, total)=>{
+        const now = Date.now();
+        const dt = (now - lastTime) / 1000;
+        let speed = 0;
+        if(dt > 0.2){
+          speed = (loaded - lastLoaded) / dt;
+          lastLoaded = loaded;
+          lastTime = now;
+        }
+        report({ phase:'download', status:'processing', downloaded: loaded, total: total, speed: speed });
+      });
+
+      report({ phase:'download', status:'done', downloaded: text.length, total: text.length });
+      report({ phase:'cleanup', status:'processing' });
+
+      // Remove old contents for this server before saving new ones (update = replace contents, keep server)
+      const oldIds = await IDB.deleteAllContentForServer(server.id);
+      const oldIdsWithProgress = oldIds.filter(id => State.progress.has(id));
+      for(const id of oldIdsWithProgress){ State.progress.delete(id); }
+      await IDB.deleteMany(STORES.progress, oldIdsWithProgress).catch(()=>{});
+      await IDB.deleteByIndex(STORES.seriesSummary, 'serverId', server.id);
+
+      report({ phase:'process', status:'processing', processed:0, total:0, counts:{movie:0,series:0,live:0} });
+
+      const contents = await ServerModule.processPlaylistText(text, server.id, (processed, total, counts)=>{
+        report({ phase:'process', status:'processing', processed, total, counts });
+      });
+
+      const finalCounts = tallyCounts(contents);
+      const seriesSummaries = ParserModule.buildSeriesSummaries(contents, server.id);
+      await saveAndIndexContentsBatched(contents, undefined, (saved, saveTotal)=>{
+        report({ phase:'save', status:'processing', processed: saved, total: saveTotal, counts: finalCounts });
+      });
+      await IDB.putMany(STORES.seriesSummary, seriesSummaries);
+
+      report({ phase:'process', status:'done', processed: contents.length, total: contents.length, counts: finalCounts });
+
+      server.lastStatus = 'ok';
+      server.lastError = null;
+      try{ await IDB.put(STORES.servers, server); }catch(e){}
+
+      return { ok:true, count: contents.length };
+    }catch(err){
+      const message = err && err.status ? ('Erro ' + err.status) : (err && err.message ? err.message : 'Erro desconhecido');
+      report({ phase: 'error', status:'error', message: message });
+
+      server.lastStatus = 'error';
+      server.lastError = message;
+      try{ await IDB.put(STORES.servers, server); }catch(e){}
+
+      return { ok:false, error: err };
+    }
+  },
+
+  /**
+   * Runs importServerContent for multiple servers with a concurrency limit.
+   */
+  async importManyServers(servers, concurrency, onServerUpdate, onOverallUpdate){
+    let idx = 0;
+    let completed = 0;
+    const total = servers.length;
+    const results = [];
+
+    function updateOverall(){
+      if(onOverallUpdate) onOverallUpdate({ completed, total });
+    }
+    updateOverall();
+
+    async function worker(){
+      while(idx < servers.length){
+        const myIndex = idx++;
+        const server = servers[myIndex];
+        const result = await ServerModule.importServerContent(server, (patch)=>{
+          if(onServerUpdate) onServerUpdate(server, patch);
+        });
+        results[myIndex] = result;
+        completed++;
+        updateOverall();
+      }
+    }
+
+    const workerCount = Math.min(concurrency, servers.length) || 1;
+    const workers = [];
+    for(let i=0;i<workerCount;i++) workers.push(worker());
+    await Promise.all(workers);
+    return results;
+  },
+
+  /**
+   * Pipelined import: ALL downloads start simultaneously (no limit).
+   * As soon as each download finishes successfully, it enters a processing
+   * queue with a limited concurrency (processConcurrency). Servers whose
+   * download fails (404, network error, etc.) are marked as error and are
+   * simply skipped in the processing phase — the next successfully
+   * downloaded playlist takes its place in the queue.
+   *
+   * onFirstSuccess is called exactly once, the first time any server
+   * finishes processing successfully.
+   */
+  async importManyServersPipelined(servers, processConcurrency, onServerUpdate, onOverallUpdate, onFirstSuccess){
+    const total = servers.length;
+    let completed = 0;
+    let firstSuccessFired = false;
+    const results = new Array(total);
+
+    function updateOverall(){
+      if(onOverallUpdate) onOverallUpdate({ completed, total });
+    }
+    updateOverall();
+
+    // Simple async queue: producers (downloads) push items, consumers (processing workers) pop them.
+    const queue = [];
+    const waiters = [];
+    let remainingDownloads = total;
+    let queueClosed = false;
+
+    function pushQueue(item){
+      if(waiters.length > 0){
+        const resolve = waiters.shift();
+        resolve(item);
+      } else {
+        queue.push(item);
+      }
+    }
+    function popQueue(){
+      if(queue.length > 0){
+        return Promise.resolve(queue.shift());
+      }
+      if(queueClosed){
+        return Promise.resolve(null);
+      }
+      return new Promise(resolve => waiters.push(resolve));
+    }
+    function markDownloadSettled(){
+      remainingDownloads--;
+      if(remainingDownloads <= 0){
+        queueClosed = true;
+        while(waiters.length > 0){
+          const resolve = waiters.shift();
+          resolve(null);
+        }
+      }
+    }
+
+    // Kick off ALL downloads simultaneously (no concurrency limit).
+    servers.forEach(function(server, idx){
+      const report = function(patch){ if(onServerUpdate) onServerUpdate(server, patch); };
+      report({ phase:'download', status:'processing', downloaded:0, total:null, speed:0 });
+      let lastLoaded = 0;
+      let lastTime = Date.now();
+
+      ServerModule.downloadPlaylist(server.url, function(loaded, tot){
+        const now = Date.now();
+        const dt = (now - lastTime) / 1000;
+        let speed = 0;
+        if(dt > 0.2){
+          speed = (loaded - lastLoaded) / dt;
+          lastLoaded = loaded;
+          lastTime = now;
+        }
+        report({ phase:'download', status:'processing', downloaded: loaded, total: tot, speed: speed });
+      }).then(function(text){
+        report({ phase:'download', status:'done', downloaded: text.length, total: text.length });
+        pushQueue({ server: server, idx: idx, text: text });
+        markDownloadSettled();
+      }).catch(function(err){
+        const message = err && err.status ? ('Erro ' + err.status) : (err && err.message ? err.message : 'Erro desconhecido');
+        report({ phase:'error', status:'error', message: message });
+        results[idx] = { ok:false, error: err };
+        server.lastStatus = 'error';
+        server.lastError = message;
+        IDB.put(STORES.servers, server).catch(function(){});
+        completed++;
+        updateOverall();
+        markDownloadSettled();
+      });
+    });
+
+    // Processing workers with limited concurrency, pulling from the queue as downloads complete.
+    async function processingWorker(){
+      while(true){
+        const item = await popQueue();
+        if(item === null) break; // queue closed and drained: nothing left to process
+        const server = item.server;
+        const idx = item.idx;
+        const text = item.text;
+        const report = function(patch){ if(onServerUpdate) onServerUpdate(server, patch); };
+
+        try{
+          report({ phase:'cleanup', status:'processing' });
+
+          const oldIds = await IDB.deleteAllContentForServer(server.id);
+          const oldIdsWithProgress = oldIds.filter(function(id){ return State.progress.has(id); });
+          for(const id of oldIdsWithProgress){ State.progress.delete(id); }
+          await IDB.deleteMany(STORES.progress, oldIdsWithProgress).catch(function(){});
+          await IDB.deleteByIndex(STORES.seriesSummary, 'serverId', server.id);
+
+          report({ phase:'process', status:'processing', processed:0, total:0, counts:{movie:0,series:0,live:0} });
+
+          const contents = await ServerModule.processPlaylistText(text, server.id, function(processed, tot, counts){
+            report({ phase:'process', status:'processing', processed: processed, total: tot, counts: counts });
+          });
+
+          const finalCounts = tallyCounts(contents);
+          const seriesSummaries = ParserModule.buildSeriesSummaries(contents, server.id);
+          await saveAndIndexContentsBatched(contents, undefined, function(saved, saveTotal){
+            report({ phase:'save', status:'processing', processed: saved, total: saveTotal, counts: finalCounts });
+          });
+          await IDB.putMany(STORES.seriesSummary, seriesSummaries);
+
+          report({ phase:'process', status:'done', processed: contents.length, total: contents.length, counts: finalCounts });
+          results[idx] = { ok:true, count: contents.length };
+          server.lastStatus = 'ok';
+          server.lastError = null;
+          IDB.put(STORES.servers, server).catch(function(){});
+
+          if(!firstSuccessFired){
+            firstSuccessFired = true;
+            if(onFirstSuccess) onFirstSuccess();
+          }
+        }catch(err){
+          const message = err && err.message ? err.message : 'Erro ao processar playlist';
+          report({ phase:'error', status:'error', message: message });
+          results[idx] = { ok:false, error: err };
+          server.lastStatus = 'error';
+          server.lastError = message;
+          IDB.put(STORES.servers, server).catch(function(){});
+        }
+
+        completed++;
+        updateOverall();
+      }
+    }
+
+    const workerCount = Math.min(processConcurrency, total) || 1;
+    const workers = [];
+    for(let i=0;i<workerCount;i++) workers.push(processingWorker());
+    await Promise.all(workers);
+    return results;
+  }
+};
+
+/* ======================================================================
+   RAW JSON MODULE (automatic servers)
+   ====================================================================== */
+const RawModule = {
+  async fetchAndParseRaw(rawUrl){
+    const response = await fetch(rawUrl);
+    if(!response.ok){
+      throw new Error('Falha ao baixar JSON Raw (HTTP ' + response.status + ')');
+    }
+    const text = await response.text();
+    let json;
+    try{
+      json = JSON.parse(text);
+    }catch(err){
+      throw new Error('JSON Raw inválido');
+    }
+    if(typeof json !== 'object' || json === null || Array.isArray(json)){
+      throw new Error('Formato de JSON Raw inesperado (esperado objeto chave->url)');
+    }
+    return json;
+  },
+
+  /**
+   * Given the raw json { NAME: url, ... }, user, pass -> creates/updates
+   * automatic server records (permanent) and returns array of server objects.
+   */
+  async buildServersFromRaw(json, user, pass, rawUrl){
+    const serverObjs = [];
+    for(const key in json){
+      if(!Object.prototype.hasOwnProperty.call(json, key)) continue;
+      const originalUrl = json[key];
+      if(typeof originalUrl !== 'string' || !originalUrl) continue;
+      const finalUrl = ServerModule.substituteCredentials(originalUrl, user, pass);
+      const server = await ServerModule.upsertAutoServer(key, finalUrl, {
+        rawUrl: rawUrl,
+        originalUrlTemplate: originalUrl
+      });
+      serverObjs.push(server);
+    }
+    return serverObjs;
+  }
+};
+
+/* ======================================================================
+   PROGRESS MODULE
+   ====================================================================== */
+const ProgressModule = {
+  async saveProgress(contentId, currentTime, duration){
+    if(!contentId) return;
+    const pct = duration > 0 ? Math.min(100, (currentTime/duration)*100) : 0;
+    const concluded = pct >= 95;
+    const progress = {
+      contentId: contentId,
+      currentTime: currentTime,
+      duration: duration,
+      porcentagem: pct,
+      dataUltimaReproducao: Date.now(),
+      concluido: concluded
+    };
+    State.progress.set(contentId, progress);
+    State.dashboardCache = null;
+    try{ await IDB.put(STORES.progress, progress); }catch(err){}
+  },
+  getProgress(contentId){
+    return State.progress.get(contentId) || null;
+  },
+  getContinueWatchingCount(){
+    let count = 0;
+    for(const [, prog] of State.progress){ if(!prog.concluido && prog.porcentagem > 0) count++; }
+    return count;
+  },
+  async getContinueWatchingList(limit){
+    const entries = [];
+    for(const [contentId, prog] of State.progress){
+      if(prog.concluido) continue;
+      if(prog.porcentagem <= 0) continue;
+      entries.push({ contentId, prog });
+    }
+    entries.sort((a,b)=> b.prog.dataUltimaReproducao - a.prog.dataUltimaReproducao);
+    const limited = limit ? entries.slice(0, limit) : entries;
+    const results = [];
+    for(const { contentId, prog } of limited){
+      const content = await IDB.getByKey(STORES.contents, contentId).catch(()=>null);
+      if(!content || content.tipo === 'live') continue;
+      results.push({ content, progress: prog });
+    }
+    return results;
+  }
+};
+
+/* ======================================================================
+   SERIES NAVIGATION HELPERS (próximo episódio)
+   ====================================================================== */
+async function getNextEpisode(content){
+  if(!content || content.tipo !== 'series' || !content.seriesKey) return null;
+  const episodes = await QueryModule.getEpisodesForSeries(content.seriesKey);
+  const withSE = episodes.map(c => {
+    const se = ParserModule.extractSeasonEpisode(c.nome);
+    return { content: c, season: se.season, episode: se.episode };
+  });
+  withSE.sort((a,b) => a.season - b.season || a.episode - b.episode);
+  const idx = withSE.findIndex(x => x.content.id === content.id);
+  if(idx === -1 || idx + 1 >= withSE.length) return null;
+  return withSE[idx + 1].content;
+}
+
+/* ======================================================================
+   PLAYER MODULE
+   ====================================================================== */
+const PlayerModule = {
+  hls: null,
+  mpegtsPlayer: null,
+  currentContent: null,
+  saveInterval: null,
+  retryCount: 0,
+  maxRetries: 3,
+  retryTimer: null,
+  playToken: 0, // guards against stale async callbacks after close()/reopen()
+  _videoListenersReady: false,
+  isUserPaused: false,
+  nextEpisodeContent: null,
+  _nextEpBtnReady: false,
+  _skipNativeAttempt: false,
+
+  open(content){
+    this.currentContent = content;
+    this.retryCount = 0;
+    this.isUserPaused = false;
+    this._skipNativeAttempt = false;
+    this.playToken++;
+    const overlay = qs('#player-overlay');
+    const title = qs('#player-title');
+    title.textContent = content.nome;
+    overlay.style.display = 'flex';
+
+    this._ensureVideoListeners();
+    this._ensureNextEpisodeButton();
+    this.cleanup();
+    this.hideFallbackBar();
+    this._startPlayback(content, this.playToken);
+    this._updateNextEpisodeButton(content);
+  },
+
+  _ensureNextEpisodeButton(){
+    if(this._nextEpBtnReady) return;
+    const btn = qs('#player-next-episode');
+    btn.addEventListener('click', ()=>{
+      if(!this.nextEpisodeContent) return;
+      // Marca o episódio que está sendo pulado como assistido, mesmo que
+      // o usuário não tenha chegado ao fim dele — ele escolheu avançar.
+      if(this.currentContent){
+        ProgressModule.saveProgress(this.currentContent.id, 1, 1);
+      }
+      this.open(this.nextEpisodeContent);
+    });
+    this._nextEpBtnReady = true;
+  },
+
+  async _updateNextEpisodeButton(content){
+    const btn = qs('#player-next-episode');
+    if(content && content.tipo === 'series'){
+      const token = this.playToken;
+      const next = await getNextEpisode(content);
+      if(token !== this.playToken) return; // usuário já trocou de vídeo
+      this.nextEpisodeContent = next;
+      btn.style.display = next ? 'inline-flex' : 'none';
+    } else {
+      this.nextEpisodeContent = null;
+      btn.style.display = 'none';
+    }
+  },
+
+  _ensureVideoListeners(){
+    if(this._videoListenersReady) return;
+    const video = qs('#video-player');
+    video.addEventListener('playing', ()=> this.hideBuffering());
+    video.addEventListener('waiting', ()=> this.showBuffering());
+    video.addEventListener('timeupdate', ()=>{ this.lastTimeUpdateAt = Date.now(); });
+    // The stall watchdog only makes sense while the video is actually
+    // supposed to be playing. Without this, pausing a live channel for more
+    // than ~12s made the watchdog think playback had frozen and it would
+    // force a reconnect — which auto-resumed playback ("despausa sozinho").
+    video.addEventListener('pause', ()=>{ this.isUserPaused = true; });
+    video.addEventListener('play', ()=>{ this.isUserPaused = false; this.lastTimeUpdateAt = Date.now(); });
+
+    // 'loadedmetadata' and 'ended' are attached ONCE here (not per open()/
+    // _startPlayback call) and always read this.currentContent/this.playToken
+    // at fire-time. Attaching them fresh on every open() without ever
+    // removing the previous ones would accumulate duplicate listeners on
+    // the same persistent <video> element across sessions (e.g. duplicated
+    // "próximo episódio" toasts, duplicated progress saves).
+    video.addEventListener('loadedmetadata', ()=>{
+      const content = this.currentContent;
+      if(!content || content.tipo === 'live') return;
+      const prog = ProgressModule.getProgress(content.id);
+      if(prog && prog.currentTime && video.duration && prog.currentTime < video.duration - 5){
+        video.currentTime = prog.currentTime;
+      }
+    });
+
+    video.addEventListener('ended', ()=>{
+      const content = this.currentContent;
+      if(!content || content.tipo === 'live') return;
+      if(video.duration && !isNaN(video.duration)){
+        ProgressModule.saveProgress(content.id, video.duration, video.duration);
+      }
+      if(content.tipo === 'series' && this.nextEpisodeContent){
+        const nextContent = this.nextEpisodeContent;
+        const myToken = this.playToken;
+        showToast('Reproduzindo próximo episódio...', 'success');
+        setTimeout(()=>{
+          if(myToken === this.playToken) this.open(nextContent);
+        }, 1200);
+      }
+    });
+
+    this._videoListenersReady = true;
+  },
+
+  _startPlayback(content, token){
+    if(token !== this.playToken) return; // a newer open()/close() happened meanwhile
+    const video = qs('#video-player');
+    this.showBuffering();
+
+    const url = content.url;
+    const isLive = content.tipo === 'live';
+    const looksHls = /\.m3u8(\?|$)/i.test(url);
+
+    if(looksHls && window.Hls && Hls.isSupported()){
+      this.hls = new Hls();
+      this.hls.loadSource(url);
+      this.hls.attachMedia(video);
+      this.hls.on(Hls.Events.MANIFEST_PARSED, ()=>{
+        video.play().catch(()=>{});
+      });
+      this.hls.on(Hls.Events.ERROR, (event, data)=>{
+        if(!data || !data.fatal) return;
+        if(data.type === Hls.ErrorTypes.NETWORK_ERROR){
+          this._retryOrFallback(content, token, 'Falha de rede ao carregar o stream HLS.');
+        } else if(data.type === Hls.ErrorTypes.MEDIA_ERROR){
+          try{ this.hls.recoverMediaError(); }catch(e){ this._retryOrFallback(content, token, 'Erro de mídia no stream HLS.'); }
+        } else {
+          this._retryOrFallback(content, token, 'Erro ao reproduzir stream HLS.');
+        }
+      });
+    } else if(looksHls && video.canPlayType('application/vnd.apple.mpegurl')){
+      // Safari native HLS support
+      video.src = url;
+      video.addEventListener('error', ()=> this._retryOrFallback(content, token, 'Erro ao reproduzir HLS neste navegador.'), { once:true });
+      video.play().catch(()=>{});
+    } else if(isLive){
+      // Ambiguous case: a "live" item with no .m3u8 manifest. Two very
+      // different realities hide behind this in practice:
+      //  1) a genuine continuous raw MPEG-TS channel (needs mpegts.js), or
+      //  2) an IPTV "movie" URL with no visible extension that actually
+      //     redirects to a real, finite MP4/MKV file (common with Xtream
+      //     Codes panels) — this plays fine as a normal <video src>.
+      // We try native playback first: it's cheap, fails fast on a genuine
+      // raw TS stream, and — importantly — native <video> playback does
+      // NOT require CORS headers from the server (only JS-based libraries
+      // like mpegts.js/hls.js do, since they fetch() the bytes manually to
+      // demux them). So trying native first also sidesteps CORS entirely
+      // for anything the browser can already play on its own.
+      if(this._skipNativeAttempt){
+        this._startMpegts(content, token, video, url);
+      } else {
+        this._tryNativeThenMpegts(content, token, video, url);
+      }
+    } else {
+      // Movies/episodes with a recognized container (mp4/webm/etc.)
+      video.src = url;
+      video.addEventListener('error', ()=> this._retryOrFallback(content, token, 'Erro ao carregar o arquivo de vídeo.'), { once:true });
+      video.play().catch(()=>{});
+    }
+
+    if(!isLive){
+      this.saveInterval = setInterval(()=>{
+        if(video.duration && !isNaN(video.duration)){
+          ProgressModule.saveProgress(content.id, video.currentTime, video.duration);
+        }
+      }, 4000);
+    }
+  },
+
+  _tryNativeThenMpegts(content, token, video, url){
+    const onNativeError = ()=>{
+      video.removeEventListener('error', onNativeError);
+      if(token !== this.playToken) return;
+      this._skipNativeAttempt = true; // já sabemos que falha; não tentar de novo nos retries
+      video.removeAttribute('src');
+      try{ video.load(); }catch(e){}
+      this._startMpegts(content, token, video, url);
+    };
+    video.addEventListener('error', onNativeError, { once:true });
+    video.src = url;
+    video.play().catch(()=>{});
+  },
+
+  _startMpegts(content, token, video, url){
+    // Raw MPEG-TS stream (no .m3u8 manifest, and native playback didn't
+    // work) — typical of Xtream Codes "output=ts" live channels. Browsers
+    // cannot play raw TS via <video src>, so we use mpegts.js which remuxes
+    // MPEG-TS into fragmented MP4 via MediaSource Extensions.
+    if(window.mpegts && mpegts.isSupported()){
+      try{
+        this.mpegtsPlayer = mpegts.createPlayer({
+          type: 'mpegts',
+          isLive: true,
+          url: url
+        }, {
+          enableWorker: true,
+          // Prioriza estabilidade sobre latência mínima: "chasing" agressivo da borda
+          // ao vivo faz o player forçar saltos/avanços constantes em conexões
+          // instáveis, o que aparece como travamentos frequentes.
+          liveBufferLatencyChasing: false,
+          liveBufferLatencyMaxLatency: 6,
+          liveBufferLatencyMinRemain: 2,
+          // Buffer inicial maior = mais cushion antes de começar a tocar,
+          // reduzindo engasgos por pequenas variações de rede.
+          enableStashBuffer: true,
+          stashInitialSize: 512 * 1024,
+          // Sem isso, o SourceBuffer de um stream ao vivo cresce indefinidamente
+          // em memória, deixando o navegador cada vez mais lento/travado quanto
+          // mais tempo o canal fica aberto. Isso é a causa mais comum de
+          // "trava depois de um tempo assistindo".
+          autoCleanupSourceBuffer: true,
+          autoCleanupMaxBackwardDuration: 30,
+          autoCleanupMinBackwardDuration: 15
+        });
+        this.mpegtsPlayer.attachMediaElement(video);
+        this.mpegtsPlayer.on(mpegts.Events.ERROR, (errType, errDetail, errInfo)=>{
+          const msg = this._diagnoseStreamError(errType, errDetail, errInfo);
+          this._retryOrFallback(content, token, msg);
+        });
+        this.mpegtsPlayer.load();
+        this.mpegtsPlayer.play().catch(()=>{});
+
+        // Watchdog: alguns travamentos de stream ao vivo não disparam evento de
+        // erro nenhum — o vídeo simplesmente para de avançar. Aqui checamos
+        // periodicamente se o tempo do vídeo está evoluindo; se ficar parado
+        // por muito tempo (e o usuário NÃO tiver pausado manualmente),
+        // forçamos uma reconexão automática.
+        this.lastTimeUpdateAt = Date.now();
+        this.stallWatchdog = setInterval(()=>{
+          if(token !== this.playToken){ clearInterval(this.stallWatchdog); return; }
+          if(this.isUserPaused) return; // pausa manual não é travamento
+          const stalledFor = Date.now() - (this.lastTimeUpdateAt || Date.now());
+          if(stalledFor > 12000){
+            clearInterval(this.stallWatchdog);
+            this.stallWatchdog = null;
+            this._retryOrFallback(content, token, 'O stream travou e não retomou sozinho.');
+          }
+        }, 4000);
+      }catch(err){
+        this._retryOrFallback(content, token, 'Não foi possível iniciar o player para este canal.');
+      }
+    } else {
+      this.hideBuffering();
+      showToast('Seu navegador não suporta reprodução deste formato (MPEG-TS via MSE).', 'error');
+      this.showFallbackBar(url, 'Seu navegador não suporta este formato. Copie o link e use um player externo (ex: VLC).');
+    }
+  },
+
+  /**
+   * Tries to distinguish a CORS/network problem (which no client-side library
+   * can bypass — it's a browser security restriction controlled by the
+   * remote server) from a codec/decoding problem, to give the user an
+   * accurate diagnosis instead of a generic error.
+   */
+  _diagnoseStreamError(errType, errDetail, errInfo){
+    const detail = String(errDetail || '').toLowerCase();
+    const info = errInfo && errInfo.msg ? String(errInfo.msg).toLowerCase() : '';
+    if(detail.indexOf('network') !== -1 || info.indexOf('fetch') !== -1 || info.indexOf('cors') !== -1 || info.indexOf('failed to fetch') !== -1){
+      return 'Não foi possível acessar o stream (rede ou CORS). Muitos servidores IPTV não permitem acesso direto do navegador — isso não é um erro do app, é uma restrição do servidor de origem.';
+    }
+    if(detail.indexOf('codec') !== -1 || detail.indexOf('demux') !== -1 || detail.indexOf('format') !== -1){
+      return 'O formato/codec deste canal não é compatível com reprodução no navegador.';
+    }
+    return 'Não foi possível reproduzir este canal no navegador.';
+  },
+
+  _retryOrFallback(content, token, message){
+    if(token !== this.playToken) return;
+    if(this.retryCount < this.maxRetries){
+      this.retryCount++;
+      showToast('Tentando reconectar ao stream... (' + this.retryCount + '/' + this.maxRetries + ')', 'error');
+      this.cleanup();
+      this.retryTimer = setTimeout(()=>{
+        if(token !== this.playToken) return;
+        this._startPlayback(content, token);
+      }, 1500 * this.retryCount);
+    } else {
+      this.hideBuffering();
+      showToast(message, 'error');
+      this.showFallbackBar(content.url, message + ' Copie o link e abra em um player externo (ex: VLC).');
+    }
+  },
+
+  showBuffering(){
+    const b = qs('#player-buffering');
+    if(b) b.style.display = 'flex';
+  },
+  hideBuffering(){
+    const b = qs('#player-buffering');
+    if(b) b.style.display = 'none';
+  },
+
+  showFallbackBar(url, message){
+    this.hideBuffering();
+    let bar = qs('#player-fallback-bar');
+    if(!bar){
+      bar = el('div', {
+        id: 'player-fallback-bar',
+        style: 'position:absolute;bottom:0;left:0;right:0;padding:14px 20px;background:linear-gradient(0deg,rgba(0,0,0,.85),transparent);display:flex;align-items:center;gap:12px;z-index:2;flex-wrap:wrap;'
+      });
+      qs('#player-overlay').appendChild(bar);
+    }
+    bar.innerHTML = '';
+    bar.appendChild(el('span', { style:'color:#fff;font-size:13px;max-width:520px;' }, [message || 'Não foi possível reproduzir no navegador. Copie o link e abra em um player externo (ex: VLC).']));
+    const copyBtn = el('button', { class:'btn primary small' }, ['Copiar link']);
+    copyBtn.addEventListener('click', function(){
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(url).then(function(){
+          showToast('Link copiado.', 'success');
+        }).catch(function(){
+          showToast('Não foi possível copiar automaticamente. URL: ' + url, 'error');
+        });
+      } else {
+        showToast('URL: ' + url, 'error');
+      }
+    });
+    bar.appendChild(copyBtn);
+    const retryBtn = el('button', { class:'btn small' }, ['Tentar novamente'] );
+    retryBtn.addEventListener('click', ()=>{
+      if(!this.currentContent) return;
+      this.retryCount = 0;
+      this.hideFallbackBar();
+      this.playToken++;
+      this.cleanup();
+      this._startPlayback(this.currentContent, this.playToken);
+    });
+    bar.appendChild(retryBtn);
+    bar.style.display = 'flex';
+  },
+
+  hideFallbackBar(){
+    const bar = qs('#player-fallback-bar');
+    if(bar) bar.style.display = 'none';
+  },
+
+  cleanup(){
+    if(this.retryTimer){ clearTimeout(this.retryTimer); this.retryTimer = null; }
+    if(this.stallWatchdog){ clearInterval(this.stallWatchdog); this.stallWatchdog = null; }
+    const video = qs('#video-player');
+    if(this.hls){ try{ this.hls.destroy(); }catch(e){} this.hls = null; }
+    if(this.mpegtsPlayer){
+      try{ this.mpegtsPlayer.pause(); }catch(e){}
+      try{ this.mpegtsPlayer.unload(); }catch(e){}
+      try{ this.mpegtsPlayer.detachMediaElement(); }catch(e){}
+      try{ this.mpegtsPlayer.destroy(); }catch(e){}
+      this.mpegtsPlayer = null;
+    }
+    if(this.saveInterval){ clearInterval(this.saveInterval); this.saveInterval = null; }
+    try{ video.pause(); }catch(e){}
+    video.removeAttribute('src');
+    try{ video.load(); }catch(e){}
+    this.hideBuffering();
+  },
+
+  close(){
+    this.playToken++; // invalidate any pending retries/callbacks
+    const video = qs('#video-player');
+    if(this.currentContent && this.currentContent.tipo !== 'live' && video.duration && !isNaN(video.duration)){
+      ProgressModule.saveProgress(this.currentContent.id, video.currentTime, video.duration);
+    }
+    this.cleanup();
+    this.hideFallbackBar();
+    this.nextEpisodeContent = null;
+    const nextBtn = qs('#player-next-episode');
+    if(nextBtn) nextBtn.style.display = 'none';
+    qs('#player-overlay').style.display = 'none';
+    this.currentContent = null;
+    Router.render();
+  }
+};
+
+/* ======================================================================
+   RENDER HELPERS: cards, pagination, filters
+   ====================================================================== */
+function getServerName(serverId){
+  const s = State.servers.get(serverId);
+  return s ? s.nome : 'Desconhecido';
+}
+
+let categorySearchDebounceTimer = null;
+
+/**
+ * Renders a subcategory <select> together with a small text input above it
+ * to filter the option list by name — useful when a server has dozens or
+ * hundreds of group-titles. The text field only filters which options are
+ * shown; it never touches the actual applied filter (filters.category),
+ * which only changes when the user picks an option from the select.
+ */
+function renderCategorySelectWithFilter(viewKey, filters, allCategories){
+  const wrap = el('div', { style:'display:flex;flex-direction:column;gap:6px;min-width:200px;' });
+  const searchText = State.ui.categoryFilterText[viewKey] || '';
+
+  const searchInput = el('input', {
+    type:'text',
+    placeholder:'Filtrar categorias...',
+    value: searchText,
+    'data-cat-search': viewKey,
+    style:'font-size:12.5px;padding:7px 10px;'
+  });
+  searchInput.addEventListener('input', function(e){
+    const val = e.target.value;
+    const cursorPos = e.target.selectionStart;
+    clearTimeout(categorySearchDebounceTimer);
+    categorySearchDebounceTimer = setTimeout(function(){
+      State.ui.categoryFilterText[viewKey] = val;
+      Router.render();
+      // Router.render() rebuilds #content-area from scratch, which destroys
+      // and recreates this input — without this, the field loses focus on
+      // every keystroke and you'd have to click back into it each time.
+      const newInput = document.querySelector('[data-cat-search="'+viewKey+'"]');
+      if(newInput){
+        newInput.focus();
+        if(newInput.setSelectionRange){
+          try{ newInput.setSelectionRange(cursorPos, cursorPos); }catch(err){}
+        }
+      }
+    }, 150);
+  });
+  wrap.appendChild(searchInput);
+
+  const normSearch = normalizeText(searchText);
+  let visibleCats = allCategories;
+  if(normSearch){
+    visibleCats = allCategories.filter(c => normalizeText(c).indexOf(normSearch) !== -1);
+    // Always keep the currently-selected category in the list even if it
+    // doesn't match the current search text, so the select never silently
+    // "loses" the active selection from view.
+    if(filters.category !== 'all' && visibleCats.indexOf(filters.category) === -1 && allCategories.indexOf(filters.category) !== -1){
+      visibleCats = [filters.category].concat(visibleCats);
+    }
+  }
+
+  const catSelect = el('select', { onchange:function(e){ filters.category = e.target.value; filters.page=1; Router.render(); } });
+  catSelect.appendChild(el('option', { value:'all' }, ['Todas as categorias']));
+  for(const c of visibleCats){
+    const opt = el('option', { value:c }, [c]);
+    if(filters.category === c) opt.setAttribute('selected','true');
+    catSelect.appendChild(opt);
+  }
+  if(filters.category === 'all') catSelect.value = 'all';
+  wrap.appendChild(catSelect);
+
+  if(normSearch && visibleCats.length === 0){
+    wrap.appendChild(el('div', { style:'font-size:11px;color:var(--text-2);' }, ['Nenhuma categoria encontrada']));
+  }
+
+  return wrap;
+}
+
+function buildCategoryOptions(type){
+  const cats = new Set();
+  for(const [key] of State.indexes.contentsByCategory){
+    const parts = key.split('::');
+    if(parts[0] === type) cats.add(parts.slice(1).join('::'));
+  }
+  return Array.from(cats).sort();
+}
+
+function buildServerOptionsForType(type){
+  const serverIds = new Set();
+  for(const [key] of State.indexes.contentsByTypeServer){
+    const parts = key.split('::');
+    if(parts[0] === type) serverIds.add(parts[1]);
+  }
+  return Array.from(serverIds).map(id => ({ id, nome: getServerName(id) })).sort((a,b)=>a.nome.localeCompare(b.nome));
+}
+
+function renderContentCard(content){
+  const card = el('div', { class:'content-card' });
+  const thumb = el('div', { class:'thumb' });
+  if(content.logo){
+    const img = el('img', { loading:'lazy' });
+    img.src = content.logo;
+    img.onerror = function(){ img.remove(); thumb.appendChild(el('div',{class:'ph'},['🎬'])); };
+    thumb.appendChild(img);
+  } else {
+    thumb.appendChild(el('div',{class:'ph'},['🎬']));
+  }
+  if(content.tipo === 'live'){
+    thumb.appendChild(el('div', { class:'live-badge' }, ['AO VIVO']));
+  }
+  const favBtn = el('button', { class:'fav-btn' + (content.favorito ? ' active':''), onclick: async function(e){
+    e.stopPropagation();
+    await IndexModule.toggleFavoriteContent(content);
+    favBtn.className = 'fav-btn' + (content.favorito ? ' active' : '');
+    favBtn.textContent = content.favorito ? '★' : '☆';
+    updateSidebarCounts();
+    const filteringByFav = (content.tipo === 'movie' && State.ui.currentView === 'movies' && State.ui.filters.movie.favoritesOnly)
+      || (content.tipo === 'live' && State.ui.currentView === 'live' && State.ui.filters.live.favoritesOnly)
+      || State.ui.currentView === 'favorites';
+    if(!content.favorito && filteringByFav) card.remove();
+  }}, [content.favorito ? '★' : '☆']);
+  thumb.appendChild(favBtn);
+
+  if(content.tipo !== 'live'){
+    const prog = ProgressModule.getProgress(content.id);
+    if(prog && prog.porcentagem > 0){
+      const pbar = el('div', { class:'progress-bar-mini' }, [el('div',{class:'fill', style:'width:'+Math.min(100,prog.porcentagem)+'%'})]);
+      thumb.appendChild(pbar);
+    }
+  }
+
+  card.appendChild(thumb);
+  const info = el('div', { class:'info' });
+  info.appendChild(el('div', { class:'name' }, [content.nome]));
+  const meta = el('div', { class:'meta' });
+  meta.appendChild(el('span', { class:'server-tag', title: getServerName(content.serverId) }, [getServerName(content.serverId)]));
+  info.appendChild(meta);
+  card.appendChild(info);
+
+  card.addEventListener('click', function(){
+    if(activeSearchOverlay) activeSearchOverlay.close(true);
+    PlayerModule.open(content);
+  });
+
+  return card;
+}
+
+function renderSeriesCard(entry){
+  const card = el('div', { class:'content-card' });
+  const thumb = el('div', { class:'thumb' });
+  if(entry.logo){
+    const img = el('img', { loading:'lazy' });
+    img.src = entry.logo;
+    img.onerror = function(){ img.remove(); thumb.appendChild(el('div',{class:'ph'},['🎬'])); };
+    thumb.appendChild(img);
+  } else {
+    thumb.appendChild(el('div',{class:'ph'},['🎬']));
+  }
+  const isFav = !!entry.favorito;
+  const favBtn = el('button', { class:'fav-btn' + (isFav ? ' active':''), onclick: async function(e){
+    e.stopPropagation();
+    await IndexModule.toggleFavoriteSeries(entry.key);
+    entry.favorito = !isFav;
+    favBtn.className = 'fav-btn' + (entry.favorito ? ' active' : '');
+    favBtn.textContent = entry.favorito ? '★' : '☆';
+    updateSidebarCounts();
+    const filteringByFav = (State.ui.currentView === 'series' && State.ui.filters.series.favoritesOnly) || State.ui.currentView === 'favorites';
+    if(!entry.favorito && filteringByFav) card.remove();
+  }}, [isFav ? '★' : '☆']);
+  thumb.appendChild(favBtn);
+  card.appendChild(thumb);
+
+  const info = el('div', { class:'info' });
+  info.appendChild(el('div', { class:'name' }, [entry.name]));
+  const meta = el('div', { class:'meta' });
+  meta.appendChild(el('span', { class:'server-tag', title:getServerName(entry.serverId) }, [getServerName(entry.serverId)]));
+  const epTempText = entry.seasonCount ? (entry.episodeCount||0) + ' ep. • ' + entry.seasonCount + ' temp.' : (entry.episodeCount||0) + ' ep.';
+  meta.appendChild(el('span', { class:'cat-tag' }, [epTempText]));
+  info.appendChild(meta);
+  card.appendChild(info);
+
+  card.addEventListener('click', function(){
+    if(activeSearchOverlay) activeSearchOverlay.close(true);
+    State.ui.activeSeriesKey = entry.key;
+    State.ui.currentView = 'series-detail';
+    Router.render();
+  });
+
+  return card;
+}
+
+function renderPagination(currentPage, totalPages, onChange){
+  const wrap = el('div', { class:'pagination' });
+  if(totalPages <= 1) return wrap;
+  const maxButtons = 7;
+  let start = Math.max(1, currentPage - 3);
+  let end = Math.min(totalPages, start + maxButtons - 1);
+  start = Math.max(1, end - maxButtons + 1);
+
+  wrap.appendChild(el('button', { disabled: currentPage===1 ? 'true':null, onclick:()=>onChange(1) }, ['«']));
+  wrap.appendChild(el('button', { disabled: currentPage===1 ? 'true':null, onclick:()=>onChange(Math.max(1,currentPage-1)) }, ['‹']));
+  for(let p=start; p<=end; p++){
+    const b = el('button', { class: p===currentPage?'active':'', onclick:((pp)=>()=>onChange(pp))(p) }, [String(p)]);
+    wrap.appendChild(b);
+  }
+  wrap.appendChild(el('button', { disabled: currentPage===totalPages ? 'true':null, onclick:()=>onChange(Math.min(totalPages,currentPage+1)) }, ['›']));
+  wrap.appendChild(el('button', { disabled: currentPage===totalPages ? 'true':null, onclick:()=>onChange(totalPages) }, ['»']));
+  return wrap;
+}
+
+function renderEmptyState(icon, title, msg){
+  return el('div', { class:'empty-state' }, [
+    el('div', { class:'big-ic' }, [icon]),
+    el('h3', {}, [title]),
+    el('p', {}, [msg])
+  ]);
+}
+
+/* ======================================================================
+   VIEW: LIST (movies / live) with filters + pagination
+   ====================================================================== */
+async function renderListView(type, titleLabel, container){
+  const filters = State.ui.filters[type];
+  container.appendChild(el('div', { class:'section-header' }, [ el('h2', {}, [titleLabel]) ]));
+
+  const cacheKey = pageCacheKey(type, filters);
+  let cached = State.pageCache.get(cacheKey);
+  let serverIds, catOptions, pageResult;
+
+  if(cached){
+    ({ serverIds, catOptions, pageResult } = cached);
+  } else {
+    const loading = el('div', { class:'loader-inline' }, [el('div',{class:'spinner'}), 'Carregando...']);
+    container.appendChild(loading);
+    const pageSize = State.settings.pageSize || PAGE_SIZE_DEFAULT;
+    [serverIds, catOptions, pageResult] = await Promise.all([
+      QueryModule.getServersForType(type),
+      QueryModule.getCategoriesForType(type),
+      QueryModule.getContentPage(type, filters, filters.page, pageSize)
+    ]);
+    if(State.ui.currentView !== (type === 'movie' ? 'movies' : 'live')) return; // usuário já navegou pra outro lugar
+    loading.remove();
+    State.pageCache.set(cacheKey, { serverIds, catOptions, pageResult });
+  }
+
+  if(serverIds.length > 0){
+    const chipRow = el('div', { class:'chip-row' });
+    chipRow.appendChild(el('button', { class:'chip' + (filters.server==='all'?' active':''), onclick:()=>{ filters.server='all'; filters.page=1; Router.render(); } }, ['Todos']));
+    for(const sid of serverIds){
+      chipRow.appendChild(el('button', { class:'chip' + (filters.server===sid?' active':''), onclick:((id)=>()=>{ filters.server=id; filters.page=1; Router.render(); })(sid) }, [getServerName(sid)]));
+    }
+    container.appendChild(chipRow);
+  }
+
+  const filterRow = el('div', { class:'filter-row' });
+  filterRow.appendChild(renderCategorySelectWithFilter(type, filters, catOptions));
+  filterRow.appendChild(el('button', { class:'chip' + (filters.favoritesOnly?' active':''), onclick:()=>{ filters.favoritesOnly = !filters.favoritesOnly; filters.page=1; Router.render(); } }, ['★ Favoritos']));
+  container.appendChild(filterRow);
+
+  const pageSize = State.settings.pageSize || PAGE_SIZE_DEFAULT;
+  const totalPages = Math.max(1, Math.ceil(pageResult.total / pageSize));
+  if(filters.page > totalPages && totalPages >= 1){ filters.page = totalPages; Router.render(); return; }
+
+  if(pageResult.total === 0){
+    container.appendChild(renderEmptyState('📭', 'Nenhum conteúdo encontrado', 'Nenhum conteúdo importado ainda com esses filtros.'));
+    return;
+  }
+
+  const grid = el('div', { class:'card-grid' });
+  for(const content of pageResult.items){ grid.appendChild(renderContentCard(content)); }
+  container.appendChild(grid);
+  container.appendChild(renderPagination(filters.page, totalPages, (p)=>{ filters.page = p; Router.render(); window.scrollTo(0,0); }));
+}
+
+/* ======================================================================
+   VIEW: SERIES LIST
+   ====================================================================== */
+async function renderSeriesListView(container){
+  const filters = State.ui.filters.series;
+  container.appendChild(el('div', { class:'section-header' }, [ el('h2', {}, ['Séries']) ]));
+
+  const cacheKey = pageCacheKey('series', filters);
+  let cached = State.pageCache.get(cacheKey);
+  let serverIds, catOptions, pageResult;
+
+  if(cached){
+    ({ serverIds, catOptions, pageResult } = cached);
+  } else {
+    const loading = el('div', { class:'loader-inline' }, [el('div',{class:'spinner'}), 'Carregando...']);
+    container.appendChild(loading);
+    const pageSize = State.settings.pageSize || PAGE_SIZE_DEFAULT;
+    [serverIds, catOptions, pageResult] = await Promise.all([
+      QueryModule.getServersForSeries(),
+      QueryModule.getCategoriesForSeries(),
+      QueryModule.getSeriesPage(filters, filters.page, pageSize)
+    ]);
+    if(State.ui.currentView !== 'series') return;
+    loading.remove();
+    State.pageCache.set(cacheKey, { serverIds, catOptions, pageResult });
+  }
+
+  if(serverIds.length > 0){
+    const chipRow = el('div', { class:'chip-row' });
+    chipRow.appendChild(el('button', { class:'chip'+(filters.server==='all'?' active':''), onclick:()=>{ filters.server='all'; filters.page=1; Router.render(); } }, ['Todos']));
+    for(const sid of serverIds){
+      chipRow.appendChild(el('button', { class:'chip'+(filters.server===sid?' active':''), onclick:((id)=>()=>{ filters.server=id; filters.page=1; Router.render(); })(sid) }, [getServerName(sid)]));
+    }
+    container.appendChild(chipRow);
+  }
+
+  const filterRow = el('div', { class:'filter-row' });
+  filterRow.appendChild(renderCategorySelectWithFilter('series', filters, catOptions));
+  filterRow.appendChild(el('button', { class:'chip'+(filters.favoritesOnly?' active':''), onclick:()=>{ filters.favoritesOnly=!filters.favoritesOnly; filters.page=1; Router.render(); } }, ['★ Favoritos']));
+  container.appendChild(filterRow);
+
+  const pageSize = State.settings.pageSize || PAGE_SIZE_DEFAULT;
+  const totalPages = Math.max(1, Math.ceil(pageResult.total / pageSize));
+  if(filters.page > totalPages && totalPages >= 1){ filters.page = totalPages; Router.render(); return; }
+
+  if(pageResult.total === 0){
+    container.appendChild(renderEmptyState('📺', 'Nenhuma série encontrada', 'Nenhuma série importada ainda com esses filtros.'));
+    return;
+  }
+
+  const grid = el('div', { class:'card-grid' });
+  for(const entry of pageResult.items){ grid.appendChild(renderSeriesCard(entry)); }
+  container.appendChild(grid);
+  container.appendChild(renderPagination(filters.page, totalPages, (p)=>{ filters.page=p; Router.render(); window.scrollTo(0,0); }));
+}
+
+/* ======================================================================
+   VIEW: SERIES DETAIL
+   ====================================================================== */
+async function renderSeriesDetailView(container){
+  const key = State.ui.activeSeriesKey;
+  const loading = el('div', { class:'loader-inline' }, [el('div',{class:'spinner'}), 'Carregando...']);
+  container.appendChild(loading);
+
+  const [entry, episodes, favList] = await Promise.all([
+    IDB.getByKey(STORES.seriesSummary, key),
+    QueryModule.getEpisodesForSeries(key),
+    IDB.getAll(STORES.favorites)
+  ]);
+  if(State.ui.currentView !== 'series-detail') return;
+  loading.remove();
+
+  if(!entry){
+    container.appendChild(el('button', { class:'btn', onclick:()=>{ State.ui.currentView='series'; Router.render(); } }, ['← Voltar']));
+    container.appendChild(renderEmptyState('❓','Série não encontrada','Esta série pode ter sido removida.'));
+    return;
+  }
+
+  container.appendChild(el('button', { class:'btn', style:'margin-bottom:16px;', onclick:()=>{ State.ui.currentView='series'; Router.render(); } }, ['← Voltar para Séries']));
+
+  const header = el('div', { class:'series-header' });
+  const cover = el('div', { class:'cover' });
+  if(entry.logo){
+    const img = el('img'); img.src = entry.logo; img.onerror=()=>{img.remove();};
+    cover.appendChild(img);
+  }
+  header.appendChild(cover);
+
+  const info2 = el('div', { class:'sinfo2' });
+  info2.appendChild(el('h2', {}, [entry.name]));
+  info2.appendChild(el('div', { style:'color:var(--text-2);font-size:13px;margin-bottom:10px;' }, ['Servidor: ' + getServerName(entry.serverId)]));
+  const isFav = favList.some(f => f.type==='series' && f.id===entry.key);
+  const favDetailBtn = el('button', { class:'btn' + (isFav?' primary':'') }, [(isFav?'★':'☆') + ' Favorito']);
+  let favState = isFav;
+  favDetailBtn.addEventListener('click', async function(){
+    await IndexModule.toggleFavoriteSeries(entry.key);
+    favState = !favState;
+    favDetailBtn.className = 'btn' + (favState?' primary':'');
+    favDetailBtn.textContent = (favState?'★':'☆') + ' Favorito';
+    updateSidebarCounts();
+  });
+  info2.appendChild(favDetailBtn);
+  header.appendChild(info2);
+  container.appendChild(header);
+
+  const seasons = new Map();
+  for(const content of episodes){
+    const se = ParserModule.extractSeasonEpisode(content.nome);
+    if(!seasons.has(se.season)) seasons.set(se.season, []);
+    seasons.get(se.season).push({ content, ep: se.episode });
+  }
+  const sortedSeasons = Array.from(seasons.keys()).sort((a,b)=>a-b);
+
+  const seasonsWrap = el('div');
+  container.appendChild(seasonsWrap);
+  // Se houver mais de uma temporada, começa tudo recolhido (o usuário
+  // escolhe o que expandir). Com uma única temporada, já abre ela.
+  let openSeasonNum = sortedSeasons.length === 1 ? sortedSeasons[0] : null;
+
+  function renderEpisodeRow(content){
+    const prog = ProgressModule.getProgress(content.id);
+    const row = el('div', { class:'episode-row', onclick:()=>PlayerModule.open(content) });
+    const eth = el('div', { class:'eth' });
+    if(content.logo){
+      const img = el('img'); img.src = content.logo; img.onerror=()=>img.remove();
+      eth.appendChild(img);
+    }
+    row.appendChild(eth);
+    row.appendChild(el('div', { class:'ename' }, [content.nome]));
+    let statusText = 'Não iniciado';
+    let statusClass = '';
+    if(prog){
+      if(prog.concluido){ statusText = 'Assistido ✓'; statusClass='done'; }
+      else if(prog.porcentagem > 0){ statusText = Math.round(prog.porcentagem) + '%'; }
+    }
+    row.appendChild(el('div', { class:'estatus'+(statusClass?' '+statusClass:'') }, [statusText]));
+    row.appendChild(el('div', { class:'eprog' }, [el('div',{class:'f', style:'width:'+(prog?Math.min(100,prog.porcentagem):0)+'%'})]));
+    return row;
+  }
+
+  function renderSeasonsAccordion(){
+    seasonsWrap.innerHTML = '';
+    for(const seasonNum of sortedSeasons){
+      const isOpen = openSeasonNum === seasonNum;
+      const seasonBlock = el('div', {
+        class:'season-block',
+        style:'margin-bottom:10px;background:var(--bg-1);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;'
+      });
+      const seasonHeader = el('div', {
+        style:'display:flex;align-items:center;justify-content:space-between;cursor:pointer;padding:12px 16px;'
+      }, [
+        el('h4', { style:'margin:0;' }, ['Temporada ' + seasonNum]),
+        el('span', { style:'display:flex;align-items:center;gap:10px;color:var(--text-2);font-size:13px;' }, [
+          seasons.get(seasonNum).length + ' ep.',
+          el('span', { style:'display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:var(--bg-3);color:var(--text-0);font-size:16px;font-weight:700;line-height:1;' }, [isOpen ? '−' : '+'])
+        ])
+      ]);
+      seasonHeader.addEventListener('click', function(){
+        openSeasonNum = isOpen ? null : seasonNum; // clicar na mesma fecha; clicar em outra troca
+        renderSeasonsAccordion();
+      });
+      seasonBlock.appendChild(seasonHeader);
+
+      if(isOpen){
+        // Indentação + borda à esquerda pra deixar claro que os episódios
+        // estão "dentro" da temporada, não soltos na página.
+        const epsWrap = el('div', { style:'padding:4px 14px 14px 20px;border-left:3px solid var(--accent);margin:0 14px 14px;' });
+        const eps = seasons.get(seasonNum).sort((a,b)=>a.ep-b.ep);
+        for(const { content } of eps){ epsWrap.appendChild(renderEpisodeRow(content)); }
+        seasonBlock.appendChild(epsWrap);
+      }
+      seasonsWrap.appendChild(seasonBlock);
+    }
+  }
+
+  renderSeasonsAccordion();
+}
+
+/* ======================================================================
+   VIEW: DASHBOARD
+   ====================================================================== */
+async function renderDashboardView(container){
+  if(State.servers.size === 0){
+    container.appendChild(el('div', { class:'section-header' }, [el('h2',{},['Dashboard'])]));
+    container.appendChild(renderEmptyState('🚀', 'Vamos começar!', 'Adicione um servidor manual ou configure uma URL Raw em Configurações para importar suas listas M3U/M3U8.'));
+    return;
+  }
+
+  let continueList, recentGroups;
+  if(State.dashboardCache){
+    ({ continueList, recentGroups } = State.dashboardCache);
+  } else {
+    const loading = el('div', { class:'loader-inline' }, [el('div',{class:'spinner'}), 'Carregando...']);
+    container.appendChild(loading);
+    continueList = await ProgressModule.getContinueWatchingList(12);
+    recentGroups = await getRecentlyAddedGroupedForDashboard(6, 8);
+    if(State.ui.currentView !== 'dashboard') return;
+    loading.remove();
+    State.dashboardCache = { continueList, recentGroups };
+  }
+
+  if(continueList.length > 0){
+    container.appendChild(el('div', { class:'section-header' }, [
+      el('h2', { style:'font-size:15px;' }, ['Continuar Assistindo']),
+      el('button', { class:'btn small', onclick:()=>Router.goTo('continue') }, ['Ver tudo'])
+    ]));
+    const grid2 = el('div', { class:'card-grid' });
+    for(const { content } of continueList){ grid2.appendChild(renderContentCard(content)); }
+    container.appendChild(grid2);
+  }
+
+  if(recentGroups.length > 0){
+    container.appendChild(el('div', { class:'section-header', style: continueList.length > 0 ? 'margin-top:8px;' : '' }, [
+      el('h2', { style:'font-size:15px;' }, ['Adicionados Recentemente'])
+    ]));
+    for(const group of recentGroups){
+      container.appendChild(el('div', { style:'font-size:12.5px;font-weight:700;color:var(--text-2);margin:10px 0 8px;' }, [group.serverName]));
+      const g = el('div', { class:'card-grid' });
+      for(const item of group.items){
+        if(item.kind === 'series') g.appendChild(renderSeriesCard(item.data));
+        else g.appendChild(renderContentCard(item.data));
+      }
+      container.appendChild(g);
+    }
+  }
+
+  if(continueList.length === 0 && recentGroups.length === 0){
+    container.appendChild(renderEmptyState('📭', 'Nada por aqui ainda', 'Assista a algo ou importe conteúdo para ver novidades no Dashboard.'));
+  }
+}
+
+async function getRecentlyAddedGroupedForDashboard(maxServers, perServerLimit){
+  const servers = Array.from(State.servers.values()).slice(0, maxServers);
+  const groups = [];
+  for(const server of servers){
+    const [movies, live, series] = await Promise.all([
+      QueryModule.getRecentForServer('movie', server.id, perServerLimit),
+      QueryModule.getRecentForServer('live', server.id, perServerLimit),
+      QueryModule.getRecentSeriesForServer(server.id, perServerLimit)
+    ]);
+    const items = [];
+    for(const c of movies) items.push({ kind:'content', data:c });
+    for(const c of live) items.push({ kind:'content', data:c });
+    for(const s of series) items.push({ kind:'series', data:s });
+    if(items.length > 0){
+      groups.push({ serverId: server.id, serverName: server.nome, items: items.slice(0, perServerLimit) });
+    }
+  }
+  return groups;
+}
+
+/* ======================================================================
+   VIEW: FAVORITES
+   ====================================================================== */
+async function renderFavoritesView(container){
+  container.appendChild(el('div', { class:'section-header' }, [el('h2',{},['Favoritos'])]));
+  const loading = el('div', { class:'loader-inline' }, [el('div',{class:'spinner'}), 'Carregando...']);
+  container.appendChild(loading);
+
+  const favs = await IDB.getAll(STORES.favorites);
+  const favContentEntries = favs.filter(f => f.type !== 'series');
+  const favSeriesEntries = favs.filter(f => f.type === 'series');
+
+  const [contents, seriesList] = await Promise.all([
+    Promise.all(favContentEntries.map(f => IDB.getByKey(STORES.contents, f.id).catch(()=>null))),
+    Promise.all(favSeriesEntries.map(f => IDB.getByKey(STORES.seriesSummary, f.id).catch(()=>null)))
+  ]);
+  if(State.ui.currentView !== 'favorites') return;
+  loading.remove();
+
+  const favMovies = contents.filter(c => c && c.tipo === 'movie');
+  const favLive = contents.filter(c => c && c.tipo === 'live');
+  const favSeries = seriesList.filter(Boolean).map(s => { s.favorito = true; return s; });
+
+  if(favMovies.length===0 && favLive.length===0 && favSeries.length===0){
+    container.appendChild(renderEmptyState('★','Nenhum favorito ainda','Marque filmes, séries ou canais como favoritos para vê-los aqui.'));
+    return;
+  }
+
+  if(favSeries.length){
+    container.appendChild(el('div', { class:'server-section-title' }, ['Séries']));
+    const grid = el('div', { class:'card-grid' });
+    for(const e of favSeries) grid.appendChild(renderSeriesCard(e));
+    container.appendChild(grid);
+  }
+  if(favMovies.length){
+    container.appendChild(el('div', { class:'server-section-title' }, ['Filmes']));
+    const grid = el('div', { class:'card-grid' });
+    for(const c of favMovies) grid.appendChild(renderContentCard(c));
+    container.appendChild(grid);
+  }
+  if(favLive.length){
+    container.appendChild(el('div', { class:'server-section-title' }, ['Ao Vivo']));
+    const grid = el('div', { class:'card-grid' });
+    for(const c of favLive) grid.appendChild(renderContentCard(c));
+    container.appendChild(grid);
+  }
+}
+
+/* ======================================================================
+   VIEW: CONTINUE WATCHING
+   ====================================================================== */
+async function renderContinueView(container){
+  container.appendChild(el('div', { class:'section-header' }, [el('h2',{},['Continuar Assistindo'])]));
+  const loading = el('div', { class:'loader-inline' }, [el('div',{class:'spinner'}), 'Carregando...']);
+  container.appendChild(loading);
+
+  const list = await ProgressModule.getContinueWatchingList();
+  if(State.ui.currentView !== 'continue') return;
+  loading.remove();
+
+  if(list.length===0){
+    container.appendChild(renderEmptyState('⏱️','Nada por aqui ainda','Assista a filmes ou episódios para retomá-los depois.'));
+    return;
+  }
+  const grid = el('div', { class:'card-grid' });
+  for(const { content } of list) grid.appendChild(renderContentCard(content));
+  container.appendChild(grid);
+}
+
+/* ======================================================================
+   VIEW: SERVERS
+   ====================================================================== */
+let serverActionLocks = new Set();
+
+function renderServersView(){
+  const container = el('div');
+  container.appendChild(el('div', { class:'section-header' }, [
+    el('h2',{},['Servidores']),
+    el('button', { class:'btn primary', onclick: ()=>openAddServerModal() }, ['+ Adicionar Servidor']),
+    el('button', { class:'btn', onclick: ()=>updateAllServers() }, ['⟳ Atualizar Todos'])
+  ]));
+
+  const manual = [];
+  const auto = [];
+  for(const [,s] of State.servers){
+    if(s.tipoOrigem === 'manual') manual.push(s); else auto.push(s);
+  }
+  manual.sort((a,b)=>a.nome.localeCompare(b.nome));
+  auto.sort((a,b)=>a.nome.localeCompare(b.nome));
+
+  container.appendChild(el('div', { class:'server-section-title' }, ['Servidores Manuais']));
+  if(manual.length===0){
+    container.appendChild(renderEmptyState('🖥️','Nenhum servidor manual','Adicione um servidor manualmente pelo botão acima.'));
+  } else {
+    const list = el('div', { class:'server-list' });
+    for(const s of manual) list.appendChild(renderServerItem(s));
+    container.appendChild(list);
+  }
+
+  container.appendChild(el('div', { class:'server-section-title' }, ['Servidores Automáticos']));
+  if(auto.length===0){
+    container.appendChild(renderEmptyState('⚡','Nenhum servidor automático','Configure a URL Raw em Configurações e clique em "Baixar e Processar".'));
+  } else {
+    const list = el('div', { class:'server-list' });
+    for(const s of auto) list.appendChild(renderServerItem(s));
+    container.appendChild(list);
+  }
+
+  return container;
+}
+
+function renderServerItem(s){
+  const item = el('div', { class:'server-item' });
+  const sinfo = el('div', { class:'sinfo' });
+
+  const isError = s.lastStatus === 'error';
+  const dotClass = 'status-dot' + (isError ? ' error' : '');
+  const dotTitle = isError ? ('Erro na última atualização: ' + (s.lastError || 'desconhecido')) : 'Última atualização OK';
+
+  sinfo.appendChild(el('div', { class:'sname' }, [
+    el('span', { class:dotClass, title:dotTitle }),
+    s.nome
+  ]));
+  // URL não é mostrada aqui de propósito (contém usuário/senha na querystring).
+  const statsChildren = [
+    el('span', {}, ['Cadastrado em ' + new Date(s.dataCadastro).toLocaleDateString()])
+  ];
+  if(isError){
+    statsChildren.push(el('span', { style:'color:var(--danger);' }, ['Erro: ' + (s.lastError || 'falha na última atualização')]));
+  }
+  sinfo.appendChild(el('div', { class:'sstats' }, statsChildren));
+  item.appendChild(sinfo);
+
+  const actions = el('div', { class:'sactions' });
+  const updateBtn = el('button', { class:'btn small', onclick: (e)=>updateSingleServer(s.id, e.target) }, ['Atualizar']);
+  const deleteBtn = el('button', { class:'btn small danger', onclick: ()=>confirmDeleteServer(s.id) }, ['Excluir']);
+  actions.appendChild(updateBtn);
+  actions.appendChild(deleteBtn);
+  item.appendChild(actions);
+
+  return item;
+}
+
+async function updateSingleServer(serverId, btnEl){
+  if(serverActionLocks.has(serverId)) return;
+  const server = State.servers.get(serverId);
+  if(!server) return;
+  if(State.ui.isImporting){ showToast('Já existe uma importação em andamento.', 'error'); return; }
+  serverActionLocks.add(serverId);
+  if(btnEl){ btnEl.disabled = true; btnEl.textContent = 'Atualizando...'; }
+  await runImportWithProgressModal([server]);
+  serverActionLocks.delete(serverId);
+  Router.render();
+}
+
+function confirmDeleteServer(serverId){
+  const server = State.servers.get(serverId);
+  if(!server) return;
+  if(!confirm('Excluir o servidor "' + server.nome + '"? Todos os conteúdos relacionados serão removidos permanentemente.')) return;
+  ServerModule.deleteServer(serverId).then(()=>{
+    showToast('Servidor excluído.', 'success');
+    Router.render();
+  }).catch(()=>{
+    showToast('Erro ao excluir servidor.', 'error');
+  });
+}
+
+async function updateAllServers(){
+  const allServers = Array.from(State.servers.values());
+  if(allServers.length === 0){ showToast('Nenhum servidor cadastrado.', 'error'); return; }
+  if(State.ui.isImporting){ showToast('Já existe uma importação em andamento.', 'error'); return; }
+  await runImportWithProgressModal(allServers);
+}
+
+function openAddServerModal(){
+  const overlay = el('div', { class:'modal-overlay' });
+  const box = el('div', { class:'modal-box' });
+  box.appendChild(el('h3', {}, ['Adicionar Servidor Manual', el('span',{class:'modal-close-x', onclick:()=>overlay.remove()},['×'])]));
+
+  const form = el('div');
+  const nameGroup = el('div', { class:'form-group' }, [
+    el('label',{},['Nome do servidor']),
+    (function(){ const i = el('input',{type:'text', placeholder:'Ex: Meu Servidor'}); i.id='new-server-name'; return i; })()
+  ]);
+  const urlGroup = el('div', { class:'form-group' }, [
+    el('label',{},['URL M3U/M3U8']),
+    (function(){ const i = el('input',{type:'text', placeholder:'https://exemplo.com/lista.m3u'}); i.id='new-server-url'; return i; })()
+  ]);
+  form.appendChild(nameGroup);
+  form.appendChild(urlGroup);
+
+  const saveBtn = el('button', { class:'btn primary', style:'margin-top:8px;' }, ['Salvar Servidor']);
+  saveBtn.addEventListener('click', async function(){
+    const name = qs('#new-server-name', box).value.trim();
+    const url = qs('#new-server-url', box).value.trim();
+    if(!name || !url){ showToast('Preencha nome e URL.', 'error'); return; }
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Salvando...';
+    try{
+      const server = await ServerModule.addManualServer(name, url);
+      overlay.remove();
+      Router.render();
+      await runImportWithProgressModal([server]);
+    }catch(err){
+      showToast('Erro ao salvar servidor.', 'error');
+      saveBtn.disabled = false;
+      saveBtn.textContent = 'Salvar Servidor';
+    }
+  });
+  form.appendChild(saveBtn);
+  box.appendChild(form);
+  overlay.appendChild(box);
+  qs('#modal-root').appendChild(overlay);
+}
+
+/* ======================================================================
+   IMPORT PROGRESS MODAL
+   ====================================================================== */
+let minimizedPillEl = null;
+
+function removeMinimizedPill(){
+  if(minimizedPillEl){ minimizedPillEl.remove(); minimizedPillEl = null; }
+}
+
+function showMinimizedPill(overlay, getLabelText){
+  removeMinimizedPill();
+  const pill = el('div', {
+    id: 'import-minimized-pill',
+    style: 'position:fixed;bottom:20px;left:20px;z-index:400;background:var(--bg-2);border:1px solid var(--border);border-radius:24px;padding:10px 18px;display:flex;align-items:center;gap:10px;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.45);font-size:13px;color:var(--text-0);'
+  });
+  pill.appendChild(el('div', { class:'spinner' }));
+  pill.appendChild(el('span', { id:'import-minimized-label' }, [getLabelText()]));
+  pill.addEventListener('click', function(){
+    overlay.style.display = 'flex';
+    removeMinimizedPill();
+  });
+  document.body.appendChild(pill);
+  minimizedPillEl = pill;
+  return pill;
+}
+
+function updateMinimizedPillText(text){
+  if(!minimizedPillEl) return;
+  const label = qs('#import-minimized-label', minimizedPillEl);
+  if(label) label.textContent = text;
+}
+
+async function runImportWithProgressModal(servers){
+  if(State.ui.isImporting){ showToast('Já existe uma importação em andamento.', 'error'); return; }
+  State.ui.isImporting = true;
+
+  const overlay = el('div', { class:'modal-overlay' });
+  const box = el('div', { class:'modal-box' });
+
+  const isSingleServer = servers.length === 1;
+  const minimizeBtn = el('button', { class:'btn small', id:'minimize-import-btn', style: isSingleServer ? 'margin-left:auto;' : 'display:none;margin-left:auto;' }, ['Minimizar']);
+  const titleRow = el('h3', { style:'display:flex;align-items:center;gap:10px;' }, [
+    el('span', {}, ['Processando Servidores']),
+    minimizeBtn
+  ]);
+  box.appendChild(titleRow);
+
+  const overallWrap = el('div', { class:'progress-overall' });
+  const overallLabel = el('div', { class:'plabel' }, [el('span',{},['Progresso geral']), el('span',{id:'overall-count'},['0 / '+servers.length])]);
+  const overallTrack = el('div', { class:'progress-track' }, [el('div',{class:'pfill', id:'overall-fill', style:'width:0%'})]);
+  overallWrap.appendChild(overallLabel);
+  overallWrap.appendChild(overallTrack);
+  box.appendChild(overallWrap);
+
+  const listWrap = el('div', { class:'server-progress-list', id:'sp-list' });
+  const spElements = new Map();
+  for(const s of servers){
+    const item = el('div', { class:'sp-item', id:'sp-'+s.id });
+    item.appendChild(el('div', { class:'sp-top' }, [
+      el('span', { class:'sp-name' }, [el('span',{class:'status-dot processing'}), s.nome]),
+      el('span', { class:'sp-status proc' }, ['Aguardando...'])
+    ]));
+    item.appendChild(el('div', { class:'progress-track' }, [el('div',{class:'pfill', style:'width:0%'})]));
+    item.appendChild(el('div', { class:'sp-detail' }, ['']));
+    listWrap.appendChild(item);
+    spElements.set(s.id, item);
+  }
+  box.appendChild(listWrap);
+
+  const closeBtnWrap = el('div', { style:'margin-top:16px;text-align:right;', id:'import-close-wrap' });
+  box.appendChild(closeBtnWrap);
+
+  overlay.appendChild(box);
+  qs('#modal-root').appendChild(overlay);
+
+  let lastCompleted = 0;
+  let lastTotal = servers.length;
+
+  minimizeBtn.addEventListener('click', function(){
+    overlay.style.display = 'none';
+    showMinimizedPill(overlay, function(){ return 'Importando servidores... ' + lastCompleted + '/' + lastTotal; });
+  });
+
+  function updateServerUI(server, patch){
+    const item = spElements.get(server.id);
+    if(!item) return;
+    const statusEl = item.querySelector('.sp-status');
+    const dotEl = item.querySelector('.status-dot');
+    const fillEl = item.querySelector('.pfill');
+    const detailEl = item.querySelector('.sp-detail');
+
+    if(patch.phase === 'download'){
+      dotEl.className = 'status-dot processing';
+      statusEl.className = 'sp-status proc';
+      statusEl.textContent = patch.status === 'done' ? 'Download concluído, na fila' : 'Baixando...';
+      let pct = 0;
+      if(patch.total){ pct = Math.min(100, (patch.downloaded/patch.total)*100); }
+      fillEl.style.width = (patch.status==='done' ? 100 : pct) + '%';
+      detailEl.textContent = formatBytes(patch.downloaded) + (patch.total ? ' / ' + formatBytes(patch.total) : '') + (patch.speed ? '  •  ' + formatSpeed(patch.speed) : '');
+    } else if(patch.phase === 'cleanup'){
+      dotEl.className = 'status-dot processing';
+      statusEl.className = 'sp-status proc';
+      statusEl.textContent = 'Removendo conteúdo antigo...';
+      fillEl.style.width = '0%';
+      detailEl.textContent = '';
+    } else if(patch.phase === 'process'){
+      dotEl.className = 'status-dot processing';
+      statusEl.className = 'sp-status proc';
+      if(patch.status === 'done'){
+        statusEl.textContent = 'Processado';
+        statusEl.className = 'sp-status ok';
+        dotEl.className = 'status-dot';
+        fillEl.style.width = '100%';
+      } else {
+        statusEl.textContent = 'Processando...';
+        const pct = patch.total ? Math.min(100,(patch.processed/patch.total)*100) : 0;
+        fillEl.style.width = pct + '%';
+      }
+      const c = patch.counts || {movie:0,series:0,live:0};
+      detailEl.textContent = (patch.processed||0) + '/' + (patch.total||0) + ' itens  •  Filmes: '+c.movie+'  Séries: '+c.series+'  Ao Vivo: '+c.live;
+    } else if(patch.phase === 'save'){
+      // Etapa entre "itens processados" e "Processado": salvando no
+      // IndexedDB e atualizando os índices em memória. Sem isso visível, a
+      // barra parecia travar em 100% depois do processamento terminar.
+      dotEl.className = 'status-dot processing';
+      statusEl.className = 'sp-status proc';
+      statusEl.textContent = 'Salvando...';
+      const pct = patch.total ? Math.min(100,(patch.processed/patch.total)*100) : 0;
+      fillEl.style.width = pct + '%';
+      const c = patch.counts || {movie:0,series:0,live:0};
+      detailEl.textContent = (patch.processed||0) + '/' + (patch.total||0) + ' salvos  •  Filmes: '+c.movie+'  Séries: '+c.series+'  Ao Vivo: '+c.live;
+    } else if(patch.phase === 'error'){
+      dotEl.className = 'status-dot error';
+      statusEl.className = 'sp-status err';
+      statusEl.textContent = patch.message || 'Erro';
+      detailEl.textContent = '';
+    }
+  }
+
+  function updateOverallUI({ completed, total }){
+    lastCompleted = completed;
+    lastTotal = total;
+    qs('#overall-count', box).textContent = completed + ' / ' + total;
+    const pct = total > 0 ? (completed/total)*100 : 0;
+    qs('#overall-fill', box).style.width = pct + '%';
+    updateMinimizedPillText('Importando servidores... ' + completed + '/' + total);
+  }
+
+  function onFirstSuccess(){
+    minimizeBtn.style.display = 'inline-flex';
+  }
+
+  try{
+    await ServerModule.importManyServersPipelined(servers, MAX_CONCURRENT_PROCESSING, updateServerUI, updateOverallUI, onFirstSuccess);
+  }catch(err){
+    showToast('Erro durante importação.', 'error');
+  }
+
+  State.ui.isImporting = false;
+  State.pageCache.clear(); State.dashboardCache = null;
+  updateSidebarCounts();
+
+  if(minimizedPillEl){
+    // Import finished while minimized: notify via toast and clean up the pill.
+    removeMinimizedPill();
+    showToast('Importação concluída: ' + lastCompleted + '/' + lastTotal + ' servidores processados.', 'success');
+    overlay.remove();
+  } else {
+    closeBtnWrap.appendChild(el('button', { class:'btn primary', onclick:()=>{ overlay.remove(); Router.render(); } }, ['Fechar']));
+  }
+
+  Router.render();
+}
+
+/* ======================================================================
+   VIEW: SETTINGS
+
+   ====================================================================== */
+function renderSettingsView(){
+  const container = el('div');
+  container.appendChild(el('div', { class:'section-header' }, [el('h2',{},['Configurações'])]));
+
+  // Pagination block
+  const pagBlock = el('div', { class:'settings-block' });
+  pagBlock.appendChild(el('h3', {}, ['Paginação']));
+  const pagSelect = el('select', { id:'page-size-select' });
+  for(const n of [10,50,100]){
+    const opt = el('option', { value:String(n) }, [String(n) + ' itens por página']);
+    if(State.settings.pageSize === n) opt.setAttribute('selected','true');
+    pagSelect.appendChild(opt);
+  }
+  pagSelect.addEventListener('change', async function(e){
+    State.settings.pageSize = parseInt(e.target.value, 10);
+    State.ui.filters.movie.page = 1;
+    State.ui.filters.series.page = 1;
+    State.ui.filters.live.page = 1;
+    await IDB.put(STORES.settings, State.settings);
+    showToast('Paginação atualizada.', 'success');
+    Router.render();
+  });
+  pagBlock.appendChild(pagSelect);
+  container.appendChild(pagBlock);
+
+  // Automatic servers block
+  const autoBlock = el('div', { class:'settings-block' });
+  autoBlock.appendChild(el('h3', {}, ['Servidores Automáticos']));
+
+  const row1 = el('div', { class:'form-row' });
+  const rawUrlGroup = el('div', { class:'form-group' }, [
+    el('label',{},['URL do Raw (JSON)']),
+    (function(){ const i = el('input',{type:'text'}); i.id='raw-url-input'; i.value = State.settings.rawUrl || ''; return i; })(),
+    el('div',{class:'hint'},['O JSON deve conter pares chave (nome do servidor) → URL M3U/M3U8.'])
+  ]);
+  row1.appendChild(rawUrlGroup);
+  autoBlock.appendChild(row1);
+
+  const row2 = el('div', { class:'form-row' });
+  const userGroup = el('div', { class:'form-group' }, [
+    el('label',{},['Usuário']),
+    (function(){ const i = el('input',{type:'text'}); i.id='raw-user-input'; i.value = State.settings.rawUser || ''; return i; })()
+  ]);
+  const passInput = el('input',{type:'password'});
+  passInput.id = 'raw-pass-input';
+  passInput.value = State.settings.rawPass || '';
+  const passWrap = el('div', { style:'position:relative;' }, [passInput]);
+  const eyeBtn = el('button', { type:'button', style:'position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:15px;padding:2px 6px;' }, ['👁']);
+  eyeBtn.addEventListener('click', function(){
+    const show = passInput.type === 'password';
+    passInput.type = show ? 'text' : 'password';
+    eyeBtn.textContent = show ? '🙈' : '👁';
+  });
+  passWrap.appendChild(eyeBtn);
+  const passGroup = el('div', { class:'form-group' }, [ el('label',{},['Senha']), passWrap ]);
+  row2.appendChild(userGroup);
+  row2.appendChild(passGroup);
+  autoBlock.appendChild(row2);
+
+  const downloadBtn = el('button', { class:'btn primary', style:'margin-top:14px;', id:'download-process-btn' }, ['Baixar e Processar']);
+  downloadBtn.addEventListener('click', async function(){
+    if(State.ui.isImporting){ showToast('Já existe uma importação em andamento.', 'error'); return; }
+    const rawUrl = qs('#raw-url-input', autoBlock).value.trim();
+    const user = qs('#raw-user-input', autoBlock).value;
+    const pass = qs('#raw-pass-input', autoBlock).value;
+    const autoSave = true; // sempre salva (é assim que os servidores automáticos funcionam)
+
+    if(!rawUrl){ showToast('Informe a URL do Raw.', 'error'); return; }
+
+    State.settings.rawUrl = rawUrl;
+    State.settings.rawUser = user;
+    State.settings.rawPass = pass;
+    State.settings.autoSaveServers = autoSave;
+    await IDB.put(STORES.settings, State.settings);
+
+    downloadBtn.disabled = true;
+    downloadBtn.textContent = 'Baixando JSON...';
+    try{
+      const json = await RawModule.fetchAndParseRaw(rawUrl);
+      const servers = await RawModule.buildServersFromRaw(json, user, pass, rawUrl);
+      downloadBtn.disabled = false;
+      downloadBtn.textContent = 'Baixar e Processar';
+      updateSidebarCounts();
+      if(servers.length === 0){
+        showToast('Nenhum servidor encontrado no JSON.', 'error');
+        return;
+      }
+      await runImportWithProgressModal(servers);
+    }catch(err){
+      downloadBtn.disabled = false;
+      downloadBtn.textContent = 'Baixar e Processar';
+      showToast(err && err.message ? err.message : 'Erro ao baixar/processar Raw.', 'error');
+    }
+  });
+  autoBlock.appendChild(downloadBtn);
+  container.appendChild(autoBlock);
+
+  return container;
+}
+
+/* ======================================================================
+   ROUTER
+   ====================================================================== */
+const VIEW_TITLES = {
+  dashboard: 'Dashboard',
+  live: 'Ao Vivo',
+  series: 'Séries',
+  'series-detail': 'Série',
+  movies: 'Filmes',
+  favorites: 'Favoritos',
+  continue: 'Continuar Assistindo',
+  servers: 'Servidores',
+  settings: 'Configurações'
+};
+
+const Router = {
+  render(){
+    const view = State.ui.currentView;
+    const contentArea = qs('#content-area');
+    contentArea.innerHTML = '';
+    const container = el('div');
+    contentArea.appendChild(container);
+
+    qs('#page-title').textContent = VIEW_TITLES[view] || '';
+    qsa('.nav-item').forEach(function(item){
+      const itemView = item.getAttribute('data-view');
+      item.classList.toggle('active', itemView === view || (view === 'series-detail' && itemView === 'series'));
+    });
+
+    switch(view){
+      case 'dashboard': renderDashboardView(container); break;
+      case 'live': renderListView('live', 'Ao Vivo', container); break;
+      case 'series': renderSeriesListView(container); break;
+      case 'series-detail': renderSeriesDetailView(container); break;
+      case 'movies': renderListView('movie', 'Filmes', container); break;
+      case 'favorites': renderFavoritesView(container); break;
+      case 'continue': renderContinueView(container); break;
+      case 'servers': container.appendChild(renderServersView()); break;
+      case 'settings': container.appendChild(renderSettingsView()); break;
+      default: renderDashboardView(container);
+    }
+
+    updateSidebarCounts();
+  },
+
+  goTo(view){
+    State.ui.currentView = view;
+    if(view !== 'series-detail') State.ui.activeSeriesKey = null;
+    this.render();
+    if(window.innerWidth <= 900){
+      qs('#sidebar').classList.remove('open');
+      qs('#sidebar-overlay').classList.remove('open');
+    }
+  }
+};
+
+async function updateSidebarCounts(){
+  qs('#cnt-servers').textContent = State.servers.size;
+  qs('#cnt-continue').textContent = ProgressModule.getContinueWatchingCount();
+  try{
+    const [movieCount, liveCount, seriesCount, favs] = await Promise.all([
+      IDB.countByIndexRange(STORES.contents, 'tipo_serverId', QueryModule._typeRange('movie')),
+      IDB.countByIndexRange(STORES.contents, 'tipo_serverId', QueryModule._typeRange('live')),
+      IDB.count(STORES.seriesSummary),
+      IDB.getAll(STORES.favorites)
+    ]);
+    qs('#cnt-movies').textContent = movieCount;
+    qs('#cnt-live').textContent = liveCount;
+    qs('#cnt-series').textContent = seriesCount;
+    qs('#cnt-favs').textContent = favs.length;
+  }catch(e){}
+}
+
+/* ======================================================================
+   GLOBAL EVENT LISTENERS
+   ====================================================================== */
+function setupEventListeners(){
+  qsa('.nav-item').forEach(function(item){
+    item.addEventListener('click', function(){
+      Router.goTo(item.getAttribute('data-view'));
+    });
+  });
+
+  qs('#global-search').addEventListener('input', function(e){
+    const val = e.target.value;
+    qs('#global-search-clear').style.display = val ? 'block' : 'none';
+    if(!val) return;
+    openSearchPopup(val); // abre na hora; o próprio popup faz o debounce da busca
+  });
+  qs('#global-search-clear').addEventListener('click', function(){
+    qs('#global-search').value = '';
+    qs('#global-search-clear').style.display = 'none';
+    if(activeSearchOverlay) activeSearchOverlay.close(false);
+  });
+
+  qs('#global-search').addEventListener('focus', function(e){
+    const val = e.target.value.trim();
+    if(val && !activeSearchOverlay) openSearchPopup(val);
+  });
+
+  qs('#menu-toggle').addEventListener('click', function(){
+    qs('#sidebar').classList.toggle('open');
+    qs('#sidebar-overlay').classList.toggle('open');
+  });
+  qs('#sidebar-overlay').addEventListener('click', function(){
+    qs('#sidebar').classList.remove('open');
+    qs('#sidebar-overlay').classList.remove('open');
+  });
+
+  qs('#player-close').addEventListener('click', function(){
+    PlayerModule.close();
+  });
+
+  qs('#player-back').addEventListener('click', function(){
+    const content = PlayerModule.currentContent;
+    if(content && content.tipo === 'series' && content.seriesKey){
+      // Assistir um episódio pelo Continuar Assistindo (dashboard ou tela
+      // própria) não guarda de qual série ele veio — sem isso, "voltar"
+      // deixava o usuário num limbo tendo que procurar a série de novo.
+      State.ui.activeSeriesKey = content.seriesKey;
+      State.ui.currentView = 'series-detail';
+    }
+    PlayerModule.close();
+  });
+}
+
+/* ======================================================================
+   APP INITIALIZATION
+   ====================================================================== */
+async function initApp(){
+  try{
+    State.db = await IDB.open();
+  }catch(err){
+    showToast('Erro ao abrir IndexedDB. Verifique as permissões do navegador.', 'error');
+    return;
+  }
+
+  try{
+    const settingsList = await IDB.getAll(STORES.settings);
+    const existing = settingsList.find(s => s.id === 'app');
+    if(existing){
+      State.settings = Object.assign({}, DEFAULT_SETTINGS, existing);
+    } else {
+      State.settings = { ...DEFAULT_SETTINGS };
+      await IDB.put(STORES.settings, State.settings);
+    }
+  }catch(err){
+    State.settings = { ...DEFAULT_SETTINGS };
+  }
+
+  // Servidores, progresso e favoritos são pequenos — carregam rápido e
+  // eager. O conteúdo (que pode ter milhões de itens) NUNCA é carregado
+  // por inteiro: cada tela busca só a página que precisa, direto do
+  // IndexedDB, então a página abre praticamente instantânea independente
+  // do tamanho da biblioteca.
+  try{ await ServerModule.loadAllFromDB(); }catch(err){ showToast('Erro ao carregar servidores.', 'error'); }
+  try{ await ServerModule.loadProgressFromDB(); }catch(err){}
+
+  setupEventListeners();
+  Router.render();
+
+  // Pré-carrega a página 1 de Filmes/Séries/Ao Vivo em segundo plano (fica
+  // no cache), então ao trocar de aba pela primeira vez já está pronto.
+  prefetchFirstPages();
+}
+
+async function prefetchFirstPages(){
+  const pageSize = State.settings.pageSize || PAGE_SIZE_DEFAULT;
+
+  for(const type of ['live', 'movie']){
+    const filters = State.ui.filters[type];
+    const cacheKey = pageCacheKey(type, filters);
+    if(State.pageCache.has(cacheKey)) continue;
+    try{
+      const [serverIds, catOptions, pageResult] = await Promise.all([
+        QueryModule.getServersForType(type), QueryModule.getCategoriesForType(type), QueryModule.getContentPage(type, filters, filters.page, pageSize)
+      ]);
+      State.pageCache.set(cacheKey, { serverIds, catOptions, pageResult });
+      if(['live','movies'].indexOf(State.ui.currentView) !== -1) Router.render();
+    }catch(e){}
+  }
+
+  // Séries é o mais pesado (muitas temporadas/episódios por trás de cada
+  // resumo) — carrega por último, de propósito, pra não atrasar o resto.
+  const sFilters = State.ui.filters.series;
+  const sKey = pageCacheKey('series', sFilters);
+  if(!State.pageCache.has(sKey)){
+    try{
+      const [serverIds, catOptions, pageResult] = await Promise.all([
+        QueryModule.getServersForSeries(), QueryModule.getCategoriesForSeries(), QueryModule.getSeriesPage(sFilters, sFilters.page, pageSize)
+      ]);
+      State.pageCache.set(sKey, { serverIds, catOptions, pageResult });
+      if(State.ui.currentView === 'series') Router.render();
+    }catch(e){}
+  }
+}
+
+window.addEventListener('DOMContentLoaded', initApp);
+</script>
+
+</body>
+</html>
