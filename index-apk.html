@@ -1,0 +1,1849 @@
+<!DOCTYPE html>
+
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<title>Manager</title>
+
+<style>
+html,body{
+    margin:0;
+    padding:0;
+    width:100%;
+    height:100%;
+    background:#000;
+    overflow:hidden;
+}
+
+#loader{
+    position:fixed;
+    inset:0;
+    z-index:2147483646;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    flex-direction:column;
+    gap:14px;
+    background:#000;
+    color:#999;
+    font-family:Arial,sans-serif;
+    font-size:14px;
+}
+
+.spinner{
+    width:28px;
+    height:28px;
+    border:3px solid rgba(255,255,255,.15);
+    border-top-color:#7c5cff;
+    border-radius:50%;
+    animation:spin .8s linear infinite;
+}
+
+@keyframes spin{
+    to{
+        transform:rotate(360deg)
+    }
+}
+
+#error{
+    display:none;
+    max-width:320px;
+    text-align:center;
+    line-height:1.5;
+}
+
+#error button{
+    margin-top:15px;
+    padding:10px 18px;
+    border:0;
+    border-radius:9px;
+    background:#7c5cff;
+    color:#fff;
+    cursor:pointer;
+}
+</style>
+
+</head>
+
+<body>
+
+<div id="loader">
+
+```
+<div class="spinner"></div>
+
+<div id="loaderText">
+    Carregando aplicativo...
+</div>
+
+<div id="error">
+
+    Não foi possível carregar o aplicativo.
+
+    <br>
+
+    Verifique sua conexão com a internet.
+
+    <br>
+
+    <button onclick="location.reload()">
+        Tentar novamente
+    </button>
+
+</div>
+```
+
+</div>
+
+<script>
+
+/* =========================================================
+   CONFIGURAÇÃO
+   ========================================================= */
+
+const RAW_URL =
+    "https://raw.githubusercontent.com/matheus-yaml/manager/refs/heads/main/index.html";
+
+const CHECK_INTERVAL =
+    15 * 1000;
+
+
+/* =========================================================
+   BANCO DO LOADER
+   ========================================================= */
+
+const LOADER_DB_NAME =
+    "__ManagerLoaderDB";
+
+const LOADER_DB_VERSION =
+    1;
+
+const LOADER_STORE =
+    "data";
+
+const KEY_HTML =
+    "html";
+
+const KEY_HASH =
+    "hash";
+
+const KEY_DATE =
+    "date";
+
+let loaderDB = null;
+
+
+/* =========================================================
+   INDEXEDDB
+   ========================================================= */
+
+function openLoaderDB(){
+
+    if(loaderDB){
+
+        return Promise.resolve(
+            loaderDB
+        );
+    }
+
+    return new Promise(
+        (resolve,reject)=>{
+
+            let request;
+
+            try{
+
+                request =
+                    indexedDB.open(
+                        LOADER_DB_NAME,
+                        LOADER_DB_VERSION
+                    );
+
+            }catch(error){
+
+                reject(error);
+
+                return;
+            }
+
+
+            request.onupgradeneeded =
+                function(event){
+
+                    const db =
+                        event.target.result;
+
+                    if(
+                        !db.objectStoreNames
+                            .contains(
+                                LOADER_STORE
+                            )
+                    ){
+
+                        db.createObjectStore(
+                            LOADER_STORE
+                        );
+                    }
+                };
+
+
+            request.onsuccess =
+                function(event){
+
+                    loaderDB =
+                        event.target.result;
+
+                    resolve(
+                        loaderDB
+                    );
+                };
+
+
+            request.onerror =
+                function(){
+
+                    reject(
+                        request.error
+                    );
+                };
+
+        }
+    );
+}
+
+
+/* =========================================================
+   LER INDEXEDDB
+   ========================================================= */
+
+async function dbGet(key){
+
+    try{
+
+        const db =
+            await openLoaderDB();
+
+        return await new Promise(
+            (resolve,reject)=>{
+
+                const tx =
+                    db.transaction(
+                        LOADER_STORE,
+                        "readonly"
+                    );
+
+                const request =
+                    tx.objectStore(
+                        LOADER_STORE
+                    ).get(
+                        key
+                    );
+
+                request.onsuccess =
+                    function(){
+
+                        resolve(
+                            request.result
+                        );
+                    };
+
+                request.onerror =
+                    function(){
+
+                        reject(
+                            request.error
+                        );
+                    };
+
+            }
+        );
+
+    }catch(error){
+
+        console.warn(
+            "[Loader] Erro ao ler IndexedDB:",
+            error
+        );
+
+        return null;
+    }
+}
+
+
+/* =========================================================
+   SALVAR INDEXEDDB
+   ========================================================= */
+
+async function dbSet(
+    key,
+    value
+){
+
+    try{
+
+        const db =
+            await openLoaderDB();
+
+        await new Promise(
+            (resolve,reject)=>{
+
+                const tx =
+                    db.transaction(
+                        LOADER_STORE,
+                        "readwrite"
+                    );
+
+                tx.objectStore(
+                    LOADER_STORE
+                ).put(
+                    value,
+                    key
+                );
+
+                tx.oncomplete =
+                    resolve;
+
+                tx.onerror =
+                    function(){
+
+                        reject(
+                            tx.error
+                        );
+                    };
+
+            }
+        );
+
+        return true;
+
+    }catch(error){
+
+        console.warn(
+            "[Loader] Erro ao salvar IndexedDB:",
+            error
+        );
+
+        return false;
+    }
+}
+
+
+/* =========================================================
+   LOCALSTORAGE
+   ========================================================= */
+
+function localKey(key){
+
+    return "__SM_LOADER_" + key;
+}
+
+
+function localGet(key){
+
+    try{
+
+        return localStorage.getItem(
+            localKey(key)
+        );
+
+    }catch(error){
+
+        return null;
+    }
+}
+
+
+function localSet(
+    key,
+    value
+){
+
+    try{
+
+        localStorage.setItem(
+            localKey(key),
+            value
+        );
+
+        return true;
+
+    }catch(error){
+
+        return false;
+    }
+}
+
+
+/* =========================================================
+   OBTER HTML
+   ========================================================= */
+
+async function getHTML(){
+
+    const value =
+        await dbGet(
+            KEY_HTML
+        );
+
+    if(value){
+
+        return value;
+    }
+
+    return localGet(
+        KEY_HTML
+    );
+}
+
+
+/* =========================================================
+   OBTER HASH
+   ========================================================= */
+
+async function getHash(){
+
+    /*
+     * Primeiro tenta IndexedDB.
+     */
+
+    const value =
+        await dbGet(
+            KEY_HASH
+        );
+
+    if(value){
+
+        return value;
+    }
+
+
+    /*
+     * Se não encontrou no IndexedDB,
+     * obrigatoriamente tenta localStorage.
+     */
+
+    const localHash =
+        localGet(
+            KEY_HASH
+        );
+
+    if(localHash){
+
+        return localHash;
+    }
+
+    return null;
+}
+
+
+/* =========================================================
+   SALVAR VERSÃO
+   ========================================================= */
+
+async function saveVersion(
+    html,
+    hash
+){
+
+    /*
+     * Salva no IndexedDB.
+     */
+
+    await dbSet(
+        KEY_HTML,
+        html
+    );
+
+    await dbSet(
+        KEY_HASH,
+        hash
+    );
+
+    await dbSet(
+        KEY_DATE,
+        Date.now()
+    );
+
+
+    /*
+     * Sempre mantém também
+     * uma cópia no localStorage.
+     */
+
+    localSet(
+        KEY_HTML,
+        html
+    );
+
+    localSet(
+        KEY_HASH,
+        hash
+    );
+
+    localSet(
+        KEY_DATE,
+        String(
+            Date.now()
+        )
+    );
+}
+
+
+/* =========================================================
+   SHA-256
+   ========================================================= */
+
+async function sha256(text){
+
+    if(
+        typeof crypto !== "undefined" &&
+        crypto.subtle
+    ){
+
+        const encoder =
+            new TextEncoder();
+
+        const data =
+            encoder.encode(
+                text
+            );
+
+        const buffer =
+            await crypto.subtle.digest(
+                "SHA-256",
+                data
+            );
+
+        const bytes =
+            new Uint8Array(
+                buffer
+            );
+
+        let result = "";
+
+        for(
+            let i = 0;
+            i < bytes.length;
+            i++
+        ){
+
+            result +=
+                bytes[i]
+                    .toString(16)
+                    .padStart(
+                        2,
+                        "0"
+                    );
+        }
+
+        return result;
+    }
+
+
+    /*
+     * Fallback.
+     */
+
+    let hash = 0;
+
+    for(
+        let i = 0;
+        i < text.length;
+        i++
+    ){
+
+        hash =
+            ((hash << 5) - hash) +
+            text.charCodeAt(i);
+
+        hash |= 0;
+    }
+
+    return String(
+        hash
+    );
+}
+
+
+/* =========================================================
+   BAIXAR GITHUB
+   ========================================================= */
+
+async function downloadRemote(){
+
+    const separator =
+        RAW_URL.includes("?")
+            ? "&"
+            : "?";
+
+    const url =
+        RAW_URL +
+        separator +
+        "__loader_timestamp=" +
+        Date.now();
+
+
+    console.log(
+        "[Loader] Baixando versão do GitHub..."
+    );
+
+
+    const response =
+        await fetch(
+            url,
+            {
+                method:"GET",
+                cache:"no-store",
+                credentials:"omit",
+                redirect:"follow"
+            }
+        );
+
+
+    if(!response.ok){
+
+        throw new Error(
+            "GitHub respondeu HTTP " +
+            response.status
+        );
+    }
+
+
+    const html =
+        await response.text();
+
+
+    if(!html){
+
+        throw new Error(
+            "GitHub retornou HTML vazio."
+        );
+    }
+
+
+    return html;
+}
+
+
+/* =========================================================
+   CRIAR MONITOR
+   ========================================================= */
+
+function createMonitorScript(){
+
+    const escapedURL =
+        JSON.stringify(
+            RAW_URL
+        );
+
+
+    return `
+<script>
+(function(){
+
+"use strict";
+
+
+/* =====================================================
+   CONFIGURAÇÃO
+   ===================================================== */
+
+const UPDATE_URL =
+    ${escapedURL};
+
+const INTERVAL =
+    ${CHECK_INTERVAL};
+
+const DB_NAME =
+    "__ManagerLoaderDB";
+
+const DB_VERSION =
+    1;
+
+const STORE =
+    "data";
+
+let checking =
+    false;
+
+let popupShown =
+    false;
+
+
+/* =====================================================
+   ABRIR BANCO
+   ===================================================== */
+
+function openDB(){
+
+    return new Promise(
+        (resolve,reject)=>{
+
+            let request;
+
+            try{
+
+                request =
+                    indexedDB.open(
+                        DB_NAME,
+                        DB_VERSION
+                    );
+
+            }catch(error){
+
+                reject(error);
+
+                return;
+            }
+
+
+            request.onupgradeneeded =
+                function(event){
+
+                    const db =
+                        event.target.result;
+
+                    if(
+                        !db.objectStoreNames
+                            .contains(
+                                STORE
+                            )
+                    ){
+
+                        db.createObjectStore(
+                            STORE
+                        );
+                    }
+                };
+
+
+            request.onsuccess =
+                function(){
+
+                    resolve(
+                        request.result
+                    );
+                };
+
+
+            request.onerror =
+                function(){
+
+                    reject(
+                        request.error
+                    );
+                };
+
+        }
+    );
+}
+
+
+/* =====================================================
+   OBTER HASH LOCAL
+   ===================================================== */
+
+async function getCurrentHash(){
+
+    /*
+     * Primeiro tenta IndexedDB.
+     */
+
+    try{
+
+        const db =
+            await openDB();
+
+
+        const value =
+            await new Promise(
+                (resolve,reject)=>{
+
+                    const tx =
+                        db.transaction(
+                            STORE,
+                            "readonly"
+                        );
+
+                    const request =
+                        tx.objectStore(
+                            STORE
+                        ).get(
+                            "hash"
+                        );
+
+
+                    request.onsuccess =
+                        function(){
+
+                            resolve(
+                                request.result
+                            );
+                        };
+
+
+                    request.onerror =
+                        function(){
+
+                            reject(
+                                request.error
+                            );
+                        };
+
+                }
+            );
+
+
+        /*
+         * Se encontrou no IndexedDB,
+         * retorna imediatamente.
+         */
+
+        if(value){
+
+            console.log(
+                "[Manager] Hash encontrado no IndexedDB."
+            );
+
+            return value;
+        }
+
+
+    }catch(error){
+
+        console.warn(
+            "[Manager] Falha ao ler hash pelo IndexedDB:",
+            error
+        );
+    }
+
+
+    /*
+     * Se o IndexedDB não tinha hash,
+     * tenta localStorage.
+     */
+
+    try{
+
+        const localHash =
+            localStorage.getItem(
+                "__SM_LOADER_hash"
+            );
+
+
+        if(localHash){
+
+            console.log(
+                "[Manager] Hash encontrado no localStorage."
+            );
+
+            return localHash;
+        }
+
+
+    }catch(error){
+
+        console.warn(
+            "[Manager] Falha ao ler hash pelo localStorage:",
+            error
+        );
+    }
+
+
+    /*
+     * Nenhum hash encontrado.
+     */
+
+    return null;
+}
+
+
+/* =====================================================
+   SALVAR NOVA VERSÃO
+   ===================================================== */
+
+async function saveNewVersion(
+    html,
+    hash
+){
+
+    let savedIDB =
+        false;
+
+
+    /*
+     * Tenta IndexedDB.
+     */
+
+    try{
+
+        const db =
+            await openDB();
+
+
+        await new Promise(
+            (resolve,reject)=>{
+
+                const tx =
+                    db.transaction(
+                        STORE,
+                        "readwrite"
+                    );
+
+
+                const store =
+                    tx.objectStore(
+                        STORE
+                    );
+
+
+                store.put(
+                    html,
+                    "html"
+                );
+
+
+                store.put(
+                    hash,
+                    "hash"
+                );
+
+
+                store.put(
+                    Date.now(),
+                    "date"
+                );
+
+
+                tx.oncomplete =
+                    resolve;
+
+
+                tx.onerror =
+                    function(){
+
+                        reject(
+                            tx.error
+                        );
+                    };
+
+            }
+        );
+
+
+        savedIDB =
+            true;
+
+
+        console.log(
+            "[Manager] Nova versão salva no IndexedDB."
+        );
+
+
+    }catch(error){
+
+        console.warn(
+            "[Manager] Falha ao salvar no IndexedDB:",
+            error
+        );
+    }
+
+
+    /*
+     * Sempre salva também no localStorage.
+     */
+
+    try{
+
+        localStorage.setItem(
+            "__SM_LOADER_html",
+            html
+        );
+
+
+        localStorage.setItem(
+            "__SM_LOADER_hash",
+            hash
+        );
+
+
+        localStorage.setItem(
+            "__SM_LOADER_date",
+            String(
+                Date.now()
+            )
+        );
+
+
+        console.log(
+            "[Manager] Nova versão salva no localStorage."
+        );
+
+
+    }catch(error){
+
+        console.warn(
+            "[Manager] Falha ao salvar no localStorage:",
+            error
+        );
+    }
+
+
+    return savedIDB;
+}
+
+
+/* =====================================================
+   SHA-256
+   ===================================================== */
+
+async function makeHash(text){
+
+    if(
+        typeof crypto !== "undefined" &&
+        crypto.subtle
+    ){
+
+        const data =
+            new TextEncoder()
+                .encode(
+                    text
+                );
+
+
+        const buffer =
+            await crypto.subtle.digest(
+                "SHA-256",
+                data
+            );
+
+
+        const bytes =
+            new Uint8Array(
+                buffer
+            );
+
+
+        let result =
+            "";
+
+
+        for(
+            let i = 0;
+            i < bytes.length;
+            i++
+        ){
+
+            result +=
+                bytes[i]
+                    .toString(16)
+                    .padStart(
+                        2,
+                        "0"
+                    );
+        }
+
+
+        return result;
+    }
+
+
+    /*
+     * Fallback.
+     */
+
+    let hash =
+        0;
+
+
+    for(
+        let i = 0;
+        i < text.length;
+        i++
+    ){
+
+        hash =
+            ((hash << 5) - hash) +
+            text.charCodeAt(i);
+
+        hash |= 0;
+    }
+
+
+    return String(
+        hash
+    );
+}
+
+
+/* =====================================================
+   DOWNLOAD
+   ===================================================== */
+
+async function download(){
+
+    const separator =
+        UPDATE_URL.includes("?")
+            ? "&"
+            : "?";
+
+
+    const url =
+        UPDATE_URL +
+        separator +
+        "__update_timestamp=" +
+        Date.now();
+
+
+    const response =
+        await fetch(
+            url,
+            {
+                method:"GET",
+                cache:"no-store",
+                credentials:"omit",
+                redirect:"follow"
+            }
+        );
+
+
+    if(!response.ok){
+
+        throw new Error(
+            "HTTP " +
+            response.status
+        );
+    }
+
+
+    const html =
+        await response.text();
+
+
+    if(!html){
+
+        throw new Error(
+            "GitHub retornou resposta vazia."
+        );
+    }
+
+
+    return html;
+}
+
+
+/* =====================================================
+   POPUP
+   ===================================================== */
+
+function showPopup(){
+
+    if(popupShown){
+
+        return;
+    }
+
+
+    popupShown =
+        true;
+
+
+    const overlay =
+        document.createElement(
+            "div"
+        );
+
+
+    overlay.id =
+        "__Manager_update_popup";
+
+
+    overlay.innerHTML = \`
+        <div style="
+            position:fixed;
+            inset:0;
+            z-index:2147483647;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            padding:20px;
+            box-sizing:border-box;
+            background:rgba(0,0,0,.78);
+            backdrop-filter:blur(7px);
+            -webkit-backdrop-filter:blur(7px);
+            font-family:Arial,sans-serif;
+        ">
+
+            <div style="
+                width:min(390px,100%);
+                box-sizing:border-box;
+                padding:25px;
+                border-radius:18px;
+                background:#171923;
+                color:#fff;
+                border:1px solid rgba(255,255,255,.12);
+                box-shadow:0 25px 70px rgba(0,0,0,.7);
+                text-align:center;
+            ">
+
+                <div style="
+                    width:54px;
+                    height:54px;
+                    margin:0 auto 16px;
+                    border-radius:50%;
+                    display:flex;
+                    align-items:center;
+                    justify-content:center;
+                    background:rgba(124,92,255,.15);
+                    color:#9b87ff;
+                    font-size:26px;
+                ">
+                    ↻
+                </div>
+
+                <h2 style="
+                    margin:0 0 10px;
+                    font-size:20px;
+                ">
+                    Seu aplicativo está desatualizado
+                </h2>
+
+                <p style="
+                    margin:0 0 21px;
+                    color:#aaa;
+                    font-size:14px;
+                    line-height:1.5;
+                ">
+                    Uma nova versão do aplicativo
+                    está disponível. Clique aqui para
+                    atualizar para a última versão.
+                </p>
+
+                <button
+                    id="__sm_update_now"
+                    style="
+                        width:100%;
+                        padding:13px 16px;
+                        border:0;
+                        border-radius:11px;
+                        background:linear-gradient(
+                            135deg,
+                            #7c5cff,
+                            #6347dc
+                        );
+                        color:#fff;
+                        font-size:14px;
+                        font-weight:bold;
+                        cursor:pointer;
+                    "
+                >
+                    Atualizar agora
+                </button>
+
+                <button
+                    id="__sm_update_later"
+                    style="
+                        width:100%;
+                        margin-top:9px;
+                        padding:11px 16px;
+                        border:0;
+                        border-radius:11px;
+                        background:rgba(255,255,255,.06);
+                        color:#aaa;
+                        font-size:13px;
+                        cursor:pointer;
+                    "
+                >
+                    Agora não
+                </button>
+
+            </div>
+
+        </div>
+    \`;
+
+
+    document.body.appendChild(
+        overlay
+    );
+
+
+    document
+        .getElementById(
+            "__sm_update_later"
+        )
+        .onclick =
+        function(){
+
+            overlay.remove();
+
+            popupShown =
+                false;
+        };
+
+
+    document
+        .getElementById(
+            "__sm_update_now"
+        )
+        .onclick =
+        updateNow;
+}
+
+
+/* =====================================================
+   ATUALIZAR
+   ===================================================== */
+
+async function updateNow(){
+
+    const button =
+        document.getElementById(
+            "__sm_update_now"
+        );
+
+
+    if(button){
+
+        button.disabled =
+            true;
+
+        button.style.opacity =
+            ".6";
+
+        button.textContent =
+            "Baixando atualização...";
+    }
+
+
+    try{
+
+        console.log(
+            "[Manager] Baixando nova versão..."
+        );
+
+
+        const newHTML =
+            await download();
+
+
+        console.log(
+            "[Manager] Calculando hash da nova versão..."
+        );
+
+
+        const newHash =
+            await makeHash(
+                newHTML
+            );
+
+
+        console.log(
+            "[Manager] Novo hash:",
+            newHash
+        );
+
+
+        await saveNewVersion(
+            newHTML,
+            newHash
+        );
+
+
+        console.log(
+            "[Manager] Nova versão salva."
+        );
+
+
+        console.log(
+            "[Manager] Recarregando aplicativo..."
+        );
+
+
+        /*
+         * O loader original será executado novamente.
+         *
+         * Como a nova versão já está salva,
+         * ele abrirá essa versão.
+         */
+
+        location.reload();
+
+
+    }catch(error){
+
+        console.error(
+            "[Manager] Erro ao atualizar:",
+            error
+        );
+
+
+        if(button){
+
+            button.disabled =
+                false;
+
+            button.style.opacity =
+                "1";
+
+            button.textContent =
+                "Tentar novamente";
+        }
+
+
+        alert(
+            "Não foi possível atualizar o aplicativo.\\n\\n" +
+            "Verifique sua conexão com a internet."
+        );
+    }
+}
+
+
+/* =====================================================
+   VERIFICAR ATUALIZAÇÃO
+   ===================================================== */
+
+async function checkUpdate(){
+
+    if(checking){
+
+        console.log(
+            "[Manager] Verificação anterior ainda está em andamento."
+        );
+
+        return;
+    }
+
+
+    checking =
+        true;
+
+
+    console.log(
+        "=============================================="
+    );
+
+
+    console.log(
+        "[Manager] VERIFICANDO ATUALIZAÇÃO"
+    );
+
+
+    console.log(
+        "[Manager] Horário:",
+        new Date().toLocaleTimeString()
+    );
+
+
+    try{
+
+        /*
+         * Obtém o hash da versão que está sendo executada.
+         */
+
+        const currentHash =
+            await getCurrentHash();
+
+
+        if(!currentHash){
+
+            console.warn(
+                "[Manager] Hash local não encontrado."
+            );
+
+            console.warn(
+                "[Manager] Não foi possível comparar esta versão."
+            );
+
+            return;
+        }
+
+
+        console.log(
+            "[Manager] Hash local:",
+            currentHash
+        );
+
+
+        /*
+         * Baixa o HTML atual do GitHub.
+         */
+
+        console.log(
+            "[Manager] Baixando código atual do GitHub..."
+        );
+
+
+        const remoteHTML =
+            await download();
+
+
+        console.log(
+            "[Manager] Código recebido:",
+            remoteHTML.length,
+            "caracteres"
+        );
+
+
+        /*
+         * Calcula hash do código remoto.
+         */
+
+        const remoteHash =
+            await makeHash(
+                remoteHTML
+            );
+
+
+        console.log(
+            "[Manager] Hash GitHub:",
+            remoteHash
+        );
+
+
+        /*
+         * COMPARAÇÃO REAL.
+         */
+
+        if(
+            remoteHash !==
+            currentHash
+        ){
+
+            console.warn(
+                "[Manager] ⚠️ ALTERAÇÃO DETECTADA!"
+            );
+
+
+            console.warn(
+                "[Manager] Hash local:",
+                currentHash
+            );
+
+
+            console.warn(
+                "[Manager] Hash GitHub:",
+                remoteHash
+            );
+
+
+            showPopup();
+
+
+        }else{
+
+            console.log(
+                "[Manager] ✓ Nenhuma alteração encontrada."
+            );
+
+
+            console.log(
+                "[Manager] Código local e GitHub são iguais."
+            );
+        }
+
+
+    }catch(error){
+
+        console.warn(
+            "[Manager] Falha na verificação."
+        );
+
+
+        console.warn(
+            "[Manager] O aplicativo continuará funcionando normalmente."
+        );
+
+
+        console.warn(
+            error
+        );
+
+
+    }finally{
+
+        checking =
+            false;
+
+
+        console.log(
+            "[Manager] Próxima verificação em 15 segundos."
+        );
+
+
+        console.log(
+            "=============================================="
+        );
+    }
+}
+
+
+/* =====================================================
+   MONITOR INICIADO
+   ===================================================== */
+
+console.log(
+    "[Manager] Monitor de atualização iniciado."
+);
+
+
+console.log(
+    "[Manager] Verificação automática:",
+    INTERVAL / 1000,
+    "segundos"
+);
+
+
+/*
+ * Primeira verificação após 3 segundos.
+ */
+
+setTimeout(
+    checkUpdate,
+    3000
+);
+
+
+/*
+ * Depois verifica a cada 15 segundos.
+ */
+
+setInterval(
+    checkUpdate,
+    INTERVAL
+);
+
+
+/*
+ * Quando voltar para a aba,
+ * verifica imediatamente.
+ */
+
+document.addEventListener(
+    "visibilitychange",
+    function(){
+
+        if(
+            document.visibilityState ===
+            "visible"
+        ){
+
+            console.log(
+                "[Manager] Aplicativo voltou ao primeiro plano."
+            );
+
+
+            checkUpdate();
+        }
+    }
+);
+
+})();
+<\/script>
+`;
+
+}
+
+
+/* =========================================================
+   INJETAR MONITOR
+   ========================================================= */
+
+function injectMonitorIntoHTML(html){
+
+    const monitor =
+        createMonitorScript();
+
+
+    if(
+        /<\/body\s*>/i.test(html)
+    ){
+
+        return html.replace(
+            /<\/body\s*>/i,
+            monitor +
+            "</body>"
+        );
+    }
+
+
+    return html +
+        monitor;
+}
+
+
+/* =========================================================
+   ABRIR APLICAÇÃO
+   ========================================================= */
+
+function openApplication(html){
+
+    const executableHTML =
+        injectMonitorIntoHTML(
+            html
+        );
+
+
+    document.open();
+
+
+    document.write(
+        executableHTML
+    );
+
+
+    document.close();
+}
+
+
+/* =========================================================
+   INICIAR
+   ========================================================= */
+
+async function start(){
+
+    const loader =
+        document.getElementById(
+            "loader"
+        );
+
+
+    const loaderText =
+        document.getElementById(
+            "loaderText"
+        );
+
+
+    const errorElement =
+        document.getElementById(
+            "error"
+        );
+
+
+    /*
+     * Primeiro tenta abrir a versão armazenada.
+     */
+
+    const cachedHTML =
+        await getHTML();
+
+
+    if(cachedHTML){
+
+        console.log(
+            "[Loader] Versão armazenada encontrada."
+        );
+
+
+        console.log(
+            "[Loader] Abrindo aplicativo pelo cache."
+        );
+
+
+        openApplication(
+            cachedHTML
+        );
+
+
+        return;
+    }
+
+
+    /*
+     * Primeira execução.
+     */
+
+    try{
+
+        loaderText.textContent =
+            "Baixando aplicativo...";
+
+
+        console.log(
+            "[Loader] Nenhuma versão local encontrada."
+        );
+
+
+        console.log(
+            "[Loader] Baixando versão do GitHub..."
+        );
+
+
+        const remoteHTML =
+            await downloadRemote();
+
+
+        loaderText.textContent =
+            "Preparando aplicativo...";
+
+
+        /*
+         * Calcula o hash do HTML ORIGINAL.
+         */
+
+        const remoteHash =
+            await sha256(
+                remoteHTML
+            );
+
+
+        console.log(
+            "[Loader] Hash inicial:",
+            remoteHash
+        );
+
+
+        /*
+         * Salva a versão original.
+         */
+
+        await saveVersion(
+            remoteHTML,
+            remoteHash
+        );
+
+
+        console.log(
+            "[Loader] Versão inicial salva."
+        );
+
+
+        /*
+         * Abre o aplicativo.
+         */
+
+        openApplication(
+            remoteHTML
+        );
+
+
+    }catch(error){
+
+        console.error(
+            "[Loader] Erro ao iniciar:",
+            error
+        );
+
+
+        loaderText.style.display =
+            "none";
+
+
+        errorElement.style.display =
+            "block";
+    }
+}
+
+
+/* =========================================================
+   INICIAR LOADER
+   ========================================================= */
+
+start();
+
+</script>
+
+</body>
+</html>
