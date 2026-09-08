@@ -18,12 +18,15 @@
   --bg-3:rgba(255,255,255,.09);
   --border:rgba(255,255,255,.09);
   --border-strong:rgba(255,255,255,.18);
-  --text-0:#f5f6fb;
+  --text-0:#ffffff;
   --text-1:#c3c7d6;
   --text-2:#888ea2;
-  --accent:#7c5cff;
+  --accent:#4d7dff;
+  --accent-rgb:77,125,255;
   --accent-2:#22d3ee;
+  --accent2-rgb:34,211,238;
   --fav:#ec4899;
+  --fav-rgb:236,72,153;
   --accent-3:#34d399;
   --warn:#38bdf8;
   --danger:#ef4444;
@@ -43,10 +46,10 @@ html,body{
 body{
   background-color:var(--bg-0);
   background-image:
-    radial-gradient(1100px 750px at 12% -8%, rgba(124,92,255,.32), transparent 60%),
-    radial-gradient(950px 700px at 108% 8%, rgba(34,211,238,.20), transparent 55%),
-    radial-gradient(900px 650px at 45% 115%, rgba(124,92,255,.16), transparent 60%),
-    radial-gradient(600px 500px at 85% 90%, rgba(236,72,153,.10), transparent 60%);
+    radial-gradient(1100px 750px at 12% -8%, rgba(var(--accent-rgb),.32), transparent 60%),
+    radial-gradient(950px 700px at 108% 8%, rgba(var(--accent2-rgb),.20), transparent 55%),
+    radial-gradient(900px 650px at 45% 115%, rgba(var(--accent-rgb),.16), transparent 60%),
+    radial-gradient(600px 500px at 85% 90%, rgba(var(--fav-rgb),.10), transparent 60%);
   background-attachment:fixed;
   background-repeat:no-repeat;
 }
@@ -74,7 +77,7 @@ input,select{
   font-size:14px;
   transition:border-color .15s, background .15s;
 }
-input:focus,select:focus{border-color:var(--accent);background:rgba(124,92,255,.08);}
+input:focus,select:focus{border-color:var(--accent);background:rgba(var(--accent-rgb),.08);}
 input::placeholder{color:var(--text-2);}
 a{color:inherit;text-decoration:none;}
 
@@ -97,7 +100,7 @@ a{color:inherit;text-decoration:none;}
   flex-direction:column;
   transition:transform .25s ease;
   z-index:50;
-  box-shadow:inset -1px 0 0 rgba(255,255,255,.03);
+  box-shadow:inset -1px 0 0 rgba(255,255,255,.07);
 }
 #sidebar .brand{
   display:flex;
@@ -111,7 +114,7 @@ a{color:inherit;text-decoration:none;}
   background:linear-gradient(135deg,var(--accent),var(--accent-2));
   display:flex;align-items:center;justify-content:center;
   font-weight:800;font-size:16px;color:#fff;
-  box-shadow:0 4px 16px -2px rgba(124,92,255,.55), inset 0 1px 0 rgba(255,255,255,.35);
+  box-shadow:0 4px 16px -2px rgba(var(--accent-rgb),.55), inset 0 1px 0 rgba(255,255,255,.35);
 }
 #sidebar .brand .name{font-weight:800;font-size:16.5px;letter-spacing:-.02em;}
 #sidebar .brand .name span{
@@ -136,13 +139,14 @@ a{color:inherit;text-decoration:none;}
 .nav-item .ic{width:18px;text-align:center;font-size:15px;opacity:.9;}
 .nav-item:hover{background:var(--bg-2);color:var(--text-0);}
 .nav-item.active{
-  background:linear-gradient(135deg, rgba(124,92,255,.22), rgba(34,211,238,.10));
+  background:linear-gradient(135deg, rgba(var(--accent-rgb),.30), rgba(var(--accent2-rgb),.14));
   color:var(--text-0);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.06), inset 0 0 0 1px rgba(124,92,255,.25);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.1), inset 0 0 0 1px rgba(var(--accent-rgb),.4), 0 0 18px -4px rgba(var(--accent-rgb),.5);
 }
 .nav-item.active::before{
   content:"";position:absolute;left:-10px;top:8px;bottom:8px;width:3px;
   background:linear-gradient(180deg,var(--accent),var(--accent-2));border-radius:2px;
+  box-shadow:0 0 8px 0 rgba(var(--accent-rgb),.8);
 }
 .nav-item .count{
   margin-left:auto;font-size:11px;background:var(--bg-3);
@@ -194,7 +198,7 @@ a{color:inherit;text-decoration:none;}
 }
 #global-search-wrap .sic{
   position:absolute;left:15px;top:50%;transform:translateY(-50%);
-  color:var(--text-2);font-size:14px;pointer-events:none;
+  color:var(--text-2);pointer-events:none;display:flex;align-items:center;
 }
 #global-search-clear{
   position:absolute;right:10px;top:50%;transform:translateY(-50%);
@@ -202,7 +206,7 @@ a{color:inherit;text-decoration:none;}
 }
 
 #content-load-bar{
-  padding:9px 28px;background:rgba(124,92,255,.08);border-bottom:1px solid var(--border);
+  padding:9px 28px;background:rgba(var(--accent-rgb),.08);border-bottom:1px solid var(--border);
   display:flex;align-items:center;gap:12px;
 }
 #content-load-bar span{font-size:11.5px;color:var(--text-2);white-space:nowrap;}
@@ -231,9 +235,9 @@ a{color:inherit;text-decoration:none;}
 .btn.primary{
   background:linear-gradient(135deg,var(--accent),#6a4ce0);
   border-color:transparent;color:#fff;
-  box-shadow:0 6px 20px -6px rgba(124,92,255,.65), inset 0 1px 0 rgba(255,255,255,.2);
+  box-shadow:0 8px 26px -6px rgba(var(--accent-rgb),.8), inset 0 1px 0 rgba(255,255,255,.32);
 }
-.btn.primary:hover{filter:brightness(1.1);}
+.btn.primary:hover{filter:brightness(1.15);}
 .btn.danger{background:rgba(239,68,68,.08);border-color:rgba(239,68,68,.35);color:var(--danger);}
 .btn.danger:hover{background:rgba(239,68,68,.16);}
 .btn:disabled{opacity:.45;cursor:not-allowed;}
@@ -251,7 +255,7 @@ a{color:inherit;text-decoration:none;}
 .chip.active{
   background:linear-gradient(135deg,var(--accent),var(--accent-2));
   border-color:transparent;color:#fff;
-  box-shadow:0 4px 14px -4px rgba(124,92,255,.6);
+  box-shadow:0 4px 14px -4px rgba(var(--accent-rgb),.6);
 }
 
 .filter-row{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px;align-items:center;}
@@ -273,6 +277,7 @@ a{color:inherit;text-decoration:none;}
   transition:transform .22s cubic-bezier(.2,.8,.2,1), border-color .22s, box-shadow .22s;
   display:flex;flex-direction:column;
   position:relative;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.06), 0 2px 10px -4px rgba(0,0,0,.4);
 }
 .content-card::after{
   content:"";position:absolute;inset:0;border-radius:var(--radius);
@@ -282,9 +287,9 @@ a{color:inherit;text-decoration:none;}
   -webkit-mask-composite:xor;mask-composite:exclude;
 }
 .content-card:hover{
-  transform:translateY(-5px);
+  transform:translateY(-6px);
   border-color:transparent;
-  box-shadow:0 16px 32px -12px rgba(0,0,0,.55), 0 0 0 1px rgba(124,92,255,.25), 0 0 24px -4px rgba(124,92,255,.35);
+  box-shadow:0 20px 40px -12px rgba(0,0,0,.65), 0 0 0 1px rgba(var(--accent-rgb),.4), 0 0 34px -2px rgba(var(--accent-rgb),.5), inset 0 1px 0 rgba(255,255,255,.12);
 }
 .content-card:hover::after{opacity:1;}
 .content-card .thumb{
@@ -429,7 +434,7 @@ a{color:inherit;text-decoration:none;}
   border-radius:var(--radius-sm);padding:11px 13px;margin-bottom:8px;cursor:pointer;
   transition:border-color .15s, background .15s;
 }
-.episode-row:hover{border-color:var(--accent);background:rgba(124,92,255,.08);}
+.episode-row:hover{border-color:var(--accent);background:rgba(var(--accent-rgb),.08);}
 .episode-row .eth{width:60px;height:38px;border-radius:7px;background:var(--bg-3);overflow:hidden;flex-shrink:0;}
 .episode-row .eth img{width:100%;height:100%;object-fit:cover;}
 .episode-row .ename{flex:1;font-size:13px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;}
@@ -687,7 +692,7 @@ a{color:inherit;text-decoration:none;}
     <div id="topbar">
       <h1 id="page-title">Dashboard</h1>
       <div id="global-search-wrap">
-        <span class="sic">&#128269;</span>
+        <span class="sic"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span>
         <input id="global-search" type="text" placeholder="Pesquisar em Filmes, Séries e Ao Vivo...">
         <button id="global-search-clear">&times;</button>
       </div>
@@ -766,11 +771,36 @@ const MAX_CONCURRENT_PROCESSING = 1; // processamento sequencial (1 playlist por
 const DEFAULT_SETTINGS = {
   id: 'app',
   pageSize: 50,
-  rawUrl: 'https://matheus.aulas.arquitetura.com/lista_com_aulas.txt',
+  rawUrl: 'https://raw.githubusercontent.com/matheus-yaml/manager/refs/heads/main/playlists',
   rawUser: '111111',
   rawPass: 'xxx',
-  autoSaveServers: true
+  autoSaveServers: true,
+  colors: { accent:'#4d7dff', accent2:'#22d3ee', fav:'#ec4899', bg:'#06070c' }
 };
+
+function hexToRgbString(hex){
+  const h = (hex || '').replace('#', '');
+  const full = h.length === 3 ? h.split('').map(c=>c+c).join('') : h;
+  const num = parseInt(full, 16);
+  if(isNaN(num)) return '124,92,255';
+  return [(num>>16)&255, (num>>8)&255, num&255].join(',');
+}
+
+/** Aplica as cores personalizadas nas variáveis CSS raiz — inclui as
+ * versões "R,G,B" (pra brilhos/sombras com transparência) e o fundo. Chamada
+ * no início do app e toda vez que o usuário muda uma cor em Configurações. */
+function applyThemeColors(colors){
+  const c = Object.assign({}, DEFAULT_SETTINGS.colors, colors || {});
+  const root = document.documentElement.style;
+  root.setProperty('--accent', c.accent);
+  root.setProperty('--accent-rgb', hexToRgbString(c.accent));
+  root.setProperty('--accent-2', c.accent2);
+  root.setProperty('--accent2-rgb', hexToRgbString(c.accent2));
+  root.setProperty('--fav', c.fav);
+  root.setProperty('--fav-rgb', hexToRgbString(c.fav));
+  root.setProperty('--bg-0', c.bg);
+}
+
 
 /* Global in-memory state */
 const State = {
@@ -4437,6 +4467,43 @@ async function renderSettingsView(container){
   pagBlock.appendChild(pagSelect);
   container.appendChild(pagBlock);
 
+  // Aparência: cores personalizáveis
+  const colorBlock = el('div', { class:'settings-block' });
+  colorBlock.appendChild(el('h3', {}, ['Aparência']));
+  const colorRow = el('div', { class:'form-row' });
+  const currentColors = Object.assign({}, DEFAULT_SETTINGS.colors, State.settings.colors);
+
+  function makeColorPicker(label, key){
+    const swatch = el('input', { type:'color' });
+    swatch.value = currentColors[key];
+    swatch.style.cssText = 'width:44px;height:38px;padding:2px;cursor:pointer;';
+    swatch.addEventListener('input', async function(){
+      currentColors[key] = swatch.value;
+      State.settings.colors = Object.assign({}, currentColors);
+      applyThemeColors(State.settings.colors);
+      await IDB.put(STORES.settings, State.settings);
+    });
+    return el('div', { class:'form-group', style:'min-width:120px;flex:none;' }, [
+      el('label', {}, [label]), swatch
+    ]);
+  }
+
+  colorRow.appendChild(makeColorPicker('Cor principal', 'accent'));
+  colorRow.appendChild(makeColorPicker('Cor secundária', 'accent2'));
+  colorRow.appendChild(makeColorPicker('Cor de favoritos', 'fav'));
+  colorRow.appendChild(makeColorPicker('Cor de fundo', 'bg'));
+  colorBlock.appendChild(colorRow);
+
+  const resetColorsBtn = el('button', { class:'btn', style:'margin-top:12px;' }, ['Restaurar cores padrão']);
+  resetColorsBtn.addEventListener('click', async function(){
+    State.settings.colors = Object.assign({}, DEFAULT_SETTINGS.colors);
+    applyThemeColors(State.settings.colors);
+    await IDB.put(STORES.settings, State.settings);
+    Router.render();
+  });
+  colorBlock.appendChild(resetColorsBtn);
+  container.appendChild(colorBlock);
+
   // Automatic servers block
   const autoBlock = el('div', { class:'settings-block' });
   autoBlock.appendChild(el('h3', {}, ['Servidores Automáticos']));
@@ -4654,6 +4721,7 @@ async function initApp(){
   }catch(err){
     State.settings = { ...DEFAULT_SETTINGS };
   }
+  applyThemeColors(State.settings.colors);
 
   // Servidores, progresso e favoritos são pequenos — carregam rápido e
   // eager. O conteúdo (que pode ter milhões de itens) NUNCA é carregado
