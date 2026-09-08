@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Libera HTTP puro (cleartext) pra QUALQUER domínio. Necessário
+         porque muitos servidores de playlist IPTV (ex: get.php?...) ainda
+         usam http:// em vez de https://, e o Android bloqueia isso por
+         padrão desde a versão 9 (API 28) com o erro
+         net::ERR_CLEARTEXT_NOT_PERMITTED. -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
