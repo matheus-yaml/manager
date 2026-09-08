@@ -765,7 +765,7 @@ const STORES = {
   seriesEpisodes: 'seriesEpisodes' // separado do resumo pra listar/buscar séries continuar leve
 };
 
-const APP_VERSION = '1.0.0'; // atualize aqui quando lançar uma nova versão
+const APP_VERSION = '1.0.1'; // atualize aqui quando lançar uma nova versão
 const PAGE_SIZE_DEFAULT = 50;
 const MAX_CONCURRENT_DOWNLOADS = 10; // não usado mais como limite (downloads são todos simultâneos), mantido por compatibilidade
 const MAX_CONCURRENT_PROCESSING = 3; // 3 servidores podem estar "na vez" de processar ao mesmo tempo — não é paralelismo de CPU de verdade (só existe 1 thread principal), mas aproveita os intervalos ociosos de um servidor (esperando o Worker confirmar um lote) pra deixar os outros avançarem
