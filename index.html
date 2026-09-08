@@ -5470,13 +5470,11 @@ async function runImportWithProgressModal(servers){
 
    ====================================================================== */
 async function renderSettingsView(container){
-  // Recarrega do banco antes de desenhar a tela — garante que o que
-  // aparece aqui é exatamente o que está persistido, mesmo que algo em
-  // outro lugar tenha mudado State.settings sem essa tela saber.
-  try{
-    const fresh = await IDB.getByKey(STORES.settings, 'app');
-    if(fresh) State.settings = Object.assign({}, DEFAULT_SETTINGS, fresh);
-  }catch(e){}
+  // Usa State.settings diretamente — já é mantido correto em memória (é
+  // carregado na abertura do app, "esquentado" pelo pré-carregamento, e
+  // toda ação de salvar aqui mesmo já atualiza essa variável junto). Não
+  // busca do banco de novo toda vez: essa era a causa da demora e do
+  // recarregamento constante ao clicar em outro menu e voltar.
 
   container.appendChild(el('div', { class:'section-header' }, [el('h2',{},['Configurações'])]));
 
