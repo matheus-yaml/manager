@@ -4,6 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>StreamManager - Gerenciador de Playlists M3U</title>
+
+<!-- ============================================================
+     VERSÃO DO APP — mude só este número quando lançar uma nova versão.
+     ============================================================ -->
+<script>const APP_VERSION = '1.0.2';</script>
+
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -765,7 +771,7 @@ const STORES = {
   seriesEpisodes: 'seriesEpisodes' // separado do resumo pra listar/buscar séries continuar leve
 };
 
-const APP_VERSION = '1.0.1'; // atualize aqui quando lançar uma nova versão
+// APP_VERSION agora fica lá no topo do arquivo (logo depois do <title>) — fácil de achar e ajustar
 const PAGE_SIZE_DEFAULT = 50;
 const MAX_CONCURRENT_DOWNLOADS = 10; // não usado mais como limite (downloads são todos simultâneos), mantido por compatibilidade
 const MAX_CONCURRENT_PROCESSING = 3; // 3 servidores podem estar "na vez" de processar ao mesmo tempo — não é paralelismo de CPU de verdade (só existe 1 thread principal), mas aproveita os intervalos ociosos de um servidor (esperando o Worker confirmar um lote) pra deixar os outros avançarem
