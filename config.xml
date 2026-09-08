@@ -25,20 +25,13 @@
          precisa estar habilitado ou o fetch falha silenciosamente
          (net::ERR_CLEARTEXT_NOT_PERMITTED) mesmo com o access/navigation
          acima corretos. -->
-    <preference name="AndroidInsecureFileModeEnabled" value="true" />
 
     <platform name="android">
         <allow-intent href="market:*" />
         <!-- Reforça o cleartext diretamente no AndroidManifest.xml gerado,
              já que a preference sozinha nem sempre é suficiente dependendo
              da versão do cordova-android. -->
-        <edit-config file="app/src/main/AndroidManifest.xml" mode="merge" target="/manifest/application">
-            <application android:usesCleartextTraffic="true" />
-        </edit-config>
-        <config-file target="AndroidManifest.xml" parent="/manifest">
-            <uses-permission android:name="android.permission.INTERNET" />
-            <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-        </config-file>
+        <preference name="AndroidInsecureFileModeEnabled" value="true" />
     </platform>
 
     <platform name="ios">
