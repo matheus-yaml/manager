@@ -1,5 +1,8 @@
 <?xml version='1.0' encoding='utf-8'?>
-<widget id="com.Manager.Manager" version="1.0.0" xmlns="http://www.w3.org/ns/widgets" xmlns:cdv="http://cordova.apache.org/ns/1.0">
+<widget id="com.Manager.Manager" version="1.0.0"
+    xmlns="http://www.w3.org/ns/widgets"
+    xmlns:cdv="http://cordova.apache.org/ns/1.0"
+    xmlns:android="http://schemas.android.com/apk/res/android">
     <name>Manager</name>
     <description>
         A sample Apache Cordova application that responds to the deviceready event.
@@ -9,8 +12,6 @@
     </author>
     <content src="index.html" />
 
-    <!-- Libera fetch/XHR pra qualquer domínio (necessário pra baixar o
-         Raw JSON e as playlists M3U de servidores externos). -->
     <access origin="*" />
     <allow-navigation href="*" />
     <allow-intent href="http://*/*" />
@@ -20,18 +21,30 @@
     <allow-intent href="mailto:*" />
     <allow-intent href="geo:*" />
 
-    <!-- Android 9+ bloqueia HTTP puro (não-HTTPS) por padrão. Muitos
-         servidores IPTV ainda servem playlists via http://, então isso
-         precisa estar habilitado ou o fetch falha silenciosamente
-         (net::ERR_CLEARTEXT_NOT_PERMITTED) mesmo com o access/navigation
-         acima corretos. -->
+    <preference name="AndroidInsecureFileModeEnabled" value="true" />
 
     <platform name="android">
         <allow-intent href="market:*" />
-        <!-- Reforça o cleartext diretamente no AndroidManifest.xml gerado,
-             já que a preference sozinha nem sempre é suficiente dependendo
-             da versão do cordova-android. -->
         <preference name="AndroidInsecureFileModeEnabled" value="true" />
+
+        <!-- CONFIRMADO no log: net::ERR_CLEARTEXT_NOT_PERMITTED. Isso
+             instala um network_security_config.xml de verdade (a forma
+             "oficial" do Android de liberar HTTP puro), que é mais
+             confiável do que a preference sozinha. O arquivo
+             network_security_config.xml precisa estar em:
+             app/res/xml/network_security_config.xml -->
+        <resource-file src="network_security_config.xml" target="app/src/main/res/xml/network_security_config.xml" />
+
+        <edit-config file="app/src/main/AndroidManifest.xml" mode="merge" target="/manifest/application">
+            <application
+                android:usesCleartextTraffic="true"
+                android:networkSecurityConfig="@xml/network_security_config" />
+        </edit-config>
+
+        <config-file target="AndroidManifest.xml" parent="/manifest">
+            <uses-permission android:name="android.permission.INTERNET" />
+            <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+        </config-file>
     </platform>
 
     <platform name="ios">
