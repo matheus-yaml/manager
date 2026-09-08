@@ -4,7 +4,7 @@ set -e
 
 rm -rf app
 mkdir -p app
-cp -rf config.xml index.html app
+cp -rf config.xml index.html network_security_config.xml app
 PROJECT_NAME="Manager"
 APP_ID="com.Manager.Manager"
 WORKDIR="$(pwd)/app"
