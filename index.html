@@ -442,17 +442,17 @@ a{color:inherit;text-decoration:none;}
 #player-overlay{
   position:fixed;inset:0;background:#000;z-index:300;display:none;flex-direction:column;
 }
-#player-overlay video{flex:1;width:100%;height:100%;background:#000;}
+#player-overlay video{flex:1;width:100%;height:100%;background:#000;position:relative;z-index:1;}
 #player-buffering{
   position:absolute;top:0;left:0;right:0;bottom:0;display:none;
   align-items:center;justify-content:center;flex-direction:column;gap:12px;
-  background:rgba(0,0,0,.4);backdrop-filter:blur(4px);z-index:1;pointer-events:none;
+  background:rgba(0,0,0,.4);backdrop-filter:blur(4px);z-index:2;pointer-events:none;
 }
 #player-buffering .spinner{width:34px;height:34px;border-width:3px;}
 #player-buffering span{color:#fff;font-size:13px;}
 #player-topbar{
   position:absolute;top:0;left:0;right:0;padding:18px 22px;display:flex;align-items:center;gap:14px;
-  background:linear-gradient(180deg,rgba(0,0,0,.82),transparent);z-index:2;
+  background:linear-gradient(180deg,rgba(0,0,0,.82),transparent);z-index:5;
 }
 #player-topbar .ptitle{font-size:15px;font-weight:700;}
 #player-close{font-size:22px;background:rgba(255,255,255,.12);backdrop-filter:blur(8px);width:38px;height:38px;border-radius:50%;transition:background .15s;}
@@ -463,6 +463,12 @@ a{color:inherit;text-decoration:none;}
 #player-topbar, #player-controls-bottom{
   transition:opacity .25s ease, transform .25s ease;
   opacity:1;
+  z-index:5;
+}
+/* Garante que os controles fiquem visíveis também dentro da Fullscreen API
+   nativa (:fullscreen), inclusive nos navegadores mais antigos com prefixo. */
+#player-overlay:fullscreen, #player-overlay:-webkit-full-screen, #player-overlay:-moz-full-screen{
+  width:100%;height:100%;
 }
 #player-overlay.controls-hidden #player-topbar{opacity:0;transform:translateY(-6px);pointer-events:none;}
 #player-overlay.controls-hidden #player-controls-bottom{opacity:0;transform:translateY(6px);pointer-events:none;}
@@ -545,6 +551,16 @@ a{color:inherit;text-decoration:none;}
   opacity:0;transition:opacity .18s, transform .18s;
 }
 #player-seek-feedback.show{display:flex;opacity:1;transform:translate(-50%,-50%) scale(1);}
+#player-playpause-feedback{
+  position:absolute;top:50%;left:50%;transform:translate(-50%,-50%) scale(.7);
+  width:76px;height:76px;border-radius:50%;
+  background:rgba(10,11,18,.6);backdrop-filter:blur(10px);
+  display:none;align-items:center;justify-content:center;
+  color:#fff;z-index:3;pointer-events:none;
+  opacity:0;transition:opacity .25s, transform .25s;
+}
+#player-playpause-feedback.show{display:flex;opacity:1;transform:translate(-50%,-50%) scale(1);}
+#player-playpause-feedback svg{width:34px;height:34px;}
 #player-seek-feedback svg{width:22px;height:22px;}
 /* Menu de opções de velocidade */
 #player-speed-menu{
@@ -609,6 +625,32 @@ a{color:inherit;text-decoration:none;}
 @media(max-width:480px){
   .modal-box{padding:18px;}
   .form-group{min-width:100%;}
+}
+
+/* Player em telas estreitas (celular): botões e espaçamentos menores, e o
+   fundo do controle rola na horizontal como último recurso, pra nunca
+   cortar um botão fora da tela sem acesso. */
+@media(max-width:640px){
+  #player-controls-bottom{
+    padding:10px 10px 14px;gap:6px;
+    overflow-x:auto;-webkit-overflow-scrolling:touch;
+  }
+  #player-playpause{width:34px;height:34px;flex-shrink:0;}
+  #player-playpause svg{width:15px;height:15px;}
+  .player-ctrl-btn{height:30px;min-width:30px;padding:0 7px;font-size:10px;flex-shrink:0;}
+  .player-ctrl-btn svg{width:14px;height:14px;}
+  #player-time-current,#player-time-duration{font-size:11px;min-width:32px;flex-shrink:0;}
+  #player-seek-track{min-width:60px;}
+  #player-topbar{padding:12px 14px;gap:8px;}
+  #player-back,#player-close{width:32px;height:32px;font-size:17px;flex-shrink:0;}
+  #player-next-episode{font-size:11px;padding:6px 10px;white-space:nowrap;}
+  #player-title{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:90px;}
+}
+@media(max-width:380px){
+  /* Tela realmente pequena: esconde o texto de tempo pra sobrar espaço
+     pros botões de ação, que importam mais. */
+  #player-time-current,#player-time-duration{display:none;}
+  .player-ctrl-btn{padding:0 6px;}
 }
 
 .loader-inline{display:flex;align-items:center;gap:10px;color:var(--text-2);font-size:13px;padding:30px;justify-content:center;}
@@ -676,6 +718,7 @@ a{color:inherit;text-decoration:none;}
   </div>
   <video id="video-player" playsinline preload="auto"></video>
   <div id="player-seek-feedback"></div>
+  <div id="player-playpause-feedback"></div>
   <div id="player-controls-bottom">
     <button id="player-playpause" title="Play/Pause"></button>
     <button id="player-seek-back5" class="player-ctrl-btn" title="Retroceder 5s"></button>
@@ -693,6 +736,7 @@ a{color:inherit;text-decoration:none;}
         <input type="range" id="player-volume-slider" min="0" max="1" step="0.05" value="1">
       </div>
     </div>
+    <button id="player-pip" class="player-ctrl-btn" title="Picture-in-Picture"></button>
     <button id="player-fullscreen" class="player-ctrl-btn" title="Tela cheia"></button>
   </div>
 </div>
@@ -821,24 +865,55 @@ function uid(prefix){
   return (prefix||'id') + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,9);
 }
 /**
- * Baixa a URL do conteúdo. É "melhor esforço": como a maioria dos servidores
- * IPTV não envia cabeçalho Content-Disposition, o navegador pode abrir o
- * arquivo numa aba em vez de baixar direto — isso é uma limitação do
- * servidor de origem, não tem como forçar via JS puro sem um backend.
+ * Baixa a URL do conteúdo forçando o download de verdade (não abrir aba).
+ *
+ * O atributo `download` de um <a> só é respeitado pelo navegador quando a
+ * URL é do MESMO domínio da página — como as URLs de IPTV são de outro
+ * servidor, o navegador ignorava o atributo e só abria o vídeo numa aba
+ * nova. A solução é baixar o arquivo via fetch(), transformar em blob (que
+ * passa a ser "do mesmo domínio" por ser local), e então disparar o
+ * download real a partir desse blob.
+ *
+ * Isso só funciona se o servidor do vídeo permitir CORS (a maioria dos
+ * painéis IPTV permite pra vídeo/live, mas não é garantido). Se falhar,
+ * caímos de volta pro método antigo como último recurso.
  */
-function downloadContentUrl(url, filename){
+async function downloadContentUrl(url, filename){
+  showToast('Baixando "' + (filename || 'arquivo') + '"...', 'success');
   try{
+    const response = await fetch(url);
+    if(!response.ok) throw new Error('HTTP ' + response.status);
+    const blob = await response.blob();
+    const blobUrl = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url;
-    a.download = filename || '';
-    a.target = '_blank';
-    a.rel = 'noopener';
+    a.href = blobUrl;
+    a.download = sanitizeFilename(filename) || 'video';
     document.body.appendChild(a);
     a.click();
     a.remove();
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 30000);
   }catch(e){
-    showToast('Não foi possível iniciar o download.', 'error');
+    // O servidor provavelmente não permite CORS — não tem como ler os
+    // bytes via JS nesse caso. Como último recurso, tenta o método antigo
+    // (pode abrir numa aba em vez de baixar, dependendo do servidor).
+    try{
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = sanitizeFilename(filename) || 'video';
+      a.target = '_blank';
+      a.rel = 'noopener';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      showToast('O servidor não permitiu baixar direto — abrindo em outra aba.', 'error');
+    }catch(e2){
+      showToast('Não foi possível baixar este arquivo.', 'error');
+    }
   }
+}
+function sanitizeFilename(name){
+  if(!name) return '';
+  return name.replace(/[\\/:*?"<>|]+/g, ' ').trim();
 }
 function showToast(msg, type){
   const wrap = qs('#toast-wrap');
@@ -2146,7 +2221,7 @@ const ServerModule = {
     await IDB.delete(STORES.servers, serverId);
     State.servers.delete(serverId);
     await IDB.deleteByIndex(STORES.seriesSummary, 'serverId', serverId);
-    State.pageCache.clear(); State.dashboardCache = null;
+    State.pageCache.clear(); State.dashboardCache = null; State.favoritesCache = null; State.continueCache = null;
   },
 
   substituteCredentials(url, user, pass){
@@ -2592,6 +2667,7 @@ const ProgressModule = {
     };
     State.progress.set(contentId, progress);
     State.dashboardCache = null;
+    State.continueCache = null;
     try{ await IDB.put(STORES.progress, progress); }catch(err){}
   },
   getProgress(contentId){
@@ -2602,6 +2678,7 @@ const ProgressModule = {
   async resetProgress(contentId){
     State.progress.delete(contentId);
     State.dashboardCache = null;
+    State.continueCache = null;
     try{ await IDB.delete(STORES.progress, contentId); }catch(e){}
   },
   getContinueWatchingCount(){
@@ -2738,7 +2815,8 @@ const PlayerModule = {
     fullscreenEnter: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>',
     // "Sair" da tela cheia: o MESMO desenho, só que invertido (cantos
     // fechando pra dentro) — pedido explícito, em vez de um X genérico.
-    fullscreenExit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/></svg>'
+    fullscreenExit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/></svg>',
+    pip: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><rect x="12" y="12" width="8" height="6" rx="1" fill="currentColor" stroke="none"/></svg>'
   },
 
   /**
@@ -2761,10 +2839,12 @@ const PlayerModule = {
     const speedMenu = qs('#player-speed-menu');
     const volumeBtn = qs('#player-volume');
     const fullscreenBtn = qs('#player-fullscreen');
+    const pipBtn = qs('#player-pip');
 
     seekBack5Btn.innerHTML = this.ICONS.seekBack5;
     seekFwd5Btn.innerHTML = this.ICONS.seekFwd5;
     fullscreenBtn.innerHTML = this.ICONS.fullscreenEnter;
+    pipBtn.innerHTML = this.ICONS.pip;
     volumeBtn.innerHTML = this.ICONS.volumeOn;
 
     const speeds = [0.5, 0.75, 1, 1.25, 1.5, 2];
@@ -2837,6 +2917,36 @@ const PlayerModule = {
       fullscreenBtn.innerHTML = document.fullscreenElement ? this.ICONS.fullscreenExit : this.ICONS.fullscreenEnter;
     });
 
+    pipBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      try{
+        if(document.pictureInPictureElement){
+          await document.exitPictureInPicture();
+        } else if(video.requestPictureInPicture){
+          await video.requestPictureInPicture();
+        } else {
+          showToast('Picture-in-Picture não é suportado neste navegador.', 'error');
+        }
+      }catch(err){
+        showToast('Não foi possível ativar o Picture-in-Picture.', 'error');
+      }
+    });
+
+    // Ao entrar no PiP, esconde o player em tela cheia — a tela por trás
+    // (série/filmes/etc.) fica visível e navegável enquanto o vídeo continua
+    // tocando na janela flutuante do sistema operacional.
+    video.addEventListener('enterpictureinpicture', () => {
+      if(document.fullscreenElement) document.exitFullscreen().catch(()=>{});
+      qs('#player-overlay').style.display = 'none';
+    });
+    // Ao sair do PiP (fechar a janelinha ou clicar "voltar à aba"), volta a
+    // mostrar o player normalmente, sem reiniciar a reprodução.
+    video.addEventListener('leavepictureinpicture', () => {
+      if(this.currentContent){
+        qs('#player-overlay').style.display = 'flex';
+      }
+    });
+
     seekTrack.addEventListener('click', (e) => {
       if(this.currentContent && this.currentContent.tipo === 'live') return;
       if(!video.duration || isNaN(video.duration)) return;
@@ -2906,8 +3016,22 @@ const PlayerModule = {
 
   togglePlayPause(){
     const video = qs('#video-player');
-    if(video.paused) video.play().catch(()=>{});
+    const willPlay = video.paused;
+    if(willPlay) video.play().catch(()=>{});
     else video.pause();
+    this._showPlayPauseFeedback(willPlay);
+  },
+
+  /** Ícone grande que pisca no centro da tela ao dar play/pause (feedback
+   * visual claro do que acabou de acontecer). */
+  _showPlayPauseFeedback(isPlaying){
+    const indicator = qs('#player-playpause-feedback');
+    indicator.innerHTML = isPlaying ? this.ICONS.play : this.ICONS.pause;
+    indicator.classList.remove('show');
+    void indicator.offsetWidth;
+    indicator.classList.add('show');
+    clearTimeout(this._playPauseFeedbackTimer);
+    this._playPauseFeedbackTimer = setTimeout(() => indicator.classList.remove('show'), 500);
   },
 
   _updatePlayPauseIcon(){
@@ -2953,11 +3077,8 @@ const PlayerModule = {
 
   _scheduleHideControls(){
     clearTimeout(this._hideControlsTimer);
-    const video = qs('#video-player');
-    if(video.paused) return; // nunca esconde controles com o vídeo pausado
     this._hideControlsTimer = setTimeout(() => {
-      const v = qs('#video-player');
-      if(!v.paused){ qs('#player-overlay').classList.add('controls-hidden'); }
+      qs('#player-overlay').classList.add('controls-hidden');
     }, 3000);
   },
 
@@ -3289,6 +3410,7 @@ const PlayerModule = {
 
   close(){
     this.playToken++; // invalidate any pending retries/callbacks
+    if(document.fullscreenElement) document.exitFullscreen().catch(()=>{});
     const video = qs('#video-player');
     if(this.currentContent && this.currentContent.tipo !== 'live' && video.duration && !isNaN(video.duration)){
       ProgressModule.saveProgress(this.currentContent.id, video.currentTime, video.duration);
@@ -4264,7 +4386,7 @@ async function runImportWithProgressModal(servers){
   }
 
   State.ui.isImporting = false;
-  State.pageCache.clear(); State.dashboardCache = null;
+  State.pageCache.clear(); State.dashboardCache = null; State.favoritesCache = null; State.continueCache = null;
   updateSidebarCounts();
 
   if(minimizedPillEl){
@@ -4283,8 +4405,15 @@ async function runImportWithProgressModal(servers){
    VIEW: SETTINGS
 
    ====================================================================== */
-function renderSettingsView(){
-  const container = el('div');
+async function renderSettingsView(container){
+  // Recarrega do banco antes de desenhar a tela — garante que o que
+  // aparece aqui é exatamente o que está persistido, mesmo que algo em
+  // outro lugar tenha mudado State.settings sem essa tela saber.
+  try{
+    const fresh = await IDB.getByKey(STORES.settings, 'app');
+    if(fresh) State.settings = Object.assign({}, DEFAULT_SETTINGS, fresh);
+  }catch(e){}
+
   container.appendChild(el('div', { class:'section-header' }, [el('h2',{},['Configurações'])]));
 
   // Pagination block
@@ -4315,7 +4444,7 @@ function renderSettingsView(){
   const row1 = el('div', { class:'form-row' });
   const rawUrlGroup = el('div', { class:'form-group' }, [
     el('label',{},['URL do Raw (JSON)']),
-    (function(){ const i = el('input',{type:'text'}); i.id='raw-url-input'; i.value = State.settings.rawUrl || ''; return i; })(),
+    (function(){ const i = el('input',{type:'text'}); i.id='raw-url-input'; i.value = DEFAULT_SETTINGS.rawUrl || ''; return i; })(),
     el('div',{class:'hint'},['O JSON deve conter pares chave (nome do servidor) → URL M3U/M3U8.'])
   ]);
   row1.appendChild(rawUrlGroup);
@@ -4330,11 +4459,14 @@ function renderSettingsView(){
   passInput.id = 'raw-pass-input';
   passInput.value = State.settings.rawPass || '';
   const passWrap = el('div', { style:'position:relative;' }, [passInput]);
-  const eyeBtn = el('button', { type:'button', style:'position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:15px;padding:2px 6px;' }, ['👁']);
+  const EYE_OPEN = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>';
+  const EYE_OFF = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a20.4 20.4 0 0 1 5.06-5.94M9.9 4.24A9.5 9.5 0 0 1 12 4c7 0 11 8 11 8a20.3 20.3 0 0 1-3.22 4.44M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
+  const eyeBtn = el('button', { type:'button', style:'position:absolute;right:8px;top:50%;transform:translateY(-50%);padding:2px 6px;display:flex;color:var(--text-2);' });
+  eyeBtn.innerHTML = EYE_OPEN;
   eyeBtn.addEventListener('click', function(){
     const show = passInput.type === 'password';
     passInput.type = show ? 'text' : 'password';
-    eyeBtn.textContent = show ? '🙈' : '👁';
+    eyeBtn.innerHTML = show ? EYE_OFF : EYE_OPEN;
   });
   passWrap.appendChild(eyeBtn);
   const passGroup = el('div', { class:'form-group' }, [ el('label',{},['Senha']), passWrap ]);
@@ -4379,8 +4511,6 @@ function renderSettingsView(){
   });
   autoBlock.appendChild(downloadBtn);
   container.appendChild(autoBlock);
-
-  return container;
 }
 
 /* ======================================================================
@@ -4421,7 +4551,7 @@ const Router = {
       case 'favorites': renderFavoritesView(container); break;
       case 'continue': renderContinueView(container); break;
       case 'servers': container.appendChild(renderServersView()); break;
-      case 'settings': container.appendChild(renderSettingsView()); break;
+      case 'settings': renderSettingsView(container); break;
       default: renderDashboardView(container);
     }
 
