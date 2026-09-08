@@ -1,4 +1,4 @@
-<!DOCTYPE html> 
+<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
@@ -372,6 +372,7 @@ a{color:inherit;text-decoration:none;}
   box-shadow:0 0 8px 0 rgba(52,211,153,.7);}
 .status-dot.error{background:var(--danger);box-shadow:0 0 8px 0 rgba(239,68,68,.7);}
 .status-dot.processing{background:var(--warn);animation:pulse 1s infinite;box-shadow:0 0 8px 0 rgba(56,189,248,.7);}
+.status-dot.updating{animation:pulse 1s infinite;} /* mantém a cor (verde/vermelha), só pisca enquanto atualiza */
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
 .server-item .sactions{display:flex;gap:8px;}
 
@@ -753,20 +754,139 @@ a{color:inherit;text-decoration:none;}
 'use strict';
 
 const DB_NAME = 'StreamManagerDB';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const STORES = {
   servers: 'servers',
   contents: 'contents',
   progress: 'progress',
   settings: 'settings',
   favorites: 'favorites',
-  seriesSummary: 'seriesSummary'
+  seriesSummary: 'seriesSummary',
+  seriesEpisodes: 'seriesEpisodes' // separado do resumo pra listar/buscar séries continuar leve
 };
 
 const APP_VERSION = '1.0.0'; // atualize aqui quando lançar uma nova versão
 const PAGE_SIZE_DEFAULT = 50;
 const MAX_CONCURRENT_DOWNLOADS = 10; // não usado mais como limite (downloads são todos simultâneos), mantido por compatibilidade
-const MAX_CONCURRENT_PROCESSING = 1; // processamento sequencial (1 playlist por vez); download continua ilimitado
+const MAX_CONCURRENT_PROCESSING = 3; // 3 servidores podem estar "na vez" de processar ao mesmo tempo — não é paralelismo de CPU de verdade (só existe 1 thread principal), mas aproveita os intervalos ociosos de um servidor (esperando o Worker confirmar um lote) pra deixar os outros avançarem
+
+/* ======================================================================
+   PERSISTENCE WORKER
+   ------------------------------------------------------------------
+   O verdadeiro custo do "salvando..." é o próprio IndexedDB escrevendo
+   milhares de registros em disco — isso é um limite físico do navegador,
+   não dá pra reduzir muito mais. O que DÁ pra resolver de verdade é o
+   TRAVAMENTO VISUAL: se essa escrita roda na thread principal, a interface
+   inteira congela enquanto o navegador processa. Rodando a mesma escrita
+   num Web Worker (uma thread separada, com acesso próprio ao IndexedDB do
+   mesmo site), a interface continua 100% fluida — você pode clicar,
+   rolar, navegar — enquanto o salvamento acontece em paralelo.
+   ====================================================================== */
+const PersistenceWorker = (function(){
+  let worker = null;
+  let nextId = 1;
+  const pending = new Map(); // id -> {resolve, reject, onProgress}
+
+  function getWorker(){
+    if(worker) return worker;
+    const src = `
+      const DB_NAME = ${JSON.stringify(DB_NAME)};
+      const DB_VERSION = ${JSON.stringify(DB_VERSION)};
+      const STORES = ${JSON.stringify(STORES)};
+      let dbPromise = null;
+      function openDB(){
+        if(dbPromise) return dbPromise;
+        dbPromise = new Promise((resolve, reject) => {
+          const req = indexedDB.open(DB_NAME, DB_VERSION);
+          // O schema (stores/índices) já foi criado pela thread principal
+          // antes de qualquer import acontecer — o worker só abre a conexão
+          // já existente, nunca precisa rodar onupgradeneeded.
+          req.onsuccess = (e) => resolve(e.target.result);
+          req.onerror = (e) => reject(e.target.error);
+        });
+        return dbPromise;
+      }
+      self.onmessage = async function(e){
+        const { id, contents, seriesSummaries, episodeRecords } = e.data;
+        const PROGRESS_STEP = 2000; // avisa a cada N registros, não a cada 1 (custo de postMessage por item seria caro)
+        try{
+          const db = await openDB();
+          await new Promise((resolve, reject) => {
+            const tx = db.transaction([STORES.contents, STORES.seriesSummary, STORES.seriesEpisodes], 'readwrite', { durability: 'relaxed' });
+            const contentStore = tx.objectStore(STORES.contents);
+            for(let i=0; i<contents.length; i++){
+              contentStore.put(contents[i]);
+              if(i > 0 && i % PROGRESS_STEP === 0){
+                self.postMessage({ id, progress: i, total: contents.length });
+              }
+            }
+            const seriesStore = tx.objectStore(STORES.seriesSummary);
+            for(const v of (seriesSummaries||[])) seriesStore.put(v);
+            const episodesStore = tx.objectStore(STORES.seriesEpisodes);
+            for(const v of (episodeRecords||[])) episodesStore.put(v);
+            // Todos os itens já foram enfileirados — a partir daqui só resta
+            // esperar o navegador confirmar a gravação em disco de verdade,
+            // uma etapa que NÃO tem como reportar progresso incremental (o
+            // IndexedDB não expõe isso). Avisa que entrou nessa fase final
+            // pra não parecer travado sem explicação nenhuma.
+            self.postMessage({ id, progress: contents.length, total: contents.length, committing: true });
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+          });
+          self.postMessage({ id, ok:true, progress: contents.length, total: contents.length });
+        }catch(err){
+          self.postMessage({ id, ok:false, error: (err && err.message) ? err.message : String(err) });
+        }
+      };
+    `;
+    const blob = new Blob([src], { type: 'application/javascript' });
+    worker = new Worker(URL.createObjectURL(blob));
+    worker.onmessage = function(e){
+      const { id, ok, error, progress, total, committing } = e.data;
+      const p = pending.get(id);
+      if(!p) return;
+      if(ok === undefined){
+        // Mensagem de progresso intermediária (não é a final ainda).
+        if(p.onProgress) p.onProgress(progress, total, committing);
+        return;
+      }
+      pending.delete(id);
+      if(ok) p.resolve(); else p.reject(new Error(error || 'Erro ao salvar no worker.'));
+    };
+    worker.onerror = function(err){
+      // Erro genérico do worker (ex: falha ao carregar) — rejeita tudo que
+      // estava pendente pra não travar a Promise pra sempre.
+      for(const [, p] of pending) p.reject(err);
+      pending.clear();
+    };
+    return worker;
+  }
+
+  return {
+    /** Envia conteúdos + resumos de série (+ episódios, opcional) pro
+     * worker salvar, sem travar a thread principal. `onProgress(processed,
+     * total)` é chamado periodicamente conforme a gravação avança. Faz
+     * fallback automático pra salvar na própria thread (como antes) se
+     * Worker não existir no ambiente. */
+    save(contents, seriesSummaries, onProgress, episodeRecords){
+      if(typeof Worker === 'undefined'){
+        return saveAllInOneTransaction(contents, seriesSummaries, episodeRecords);
+      }
+      return new Promise((resolve, reject) => {
+        const id = nextId++;
+        pending.set(id, { resolve, reject, onProgress });
+        try{
+          getWorker().postMessage({ id, contents, seriesSummaries, episodeRecords });
+        }catch(err){
+          pending.delete(id);
+          // Se falhar ao criar/usar o worker por algum motivo (ambiente
+          // restrito etc.), cai de volta pro caminho síncrono de sempre.
+          saveAllInOneTransaction(contents, seriesSummaries, episodeRecords).then(resolve, reject);
+        }
+      });
+    }
+  };
+})();
 
 const DEFAULT_SETTINGS = {
   id: 'app',
@@ -822,6 +942,7 @@ const State = {
   progress: new Map(), // contentId -> progress object
   settings: { ...DEFAULT_SETTINGS },
   pageCache: new Map(), // cache em memória: chave -> {items,total,catOptions,serverIds}
+  pageFetchesInFlight: new Map(), // chave -> Promise já em andamento (evita refazer a mesma busca 2x se o usuário clicar enquanto o pré-carregamento ainda roda)
   dashboardCache: null, // {continueList, recentGroups}
   favoritesCache: null, // {favMovies, favLive, favSeries}
   continueCache: null,  // array retornado por getContinueWatchingList()
@@ -840,6 +961,7 @@ const State = {
     },
     categoryFilterText: { movie:'', series:'', live:'' },
     isImporting: false,
+    serversUpdating: new Set(), // ids dos servidores em atualização agora — bolinha pisca na tela de Servidores
     activeSeriesKey: null
   }
 };
@@ -847,6 +969,13 @@ const State = {
 function pageCacheKey(type, filters){
   const pageSize = State.settings.pageSize || PAGE_SIZE_DEFAULT;
   return type + '|' + filters.server + '|' + filters.category + '|' + filters.favoritesOnly + '|' + filters.page + '|' + pageSize;
+}
+/** Chave só do "conjunto de filtros" (sem a página) — servidores e
+ * categorias disponíveis não mudam entre páginas do MESMO filtro, então
+ * não faz sentido recalcular isso de novo a cada vez que você passa de
+ * página. Separado do cache de página (que muda a cada página mesmo). */
+function filterMetaCacheKey(type, filters){
+  return type + '|' + filters.server + '|' + filters.category + '|' + filters.favoritesOnly + '|meta';
 }
 function invalidatePageCache(type){
   for(const k of Array.from(State.pageCache.keys())){
@@ -1031,8 +1160,33 @@ const IDB = {
           ss.createIndex('serverId', 'serverId', { unique:false });
           ss.createIndex('categorias', 'categorias', { unique:false, multiEntry:true });
         }
+        // v4: episódios separados do resumo — listar/buscar séries só toca
+        // no resumo leve (nome, capa, contagens), nunca nos episódios em
+        // si. Só a tela de detalhe de uma série específica lê daqui.
+        if(!db.objectStoreNames.contains(STORES.seriesEpisodes)){
+          db.createObjectStore(STORES.seriesEpisodes, { keyPath: 'key' });
+        }
       };
-      req.onsuccess = function(e){ resolve(e.target.result); };
+      req.onsuccess = function(e){
+        const db = e.target.result;
+        // Se outra aba (ou uma versão mais nova do app) precisar mudar o
+        // schema do banco, o navegador avisa TODAS as conexões abertas.
+        // Sem fechar essa aqui de boa vontade, a outra aba ficaria travada
+        // pra sempre esperando, e essa conexão pode acabar num estado
+        // inválido (é exatamente o "InvalidStateError: connection is
+        // closing" que acontecia sem isso).
+        db.onversionchange = function(){
+          db.close();
+          State.db = null;
+          showToast('O app foi atualizado em outra aba. Recarregue esta página pra continuar usando.', 'error');
+        };
+        // Se a conexão cair sozinha por qualquer outro motivo (o navegador
+        // pode fazer isso sob pressão de memória, por exemplo), marcamos
+        // como indisponível — assim os métodos abaixo sabem reabrir em vez
+        // de tentar usar uma conexão morta.
+        db.onclose = function(){ State.db = null; };
+        resolve(db);
+      };
       req.onerror = function(e){ reject(e.target.error); };
     });
   },
@@ -1119,6 +1273,31 @@ const IDB = {
         req.onsuccess = function(e){
           const cursor = e.target.result;
           if(cursor){ store.delete(cursor.primaryKey); cursor.continue(); }
+        };
+        tx.oncomplete = ()=> resolve();
+        tx.onerror = (e)=> reject(e.target.error);
+      }catch(err){ reject(err); }
+    });
+  },
+  /** Apaga o resumo E os episódios (store separada) de todas as séries de
+   * um servidor, numa única transação. A store de episódios não tem índice
+   * por servidor (é só key→episódios), então reaproveita as chaves
+   * (idênticas às do resumo) coletadas ao apagar o resumo. */
+  deleteSeriesDataForServer(serverId){
+    return new Promise((resolve, reject)=>{
+      try{
+        const tx = IDB.tx([STORES.seriesSummary, STORES.seriesEpisodes], 'readwrite', { durability: 'relaxed' });
+        const summaryStore = tx.objectStore(STORES.seriesSummary);
+        const episodesStore = tx.objectStore(STORES.seriesEpisodes);
+        const idx = summaryStore.index('serverId');
+        const req = idx.openKeyCursor(IDBKeyRange.only(serverId));
+        req.onsuccess = function(e){
+          const cursor = e.target.result;
+          if(cursor){
+            summaryStore.delete(cursor.primaryKey);
+            episodesStore.delete(cursor.primaryKey); // mesma chave (seriesKey) nas duas stores
+            cursor.continue();
+          }
         };
         tx.oncomplete = ()=> resolve();
         tx.onerror = (e)=> reject(e.target.error);
@@ -1213,6 +1392,81 @@ const IDB = {
         }
         walkNextType();
         tx.oncomplete = () => resolve(keys);
+        tx.onerror = (e) => reject(e.target.error);
+      }catch(err){ reject(err); }
+    });
+  },
+  /** Só COLETA as chaves de conteúdo de um servidor (filme/ao vivo/série),
+   * sem apagar nada — usada antes de reimportar, pra saber depois o que
+   * remover, sem travar o salvamento do conteúdo novo esperando o antigo
+   * ser apagado primeiro. */
+  getContentKeysForServer(serverId){
+    return new Promise((resolve, reject)=>{
+      try{
+        const store = IDB.tx([STORES.contents]).objectStore(STORES.contents);
+        const idx = store.index('tipo_serverId');
+        const types = ['movie','live','series'];
+        const keys = [];
+        let ti = 0;
+        function walkNextType(){
+          if(ti >= types.length){ resolve(keys); return; }
+          const req = idx.openKeyCursor(IDBKeyRange.only([types[ti], serverId]));
+          req.onsuccess = function(e){
+            const cursor = e.target.result;
+            if(cursor){ keys.push(cursor.primaryKey); cursor.continue(); }
+            else { ti++; walkNextType(); }
+          };
+          req.onerror = (e) => reject(e.target.error);
+        }
+        walkNextType();
+      }catch(err){ reject(err); }
+    });
+  },
+  /** Apaga registros de conteúdo por chave já conhecida (em vez de varrer
+   * um índice de novo) — usado pra limpar o que ficou pra trás depois que
+   * o conteúdo novo já foi salvo. */
+  deleteContentByKeys(keys){
+    return new Promise((resolve, reject)=>{
+      try{
+        if(!keys || keys.length === 0){ resolve(); return; }
+        const tx = IDB.tx([STORES.contents], 'readwrite', { durability:'relaxed' });
+        const store = tx.objectStore(STORES.contents);
+        for(const k of keys) store.delete(k);
+        tx.oncomplete = () => resolve();
+        tx.onerror = (e) => reject(e.target.error);
+      }catch(err){ reject(err); }
+    });
+  },
+  /** Só COLETA as chaves de série (resumo) de um servidor, sem apagar nada
+   * — mesma ideia de getContentKeysForServer, pra série. */
+  getSeriesKeysForServer(serverId){
+    return new Promise((resolve, reject)=>{
+      try{
+        const store = IDB.tx([STORES.seriesSummary]).objectStore(STORES.seriesSummary);
+        const idx = store.index('serverId');
+        const req = idx.openKeyCursor(IDBKeyRange.only(serverId));
+        const keys = [];
+        req.onsuccess = function(e){
+          const cursor = e.target.result;
+          if(cursor){ keys.push(cursor.primaryKey); cursor.continue(); }
+          else resolve(keys);
+        };
+        req.onerror = (e) => reject(e.target.error);
+      }catch(err){ reject(err); }
+    });
+  },
+  /** Apaga resumo + episódios (as duas stores, mesma chave) por chave já
+   * conhecida — usado pra limpar série antiga depois que a nova já foi
+   * salva. */
+  deleteSeriesByKeys(keys){
+    return new Promise((resolve, reject)=>{
+      try{
+        if(!keys || keys.length === 0){ resolve(); return; }
+        const tx = IDB.tx([STORES.seriesSummary, STORES.seriesEpisodes], 'readwrite', { durability:'relaxed' });
+        const summaryStore = tx.objectStore(STORES.seriesSummary);
+        const episodesStore = tx.objectStore(STORES.seriesEpisodes);
+        for(const k of keys){ summaryStore.delete(k); episodesStore.delete(k); }
+        tx.oncomplete = () => resolve();
         tx.onerror = (e) => reject(e.target.error);
       }catch(err){ reject(err); }
     });
@@ -1360,41 +1614,91 @@ const QueryModule = {
     const { indexName, range, extraServer, extraCategory } = this._pickIndex(type, filters);
     const targetStart = (page - 1) * pageSize;
 
+    // Quando não precisamos filtrar em memória por cima do índice (sem
+    // favoritos, e sem precisar cruzar servidor+categoria ao mesmo tempo),
+    // dá pra pegar o total via count() nativo do IndexedDB — uma operação
+    // dedicada e rápida, sem precisar abrir cursor nem deserializar um
+    // registro sequer. Combinado com isso, o cursor de coleta para assim
+    // que a página desejada estiver completa, em vez de andar até o fim
+    // só pra contar (que era o bug real: abrir Filmes com 168 mil itens
+    // sempre andava pelos 168 mil, mesmo mostrando só 50 por vez).
+    const needsExtraServerFilter = extraServer && filters.server && filters.server !== 'all';
+    const needsExtraCategoryFilter = extraCategory && filters.category && filters.category !== 'all';
+    const canUseFastCount = !favSet && !needsExtraServerFilter && !needsExtraCategoryFilter;
+
     return new Promise((resolve, reject) => {
       try{
         const store = IDB.tx([STORES.contents]).objectStore(STORES.contents);
         const idx = store.index(indexName);
-        const req = idx.openCursor(range);
-        const collected = [];
-        let matched = 0, total = 0;
-        req.onsuccess = function(e){
-          const cursor = e.target.result;
-          if(!cursor){ resolve({ items: collected, total: total }); return; }
-          const rec = cursor.value;
-          let ok = true;
-          if(extraServer && filters.server && filters.server !== 'all' && rec.serverId !== filters.server) ok = false;
-          if(extraCategory && filters.category && filters.category !== 'all' && rec.categoria !== filters.category) ok = false;
-          if(ok && favSet && !favSet.has(rec.id)) ok = false;
-          if(ok){
-            total++;
-            if(matched >= targetStart && collected.length < pageSize){ collected.push(rec); }
-            matched++;
-          }
-          cursor.continue();
-        };
-        req.onerror = (e) => reject(e.target.error);
+
+        function collectPage(knownTotal){
+          const req = idx.openCursor(range);
+          const collected = [];
+          let matched = 0, total = 0;
+          req.onsuccess = function(e){
+            const cursor = e.target.result;
+            if(!cursor){ resolve({ items: collected, total: knownTotal !== undefined ? knownTotal : total }); return; }
+            const rec = cursor.value;
+            let ok = true;
+            if(needsExtraServerFilter && rec.serverId !== filters.server) ok = false;
+            if(needsExtraCategoryFilter && rec.categoria !== filters.category) ok = false;
+            if(ok && favSet && !favSet.has(rec.id)) ok = false;
+            if(ok){
+              if(matched >= targetStart && collected.length < pageSize){ collected.push(rec); }
+              matched++;
+              total++;
+              // Já sabemos o total de antemão (count nativo) e já
+              // coletamos a página inteira — não precisa mais continuar
+              // andando pelo resto dos registros só pra confirmar o óbvio.
+              if(knownTotal !== undefined && collected.length >= pageSize && matched >= targetStart + pageSize){
+                resolve({ items: collected, total: knownTotal });
+                return;
+              }
+            }
+            cursor.continue();
+          };
+          req.onerror = (e) => reject(e.target.error);
+        }
+
+        if(canUseFastCount){
+          const countReq = idx.count(range);
+          countReq.onsuccess = () => collectPage(countReq.result);
+          countReq.onerror = (e) => reject(e.target.error);
+        } else {
+          collectPage(undefined);
+        }
       }catch(err){ reject(err); }
     });
   },
 
+  /** Categorias de um tipo (filme/ao vivo), lidas direto da memória — cada
+   * servidor já sabe suas próprias categorias desde a importação (ver
+   * compactItemIncremental). Isso substitui uma varredura de "valores
+   * distintos" no IndexedDB, que na prática escala com o TOTAL de itens
+   * daquele tipo em vez de com a quantidade de categorias (o cursor
+   * 'nextunique' nem sempre pula duplicados de verdade dependendo do
+   * navegador) — era o motivo de Filmes/Séries/Ao Vivo demorarem
+   * proporcionalmente ao tamanho da biblioteca só pra abrir a tela. */
   async getCategoriesForType(type){
-    const values = await IDB.getDistinctIndexValues(STORES.contents, 'tipo_categoria', IDBKeyRange.bound([type,''], [type,'\uffff']));
-    return values.map(v => v[1]).filter(Boolean).sort();
+    const field = type === 'movie' ? 'movieCategories' : 'liveCategories';
+    const set = new Set();
+    for(const server of State.servers.values()){
+      for(const cat of (server[field] || [])) set.add(cat);
+    }
+    return Array.from(set).sort();
   },
 
   async getServersForType(type){
-    const values = await IDB.getDistinctIndexValues(STORES.contents, 'tipo_serverId', IDBKeyRange.bound([type,''], [type,'\uffff']));
-    return values.map(v => v[1]).filter(Boolean);
+    const ids = [];
+    for(const server of State.servers.values()){
+      const count = server.counts ? server.counts[type] : undefined;
+      // Servidores importados antes dessa otimização não têm `counts`
+      // salvo — nesse caso, mantém o servidor na lista de qualquer jeito
+      // (melhor mostrar um filtro "de mais" do que sumir um servidor da
+      // lista até ele ser reimportado).
+      if(count === undefined || count > 0) ids.push(server.id);
+    }
+    return ids;
   },
 
   /**
@@ -1407,34 +1711,56 @@ const QueryModule = {
     const targetStart = (page - 1) * pageSize;
     const useServer = filters.server && filters.server !== 'all';
     const useCategory = !useServer && filters.category && filters.category !== 'all';
+    // O índice 'categorias' é multiEntry (uma série pode aparecer mais de
+    // uma vez nele, uma por categoria) — count() nativo contaria essas
+    // repetições, então só usamos o atalho rápido quando NÃO estamos
+    // filtrando por categoria (server ou "sem filtro" são seguros).
+    const canUseFastCount = !favSet && !useCategory && !(useServer && filters.category && filters.category !== 'all');
 
     return new Promise((resolve, reject) => {
       try{
         const store = IDB.tx([STORES.seriesSummary]).objectStore(STORES.seriesSummary);
-        let req;
-        if(useServer) req = store.index('serverId').openCursor(IDBKeyRange.only(filters.server));
-        else if(useCategory) req = store.index('categorias').openCursor(IDBKeyRange.only(filters.category));
-        else req = store.openCursor();
 
-        const collected = [];
-        let matched = 0, total = 0;
-        const seen = new Set(); // multiEntry index pode repetir a mesma série p/ cada categoria
-        req.onsuccess = function(e){
-          const cursor = e.target.result;
-          if(!cursor){ resolve({ items: collected, total: total }); return; }
-          const rec = cursor.value;
-          let ok = !seen.has(rec.key);
-          seen.add(rec.key);
-          if(ok && useServer && filters.category && filters.category !== 'all' && rec.categorias.indexOf(filters.category) === -1) ok = false;
-          if(ok && favSet && !favSet.has(rec.key)) ok = false;
-          if(ok){
-            total++;
-            if(matched >= targetStart && collected.length < pageSize){ rec.favorito = favIds.has(rec.key); collected.push(rec); }
-            matched++;
-          }
-          cursor.continue();
-        };
-        req.onerror = (e) => reject(e.target.error);
+        function openMainCursor(){
+          if(useServer) return store.index('serverId').openCursor(IDBKeyRange.only(filters.server));
+          if(useCategory) return store.index('categorias').openCursor(IDBKeyRange.only(filters.category));
+          return store.openCursor();
+        }
+
+        function collectPage(knownTotal){
+          const req = openMainCursor();
+          const collected = [];
+          let matched = 0, total = 0;
+          const seen = new Set(); // multiEntry index pode repetir a mesma série p/ cada categoria
+          req.onsuccess = function(e){
+            const cursor = e.target.result;
+            if(!cursor){ resolve({ items: collected, total: knownTotal !== undefined ? knownTotal : total }); return; }
+            const rec = cursor.value;
+            let ok = !seen.has(rec.key);
+            seen.add(rec.key);
+            if(ok && useServer && filters.category && filters.category !== 'all' && rec.categorias.indexOf(filters.category) === -1) ok = false;
+            if(ok && favSet && !favSet.has(rec.key)) ok = false;
+            if(ok){
+              if(matched >= targetStart && collected.length < pageSize){ rec.favorito = favIds.has(rec.key); collected.push(rec); }
+              matched++;
+              total++;
+              if(knownTotal !== undefined && collected.length >= pageSize && matched >= targetStart + pageSize){
+                resolve({ items: collected, total: knownTotal });
+                return;
+              }
+            }
+            cursor.continue();
+          };
+          req.onerror = (e) => reject(e.target.error);
+        }
+
+        if(canUseFastCount){
+          const countReq = useServer ? store.index('serverId').count(IDBKeyRange.only(filters.server)) : store.count();
+          countReq.onsuccess = () => collectPage(countReq.result);
+          countReq.onerror = (e) => reject(e.target.error);
+        } else {
+          collectPage(undefined);
+        }
       }catch(err){ reject(err); }
     });
   },
@@ -1449,9 +1775,17 @@ const QueryModule = {
     return values;
   },
 
-  /** Todos os episódios de uma série específica (usado na tela de detalhes). */
+  /** Todos os episódios de uma série específica (usado na tela de
+   * detalhes). Episódios ficam numa store própria (seriesEpisodes),
+   * separada do resumo leve — assim listar/buscar séries nunca precisa
+   * carregar episódio nenhum. Fallback: dados salvos numa versão anterior
+   * (episódios ainda embutidos no resumo) continuam funcionando até serem
+   * reimportados. */
   async getEpisodesForSeries(seriesKey){
-    return IDB.getByIndex(STORES.contents, 'seriesKey', seriesKey);
+    const record = await IDB.getByKey(STORES.seriesEpisodes, seriesKey);
+    if(record && record.episodes) return record.episodes;
+    const summary = await IDB.getByKey(STORES.seriesSummary, seriesKey);
+    return (summary && summary.episodes) ? summary.episodes : [];
   },
 
   /** Últimos itens adicionados a um servidor (id embute timestamp, então ordem desc de chave ≈ mais recentes primeiro). */
@@ -1648,7 +1982,30 @@ const IndexModule = {
   async toggleFavoriteContent(content){
     content.favorito = !content.favorito;
     try{
-      await IDB.put(STORES.contents, content);
+      if(content.tipo === 'series' && content.seriesKey){
+        // Episódio de série vive na store própria seriesEpisodes agora —
+        // IndexedDB não faz update parcial de campo dentro de um array,
+        // então precisa reescrever o registro inteiro (só os episódios
+        // daquela série, não o resumo leve) pra persistir a mudança. Ação
+        // rara (favoritar), então o custo de reler+regravar é aceitável.
+        const record = await IDB.getByKey(STORES.seriesEpisodes, content.seriesKey);
+        if(record && record.episodes){
+          const ep = record.episodes.find(e => e.id === content.id);
+          if(ep) ep.favorito = content.favorito;
+          await IDB.put(STORES.seriesEpisodes, record);
+        } else {
+          // Fallback: dado salvo numa versão anterior (episódios ainda
+          // embutidos no resumo da série).
+          const summary = await IDB.getByKey(STORES.seriesSummary, content.seriesKey);
+          if(summary && summary.episodes){
+            const ep = summary.episodes.find(e => e.id === content.id);
+            if(ep) ep.favorito = content.favorito;
+            await IDB.put(STORES.seriesSummary, summary);
+          }
+        }
+      } else {
+        await IDB.put(STORES.contents, content);
+      }
       if(content.favorito) await IDB.put(STORES.favorites, { id: content.id, type: content.tipo });
       else await IDB.delete(STORES.favorites, content.id);
     }catch(e){}
@@ -2043,13 +2400,23 @@ const ParserModule = {
    */
   extractSeasonEpisode(name){
     if(!name) return { season: 1, episode: 0 };
+    const se = ParserModule.extractSeasonEpisodeStrict(name);
+    return se || { season: 1, episode: 0 };
+  },
+
+  /** Igual à de cima, mas retorna null quando não consegue reconhecer
+   * nenhum padrão — usada só pra decidir com segurança se é seguro
+   * compactar o nome do episódio (não dá pra reconstruir se não sabemos
+   * se a extração deu certo). */
+  extractSeasonEpisodeStrict(name){
+    if(!name) return null;
     let m = name.match(/s(\d{1,2})\s?e(\d{1,3})/i);
     if(m) return { season: parseInt(m[1],10), episode: parseInt(m[2],10) };
     m = name.match(/\b(\d{1,2})x(\d{1,3})\b/i);
     if(m) return { season: parseInt(m[1],10), episode: parseInt(m[2],10) };
     m = name.match(/temporada\s?(\d+).*?epis[oó]dio\s?(\d+)/i);
     if(m) return { season: parseInt(m[1],10), episode: parseInt(m[2],10) };
-    return { season: 1, episode: 0 };
+    return null;
   },
 
   /**
@@ -2106,36 +2473,301 @@ const ParserModule = {
 };
 
 /**
- * Saves content objects to IndexedDB and adds them to the in-memory indexes
- * in batches, yielding between each. Without this, saving+indexing tens of
- * thousands of items from a single freshly-processed playlist in one
- * unbatched synchronous loop is exactly the "trava um pouquinho ao finalizar
- * cada playlist" freeze — this spreads that same work across yielded chunks.
- *
- * Batch size here is much larger than the parse/build batching: each batch
- * is its own IndexedDB transaction, and every transaction has a fixed
- * commit overhead. Too many small transactions (e.g. one every 4000 items)
- * adds that overhead up hundreds of times over for a large library. Bigger
- * batches means far fewer transactions/commits, which is the main lever for
- * making this phase noticeably faster — combined with relaxed durability
- * on the transaction itself (see IDB.putMany).
+ * Versão focada em velocidade máxima: grava conteúdos + resumo de séries
+ * numa ÚNICA transação do IndexedDB (uma única confirmação/commit no disco,
+ * em vez de duas ou mais). Não faz fatiamento em lotes nem cede a thread
+ * entre gravações — a tela fica "congelada" durante o salvamento (sem
+ * atualizar a barra de progresso item a item), mas isso é bem mais rápido
+ * porque elimina o overhead de abrir/confirmar múltiplas transações e de
+ * ceder controle ao navegador repetidamente. Uso pretendido: apps internos
+ * onde responsividade da UI durante o salvamento não importa, só velocidade.
  */
-async function saveAndIndexContentsBatched(contents, batchSize, onProgress){
-  batchSize = batchSize || 75000;
-  const total = contents.length;
-  for(let i=0; i<total; i+=batchSize){
-    const batch = contents.slice(i, i+batchSize);
-    await IDB.putMany(STORES.contents, batch);
-    const saved = Math.min(i+batchSize, total);
-    if(onProgress) onProgress(saved, total);
-    if(saved < total) await fastYield(); // no need to yield after the last batch
-  }
+function saveAllInOneTransaction(contents, seriesSummaries, episodeRecords){
+  return new Promise((resolve, reject)=>{
+    try{
+      const tx = IDB.tx([STORES.contents, STORES.seriesSummary, STORES.seriesEpisodes], 'readwrite', { durability: 'relaxed' });
+      const contentStore = tx.objectStore(STORES.contents);
+      for(const v of contents) contentStore.put(v);
+      const seriesStore = tx.objectStore(STORES.seriesSummary);
+      for(const v of (seriesSummaries||[])) seriesStore.put(v);
+      const episodesStore = tx.objectStore(STORES.seriesEpisodes);
+      for(const v of (episodeRecords||[])) episodesStore.put(v);
+      tx.oncomplete = ()=> resolve();
+      tx.onerror = (e)=> reject(e.target.error);
+    }catch(err){ reject(err); }
+  });
 }
 
 function tallyCounts(contents){
   const counts = { movie:0, series:0, live:0 };
   for(const c of contents){ if(counts[c.tipo] !== undefined) counts[c.tipo]++; }
   return counts;
+}
+
+/**
+ * Elimina a repetição maciça de URL entre itens do mesmo servidor. URLs de
+ * IPTV normalmente compartilham o mesmo "caminho base" (host, porta,
+ * usuário, senha, pasta) entre centenas/milhares de itens — só o pedaço
+ * final (o ID/arquivo) muda. Em vez de guardar a URL inteira em cada
+ * registro, guardamos um dicionário pequeno de prefixos (descoberto
+ * automaticamente, sem assumir que existe só 1 padrão por servidor — um
+ * mesmo servidor pode ter caminhos diferentes pra filme/série/ao vivo) e,
+ * em cada item, só a referência ao prefixo + o pedaço que sobra.
+ *
+ * Retorna a lista de prefixos descobertos (pra guardar no registro do
+ * servidor). Muda os objetos de `contents` in-place.
+ */
+/**
+ * Mecanismo genérico de prefixo+sufixo: dado um campo (ex: 'url' ou
+ * 'logo'), descobre automaticamente os padrões repetidos naquele campo
+ * entre os itens (comparando tudo até a última barra) e troca o valor
+ * cheio por uma referência pequena (id do prefixo + o resto). Funciona
+ * mesmo quando os valores não são idênticos, só compartilham o mesmo
+ * "caminho base" — como capas do TMDB, que têm domínio+pasta iguais mas
+ * arquivo final diferente por episódio.
+ */
+function compactField(contents, fieldName, prefixFieldName, suffixFieldName){
+  const prefixToId = new Map();
+  const prefixList = [];
+  for(const c of contents){
+    const value = c[fieldName];
+    if(!value) continue;
+    const slashIdx = value.lastIndexOf('/');
+    // Sem barra útil pra dividir (ou barra bem no final, sem nada depois) —
+    // não dá pra compactar esse item com segurança, mantém o valor inteiro.
+    if(slashIdx === -1 || slashIdx === value.length - 1) continue;
+    const prefix = value.slice(0, slashIdx + 1);
+    const suffix = value.slice(slashIdx + 1);
+    let pid = prefixToId.get(prefix);
+    if(pid === undefined){
+      pid = prefixList.length;
+      prefixList.push(prefix);
+      prefixToId.set(prefix, pid);
+    }
+    c[prefixFieldName] = pid;
+    c[suffixFieldName] = suffix;
+    delete c[fieldName];
+  }
+  return prefixList;
+}
+
+function compactUrls(contents){
+  return compactField(contents, 'url', 'urlPrefixId', 'urlSuffix');
+}
+
+/** Reconstrói a URL completa de um item. Compatível com dados antigos
+ * (importados antes dessa otimização), que ainda têm o campo `url` cheio. */
+function resolveContentUrl(content){
+  if(content.url) return content.url;
+  if(content.urlPrefixId === undefined) return '';
+  const server = State.servers.get(content.serverId);
+  if(!server || !server.urlPrefixes) return '';
+  const prefix = server.urlPrefixes[content.urlPrefixId];
+  return (prefix || '') + (content.urlSuffix || '');
+}
+
+/**
+ * Passo 1 da compactação de capa, específico de série: se a capa do
+ * episódio é IDÊNTICA à da série (caso mais comum), nem guarda nada — usa
+ * a da série direto. O que sobrar (capas diferentes por episódio, ou
+ * capas de filme/canal ao vivo, que nunca têm "capa da série" pra
+ * comparar) segue pro passo 2 (compactCoverLogos), que compacta por
+ * prefixo+sufixo — cobre inclusive o caso de capas diferentes mas do
+ * mesmo domínio/pasta (ex: TMDB com um arquivo por episódio).
+ */
+function omitSeriesLogosIfIdentical(contents, seriesSummaries){
+  const logoBySeriesKey = new Map();
+  for(const s of seriesSummaries) logoBySeriesKey.set(s.key, s.logo);
+  for(const c of contents){
+    if(c.tipo !== 'series' || !c.logo) continue;
+    if(c.logo === logoBySeriesKey.get(c.seriesKey)) delete c.logo;
+  }
+}
+
+/** Passo 2: compacta por prefixo+sufixo a capa de TODOS os itens que
+ * sobraram com capa própria — filme, série (as que não foram omitidas no
+ * passo 1) e ao vivo, todos juntos, reaproveitando o mesmo dicionário de
+ * prefixos (capas do mesmo servidor costumam vir do mesmo CDN/domínio,
+ * então filme e série frequentemente reaproveitam o mesmo prefixo). */
+function compactCoverLogos(contents){
+  return compactField(contents, 'logo', 'logoPrefixId', 'logoSuffix');
+}
+
+/** Reconstrói a capa de um item. Prioridade: capa própria compactada > capa
+ * própria antiga (campo `logo` cheio, dado pré-otimização) > capa da série
+ * (quando foi omitida por ser idêntica) > vazio. */
+function resolveContentLogo(content, seriesLogoFallback){
+  if(content.logo) return content.logo;
+  if(content.logoPrefixId !== undefined){
+    const server = State.servers.get(content.serverId);
+    const prefix = server && server.logoPrefixes ? server.logoPrefixes[content.logoPrefixId] : '';
+    return (prefix || '') + (content.logoSuffix || '');
+  }
+  return seriesLogoFallback || '';
+}
+
+/**
+ * O nome de cada episódio ("Sila Prisioneira do Amor S01E07") repete o
+ * nome da série inteiro, que já é guardado uma vez só no resumo. Quando dá
+ * pra reconhecer com segurança o padrão de temporada/episódio (via
+ * extractSeasonEpisodeStrict), guarda só os dois números — o nome de
+ * exibição é remontado na hora ("nome da série" + "S01E07"). Quando NÃO dá
+ * pra reconhecer o padrão (nomeação irregular), mantém o nome original
+ * inteiro, sem risco de perder informação.
+ */
+function compactEpisodeNames(contents, seriesSummaries){
+  const nameBySeriesKey = new Map();
+  for(const s of seriesSummaries) nameBySeriesKey.set(s.key, s.name);
+  for(const c of contents){
+    if(c.tipo !== 'series' || !c.nome) continue;
+    const se = ParserModule.extractSeasonEpisodeStrict(c.nome);
+    if(!se) continue; // padrão não reconhecido — mantém o nome cheio, sem risco
+    c.season = se.season;
+    c.episode = se.episode;
+    delete c.nome;
+  }
+}
+
+/** Reconstrói o nome de exibição de um item. Filme/ao vivo e séries com
+ * nomeação irregular (extração falhou) sempre têm `nome` cheio. Episódios
+ * compactados reconstroem a partir do nome da série + temporada/episódio. */
+function resolveContentName(content, seriesName){
+  if(content.nome) return content.nome;
+  if(content.season !== undefined && content.episode !== undefined){
+    const s = String(content.season).padStart(2, '0');
+    const e = String(content.episode).padStart(2, '0');
+    return (seriesName || '') + ' S' + s + 'E' + e;
+  }
+  return '';
+}
+
+/* ======================================================================
+   COMPRESSÃO INCREMENTAL — versão "streaming" das compressões acima
+   ------------------------------------------------------------------
+   As funções compactUrls/compactCoverLogos/compactEpisodeNames/
+   buildSeriesSummaries fazem cada uma sua PRÓPRIA passada completa pelo
+   array de conteúdos, depois que TUDO já foi processado — são 4 passadas
+   separadas, e "salvar" só começa depois da última.
+   Aqui é a mesma lógica, mas aplicada ITEM A ITEM, numa passada só,
+   conforme cada item é construído durante o parse. Isso permite: (1) uma
+   única passada em vez de quatro, e (2) já mandar lotes pro Worker salvar
+   ENQUANTO o restante do arquivo ainda está sendo processado — os dois
+   trabalhos acontecem em paralelo (thread principal processa, Worker
+   grava), em vez de um esperar o outro terminar por completo.
+   ====================================================================== */
+function createCompactionState(){
+  return {
+    urlPrefixToId: new Map(), urlPrefixList: [],
+    logoPrefixToId: new Map(), logoPrefixList: [],
+    seriesInfo: new Map(), // seriesKey -> {name, logo, categorias, seasons:Set, episodes:[]}
+    // Categorias de filme/ao vivo vistas durante a importação — guardadas
+    // aqui em vez de escaneadas do banco depois. Escanear "valores
+    // distintos" num índice com centenas de milhares de registros é caro
+    // na prática (o cursor 'nextunique' nem sempre pula duplicados de
+    // verdade dependendo do navegador), então evitamos fazer essa consulta
+    // toda vez que a tela de Filmes/Ao Vivo abre.
+    movieCategories: new Set(),
+    liveCategories: new Set()
+  };
+}
+
+function compactSingleFieldIncremental(c, fieldName, prefixFieldName, suffixFieldName, prefixToId, prefixList){
+  const value = c[fieldName];
+  if(!value) return;
+  const slashIdx = value.lastIndexOf('/');
+  if(slashIdx === -1 || slashIdx === value.length - 1) return; // sem "/" útil — mantém o valor inteiro
+  const prefix = value.slice(0, slashIdx + 1);
+  const suffix = value.slice(slashIdx + 1);
+  let pid = prefixToId.get(prefix);
+  if(pid === undefined){
+    pid = prefixList.length;
+    prefixList.push(prefix);
+    prefixToId.set(prefix, pid);
+  }
+  c[prefixFieldName] = pid;
+  c[suffixFieldName] = suffix;
+  delete c[fieldName];
+}
+
+/**
+ * Comprime UM item (in-place). MUDANÇA IMPORTANTE: episódios de série não
+ * são mais devolvidos pra virar registro solto na store `contents` — eles
+ * são guardados DENTRO do resumo da série (`info.episodes`), em memória,
+ * e só vão pro banco quando a série inteira for salva de uma vez
+ * (finalizeSeriesSummariesFromState). Isso existe porque, na prática real
+ * de uso, episódio de série é a esmagadora maioria dos itens (>90% em
+ * bibliotecas típicas) — cada um pagando 3 índices do IndexedDB era o
+ * verdadeiro gargalo. Uma série com 40 episódios agora é 1 gravação (com
+ * um array dentro), não 40 gravações indexadas separadas.
+ *
+ * Retorna `true` se o item deve ENTRAR no lote normal de salvamento
+ * (filme/ao vivo); `false` se foi guardado dentro do resumo da série (e
+ * portanto não deve ir pro lote).
+ */
+function compactItemIncremental(c, state){
+  if(c.tipo === 'series' && c.seriesKey){
+    let info = state.seriesInfo.get(c.seriesKey);
+    if(!info){
+      info = { name: ParserModule.extractSeriesBaseName(c.nome || ''), logo: c.logo || '', categorias: [], seasons: new Set(), episodes: [] };
+      state.seriesInfo.set(c.seriesKey, info);
+    }
+    if(!info.logo && c.logo) info.logo = c.logo;
+    if(c.categoria && info.categorias.indexOf(c.categoria) === -1) info.categorias.push(c.categoria);
+
+    // Nome: guarda só temporada/episódio quando reconhece o padrão com
+    // segurança; nomeação irregular mantém o texto original intacto.
+    const se = ParserModule.extractSeasonEpisodeStrict(c.nome);
+    if(se){
+      info.seasons.add(se.season);
+      c.season = se.season;
+      c.episode = se.episode;
+      delete c.nome;
+    } else {
+      info.seasons.add(ParserModule.extractSeasonEpisode(c.nome).season);
+    }
+
+    // Capa: se for igual à capa "canônica" da série (a primeira que
+    // encontramos pra essa série), nem guarda — usa a da série.
+    if(c.logo && c.logo === info.logo) delete c.logo;
+    compactSingleFieldIncremental(c, 'logo', 'logoPrefixId', 'logoSuffix', state.logoPrefixToId, state.logoPrefixList);
+    compactSingleFieldIncremental(c, 'url', 'urlPrefixId', 'urlSuffix', state.urlPrefixToId, state.urlPrefixList);
+
+    info.episodes.push(c);
+    return false; // não vai pro lote normal — já foi guardado dentro da série
+  }
+
+  // Filme/ao vivo continuam indo pro lote normal (store `contents`), com a
+  // mesma compressão de capa/URL de sempre.
+  if(c.categoria){
+    if(c.tipo === 'movie') state.movieCategories.add(c.categoria);
+    else if(c.tipo === 'live') state.liveCategories.add(c.categoria);
+  }
+  compactSingleFieldIncremental(c, 'logo', 'logoPrefixId', 'logoSuffix', state.logoPrefixToId, state.logoPrefixList);
+  compactSingleFieldIncremental(c, 'url', 'urlPrefixId', 'urlSuffix', state.urlPrefixToId, state.urlPrefixList);
+  return true;
+}
+
+/** Monta os resumos finais de série a partir do estado acumulado — chamado
+ * uma vez só, no final, depois que o arquivo inteiro foi visto (só agora
+ * sabemos a contagem final de episódios/temporadas). Retorna DOIS arrays
+ * separados: `summaries` (leve — nome, capa, contagens; é isso que listar
+ * e buscar séries usa) e `episodeRecords` (pesado — vai pra uma store
+ * própria, só lida quando abre a tela de detalhe de UMA série específica).
+ * Separar os dois evita que listar/buscar precise carregar os episódios
+ * de toda série só pra mostrar nome+capa+contagem. */
+function finalizeSeriesSummariesFromState(state, serverId){
+  const now = Date.now();
+  const summaries = [];
+  const episodeRecords = [];
+  for(const [seriesKey, info] of state.seriesInfo){
+    summaries.push({
+      key: seriesKey, serverId: serverId, name: info.name, logo: info.logo,
+      categorias: info.categorias, episodeCount: info.episodes.length,
+      seasonCount: info.seasons.size, updatedAt: now
+    });
+    episodeRecords.push({ key: seriesKey, episodes: info.episodes });
+  }
+  return { summaries, episodeRecords };
 }
 
 /* ======================================================================
@@ -2315,7 +2947,18 @@ const ServerModule = {
    * synchronous block with no progress feedback — exactly the "freezes,
    * then the bar jumps near the end" symptom.
    */
-  async processPlaylistText(text, serverId, onProgress){
+  /**
+   * Processa a playlist E já vai salvando em paralelo, em vez de montar um
+   * array gigante primeiro e só depois salvar tudo de uma vez. Cada item é
+   * comprimido (URL/capa/nome) na hora em que é construído — uma única
+   * passada, não quatro separadas — e acumulado num lote; quando o lote
+   * atinge SAVE_CHUNK_SIZE, é disparado pro Worker salvar SEM esperar
+   * (`PersistenceWorker.save(...)` sem `await` aqui dentro) — a thread
+   * principal segue processando o resto do arquivo enquanto o Worker grava
+   * aquele lote em paralelo, numa thread separada. No final, todos os
+   * lotes disparados são aguardados juntos (Promise.all).
+   */
+  async processPlaylistText(text, serverId, onProgress, onSaveProgress){
     const lines = text ? text.split(/\r\n|\r|\n/) : [];
     const totalLines = lines.length;
 
@@ -2329,11 +2972,47 @@ const ServerModule = {
       }
     }
 
-    const contents = [];
+    // O IndexedDB SERIALIZA transações que tocam as mesmas stores — uma
+    // gravação em andamento (mesmo rodando no Worker, outra thread) faz
+    // qualquer LEITURA sua (navegar em Filmes, buscar) que toque as mesmas
+    // stores esperar na fila até aquela gravação terminar. Lotes menores
+    // significam transações de gravação mais curtas, então sua leitura tem
+    // chance de "furar a fila" com muito mais frequência — não elimina a
+    // espera (é estrutural do IndexedDB), mas diminui bastante o tempo
+    // percebido enquanto uma importação roda em segundo plano (minimizada).
+    const SAVE_CHUNK_SIZE = 3000; // itens por lote enviado ao Worker
+    const state = createCompactionState();
     const batchSize = 4000; // lines per batch
     let pendingExtinf = null;
     let counts = { movie:0, series:0, live:0 };
     let processed = 0;
+    let totalCount = 0;
+
+    let pendingSaveBatch = [];
+    const saveTasks = [];
+    let chunksDispatched = 0;
+    let chunksCompleted = 0;
+    // Estimativa grosseira de quantos lotes vão existir no total, só pra
+    // mostrar uma % razoável na barra de "salvando" (o valor exato só é
+    // possível saber no final, quando já processamos tudo).
+    let estimatedTotalChunks = Math.max(1, Math.ceil(total / SAVE_CHUNK_SIZE));
+    let writtenSeriesKeys = [];
+
+    function reportSaveProgress(){
+      if(onSaveProgress) onSaveProgress(chunksCompleted, estimatedTotalChunks);
+    }
+
+    function dispatchChunk(items, isFinal){
+      if(items.length === 0 && !isFinal) return;
+      chunksDispatched++;
+      const finalized = isFinal ? finalizeSeriesSummariesFromState(state, serverId) : { summaries: [], episodeRecords: [] };
+      if(isFinal) writtenSeriesKeys = finalized.summaries.map(s => s.key);
+      const task = PersistenceWorker.save(items, finalized.summaries, undefined, finalized.episodeRecords).then(() => {
+        chunksCompleted++;
+        reportSaveProgress();
+      });
+      saveTasks.push(task);
+    }
 
     for(let i=0; i<totalLines; i+=batchSize){
       const end = Math.min(i+batchSize, totalLines);
@@ -2365,8 +3044,19 @@ const ServerModule = {
               };
               const content = ParserModule.buildContent(entry, serverId);
               if(content){
-                contents.push(content);
+                const goesToNormalBatch = compactItemIncremental(content, state);
                 counts[content.tipo]++;
+                totalCount++;
+                if(goesToNormalBatch){
+                  pendingSaveBatch.push(content);
+                  if(pendingSaveBatch.length >= SAVE_CHUNK_SIZE){
+                    dispatchChunk(pendingSaveBatch, false);
+                    pendingSaveBatch = [];
+                  }
+                }
+                // Série não entra no lote normal — já foi guardada dentro
+                // do resumo da série (state.seriesInfo), e só vai pro
+                // banco no final, via finalizeSeriesSummariesFromState.
               }
               processed++;
             }catch(err){
@@ -2379,7 +3069,24 @@ const ServerModule = {
       if(onProgress) onProgress(processed, total, counts);
       await fastYield();
     }
-    return contents;
+
+    // Último lote (o que sobrou) + os resumos finais de série, já com a
+    // contagem completa de episódios/temporadas de cada uma.
+    dispatchChunk(pendingSaveBatch, true);
+    estimatedTotalChunks = chunksDispatched; // agora sabemos o número exato
+    reportSaveProgress();
+
+    await Promise.all(saveTasks);
+
+    return {
+      total: totalCount,
+      counts: counts,
+      urlPrefixes: state.urlPrefixList,
+      logoPrefixes: state.logoPrefixList,
+      movieCategories: Array.from(state.movieCategories),
+      liveCategories: Array.from(state.liveCategories),
+      seriesKeys: writtenSeriesKeys
+    };
   },
 
   /**
@@ -2409,33 +3116,71 @@ const ServerModule = {
       report({ phase:'download', status:'done', downloaded: text.length, total: text.length });
       report({ phase:'cleanup', status:'processing' });
 
-      // Remove old contents for this server before saving new ones (update = replace contents, keep server)
-      const oldIds = await IDB.deleteAllContentForServer(server.id);
-      const oldIdsWithProgress = oldIds.filter(id => State.progress.has(id));
-      for(const id of oldIdsWithProgress){ State.progress.delete(id); }
-      await IDB.deleteMany(STORES.progress, oldIdsWithProgress).catch(()=>{});
-      await IDB.deleteByIndex(STORES.seriesSummary, 'serverId', server.id);
+      // Só CAPTURA quais chaves são do conteúdo antigo (leitura, não
+      // apaga nada ainda) — a remoção de verdade acontece DEPOIS que o
+      // conteúdo novo já estiver salvo, em segundo plano, sem travar o
+      // "concluído" esperando apagar tudo antes de poder escrever o novo.
+      const oldContentKeys = await IDB.getContentKeysForServer(server.id);
+      const oldSeriesKeys = await IDB.getSeriesKeysForServer(server.id);
 
       report({ phase:'process', status:'processing', processed:0, total:0, counts:{movie:0,series:0,live:0} });
 
-      const contents = await ServerModule.processPlaylistText(text, server.id, (processed, total, counts)=>{
-        report({ phase:'process', status:'processing', processed, total, counts });
-      });
+      let latestCounts = { movie:0, series:0, live:0 };
+      const result = await ServerModule.processPlaylistText(
+        text, server.id,
+        (processed, total, counts) => {
+          latestCounts = counts;
+          report({ phase:'process', status:'processing', processed, total, counts });
+        },
+        (chunksDone, chunksTotal) => {
+          // Progresso da fase de salvar agora é por "lotes concluídos", já
+          // que vários lotes são salvos em paralelo enquanto o resto do
+          // arquivo ainda está sendo processado — não dá mais pra reportar
+          // item a item de forma precisa nesse esquema.
+          report({ phase:'save', status:'processing', processed: chunksDone, total: chunksTotal, counts: latestCounts, chunkMode: true });
+        }
+      );
 
-      const finalCounts = tallyCounts(contents);
-      const seriesSummaries = ParserModule.buildSeriesSummaries(contents, server.id);
-      await saveAndIndexContentsBatched(contents, undefined, (saved, saveTotal)=>{
-        report({ phase:'save', status:'processing', processed: saved, total: saveTotal, counts: finalCounts });
-      });
-      await IDB.putMany(STORES.seriesSummary, seriesSummaries);
+      report({ phase:'process', status:'done', processed: result.total, total: result.total, counts: result.counts });
 
-      report({ phase:'process', status:'done', processed: contents.length, total: contents.length, counts: finalCounts });
-
+      server.urlPrefixes = result.urlPrefixes;
+      server.logoPrefixes = result.logoPrefixes;
+      server.movieCategories = result.movieCategories;
+      server.liveCategories = result.liveCategories;
+      server.counts = result.counts;
       server.lastStatus = 'ok';
       server.lastError = null;
       try{ await IDB.put(STORES.servers, server); }catch(e){}
 
-      return { ok:true, count: contents.length };
+      // Limpeza do conteúdo antigo roda em segundo plano — NÃO travamos o
+      // retorno da função esperando isso terminar. O conteúdo novo já está
+      // salvo e utilizável; por alguns instantes pode haver duplicação
+      // (antigo + novo) até essa limpeza terminar, mas isso é bem mais
+      // rápido que esperar apagar tudo antes de começar a escrever.
+      //
+      // IMPORTANTE: seriesKey é determinístico (servidor+nome da série),
+      // então reimportar o MESMO servidor gera as MESMAS chaves de série
+      // de antes — diferente do id de filme/ao vivo (sempre novo/aleatório
+      // a cada import). Sem filtrar isso, a limpeza em segundo plano
+      // apagava séries que tinham acabado de ser regravadas com a mesma
+      // chave, fazendo elas "sumirem" mesmo tendo sido salvas corretamente.
+      const newSeriesKeySet = new Set(result.seriesKeys);
+      const seriesKeysSafeToDelete = oldSeriesKeys.filter(k => !newSeriesKeySet.has(k));
+      (async () => {
+        try{
+          await IDB.deleteContentByKeys(oldContentKeys);
+          await IDB.deleteSeriesByKeys(seriesKeysSafeToDelete);
+          const oldIdsWithProgress = oldContentKeys.filter(id => State.progress.has(id));
+          for(const id of oldIdsWithProgress){ State.progress.delete(id); }
+          await IDB.deleteMany(STORES.progress, oldIdsWithProgress).catch(()=>{});
+          State.pageCache.clear();
+          State.dashboardCache = null;
+          State.favoritesCache = null;
+          State.continueCache = null;
+        }catch(e){}
+      })();
+
+      return { ok:true, count: result.total };
     }catch(err){
       const message = err && err.status ? ('Erro ' + err.status) : (err && err.message ? err.message : 'Erro desconhecido');
       report({ phase: 'error', status:'error', message: message });
@@ -2585,30 +3330,72 @@ const ServerModule = {
         try{
           report({ phase:'cleanup', status:'processing' });
 
-          const oldIds = await IDB.deleteAllContentForServer(server.id);
-          const oldIdsWithProgress = oldIds.filter(function(id){ return State.progress.has(id); });
-          for(const id of oldIdsWithProgress){ State.progress.delete(id); }
-          await IDB.deleteMany(STORES.progress, oldIdsWithProgress).catch(function(){});
-          await IDB.deleteByIndex(STORES.seriesSummary, 'serverId', server.id);
+          // Só CAPTURA as chaves antigas (não apaga ainda) — a remoção de
+          // verdade acontece DEPOIS, em segundo plano, sem travar o
+          // "concluído" desse servidor esperando apagar tudo antes.
+          const oldContentKeys = await IDB.getContentKeysForServer(server.id);
+          const oldSeriesKeys = await IDB.getSeriesKeysForServer(server.id);
 
           report({ phase:'process', status:'processing', processed:0, total:0, counts:{movie:0,series:0,live:0} });
 
-          const contents = await ServerModule.processPlaylistText(text, server.id, function(processed, tot, counts){
-            report({ phase:'process', status:'processing', processed: processed, total: tot, counts: counts });
-          });
+          var latestCounts = { movie:0, series:0, live:0 };
+          const result = await ServerModule.processPlaylistText(
+            text, server.id,
+            function(processed, tot, counts){
+              latestCounts = counts;
+              report({ phase:'process', status:'processing', processed: processed, total: tot, counts: counts });
+            },
+            function(chunksDone, chunksTotal){
+              report({ phase:'save', status:'processing', processed: chunksDone, total: chunksTotal, counts: latestCounts, chunkMode: true });
+            }
+          );
 
-          const finalCounts = tallyCounts(contents);
-          const seriesSummaries = ParserModule.buildSeriesSummaries(contents, server.id);
-          await saveAndIndexContentsBatched(contents, undefined, function(saved, saveTotal){
-            report({ phase:'save', status:'processing', processed: saved, total: saveTotal, counts: finalCounts });
-          });
-          await IDB.putMany(STORES.seriesSummary, seriesSummaries);
-
-          report({ phase:'process', status:'done', processed: contents.length, total: contents.length, counts: finalCounts });
-          results[idx] = { ok:true, count: contents.length };
+          report({ phase:'process', status:'done', processed: result.total, total: result.total, counts: result.counts });
+          results[idx] = { ok:true, count: result.total };
+          server.urlPrefixes = result.urlPrefixes;
+          server.logoPrefixes = result.logoPrefixes;
+          server.movieCategories = result.movieCategories;
+          server.liveCategories = result.liveCategories;
+          server.counts = result.counts;
           server.lastStatus = 'ok';
           server.lastError = null;
           IDB.put(STORES.servers, server).catch(function(){});
+
+          // Limpa o cache assim que ESSE servidor termina — não espera
+          // todos os outros acabarem. Sem isso, navegar (mesmo minimizado)
+          // enquanto outros servidores ainda importam mostrava o cache
+          // antigo (vazio, de antes da importação começar), mesmo com os
+          // dados deste servidor já salvos e prontos no banco.
+          State.pageCache.clear();
+          State.dashboardCache = null;
+          State.favoritesCache = null;
+          State.continueCache = null;
+
+          // Apaga o conteúdo antigo em segundo plano — NÃO trava aqui
+          // esperando terminar. Pode haver duplicação (antigo+novo) por
+          // um instante curto até isso terminar.
+          //
+          // IMPORTANTE: filtra as chaves de série que acabaram de ser
+          // regravadas com o MESMO seriesKey (determinístico, servidor+
+          // nome) — sem isso, reimportar o mesmo servidor apagava as
+          // séries que tinham acabado de ser salvas de novo.
+          var newSeriesKeySet = new Set(result.seriesKeys);
+          var seriesKeysSafeToDelete = oldSeriesKeys.filter(function(k){ return !newSeriesKeySet.has(k); });
+          (function(){
+            (async function(){
+              try{
+                await IDB.deleteContentByKeys(oldContentKeys);
+                await IDB.deleteSeriesByKeys(seriesKeysSafeToDelete);
+                const oldIdsWithProgress = oldContentKeys.filter(function(id){ return State.progress.has(id); });
+                for(const id of oldIdsWithProgress){ State.progress.delete(id); }
+                await IDB.deleteMany(STORES.progress, oldIdsWithProgress).catch(function(){});
+                State.pageCache.clear();
+                State.dashboardCache = null;
+                State.favoritesCache = null;
+                State.continueCache = null;
+              }catch(e){}
+            })();
+          })();
 
           if(!firstSuccessFired){
             firstSuccessFired = true;
@@ -2683,7 +3470,7 @@ const RawModule = {
    PROGRESS MODULE
    ====================================================================== */
 const ProgressModule = {
-  async saveProgress(contentId, currentTime, duration){
+  async saveProgress(contentId, currentTime, duration, seriesKey){
     if(!contentId) return;
     const pct = duration > 0 ? Math.min(100, (currentTime/duration)*100) : 0;
     const concluded = pct >= 95;
@@ -2693,7 +3480,8 @@ const ProgressModule = {
       duration: duration,
       porcentagem: pct,
       dataUltimaReproducao: Date.now(),
-      concluido: concluded
+      concluido: concluded,
+      seriesKey: seriesKey || undefined // presente só quando é episódio de série
     };
     State.progress.set(contentId, progress);
     State.dashboardCache = null;
@@ -2727,7 +3515,21 @@ const ProgressModule = {
     const limited = limit ? entries.slice(0, limit) : entries;
     const results = [];
     for(const { contentId, prog } of limited){
-      const content = await IDB.getByKey(STORES.contents, contentId).catch(()=>null);
+      let content = null;
+      if(prog.seriesKey){
+        // Episódio de série: vive na store própria seriesEpisodes agora,
+        // separada do resumo leve. Fallback pra dados salvos numa versão
+        // anterior (episódios ainda embutidos no resumo).
+        const record = await IDB.getByKey(STORES.seriesEpisodes, prog.seriesKey).catch(()=>null);
+        if(record && record.episodes){
+          content = record.episodes.find(ep => ep.id === contentId);
+        } else {
+          const summary = await IDB.getByKey(STORES.seriesSummary, prog.seriesKey).catch(()=>null);
+          content = summary && summary.episodes ? summary.episodes.find(ep => ep.id === contentId) : null;
+        }
+      } else {
+        content = await IDB.getByKey(STORES.contents, contentId).catch(()=>null);
+      }
       if(!content || content.tipo === 'live') continue;
       results.push({ content, progress: prog });
     }
@@ -2742,7 +3544,12 @@ async function getNextEpisode(content){
   if(!content || content.tipo !== 'series' || !content.seriesKey) return null;
   const episodes = await QueryModule.getEpisodesForSeries(content.seriesKey);
   const withSE = episodes.map(c => {
-    const se = ParserModule.extractSeasonEpisode(c.nome);
+    // Prioriza season/episode já salvos (compactEpisodeNames) — evita
+    // reprocessar regex à toa; cai pra extração do nome só quando não tem
+    // (dado antigo ou nomeação que não foi reconhecida).
+    const se = (c.season !== undefined && c.episode !== undefined)
+      ? { season: c.season, episode: c.episode }
+      : ParserModule.extractSeasonEpisode(c.nome);
     return { content: c, season: se.season, episode: se.episode };
   });
   withSE.sort((a,b) => a.season - b.season || a.episode - b.episode);
@@ -2777,7 +3584,19 @@ const PlayerModule = {
     this.playToken++;
     const overlay = qs('#player-overlay');
     const title = qs('#player-title');
-    title.textContent = content.nome;
+    title.textContent = resolveContentName(content);
+    if(!content.nome && content.tipo === 'series' && content.seriesKey){
+      // Episódio sem nome próprio salvo (compactado) — busca o nome da
+      // série pra montar o título completo. Ata "sua" abertura pelo id do
+      // conteúdo, pra não sobrescrever o título se o usuário já trocou de
+      // vídeo antes dessa busca terminar.
+      const openedContentId = content.id;
+      IDB.getByKey(STORES.seriesSummary, content.seriesKey).then(summary => {
+        if(summary && this.currentContent && this.currentContent.id === openedContentId){
+          title.textContent = resolveContentName(content, summary.name);
+        }
+      }).catch(()=>{});
+    }
     overlay.style.display = 'flex';
     overlay.classList.toggle('live-mode', content.tipo === 'live');
 
@@ -2806,7 +3625,7 @@ const PlayerModule = {
       // Marca o episódio que está sendo pulado como assistido, mesmo que
       // o usuário não tenha chegado ao fim dele — ele escolheu avançar.
       if(this.currentContent){
-        ProgressModule.saveProgress(this.currentContent.id, 1, 1);
+        ProgressModule.saveProgress(this.currentContent.id, 1, 1, this.currentContent.seriesKey);
       }
       this.open(this.nextEpisodeContent);
     });
@@ -3172,7 +3991,7 @@ const PlayerModule = {
       const content = this.currentContent;
       if(!content || content.tipo === 'live') return;
       if(video.duration && !isNaN(video.duration)){
-        ProgressModule.saveProgress(content.id, video.duration, video.duration);
+        ProgressModule.saveProgress(content.id, video.duration, video.duration, content.seriesKey);
       }
       if(content.tipo === 'series' && this.nextEpisodeContent){
         const nextContent = this.nextEpisodeContent;
@@ -3192,7 +4011,7 @@ const PlayerModule = {
     const video = qs('#video-player');
     this.showBuffering();
 
-    const url = content.url;
+    const url = resolveContentUrl(content);
     const isLive = content.tipo === 'live';
     const looksHls = /\.m3u8(\?|$)/i.test(url);
 
@@ -3246,7 +4065,7 @@ const PlayerModule = {
     if(!isLive){
       this.saveInterval = setInterval(()=>{
         if(video.duration && !isNaN(video.duration)){
-          ProgressModule.saveProgress(content.id, video.currentTime, video.duration);
+          ProgressModule.saveProgress(content.id, video.currentTime, video.duration, content.seriesKey);
         }
       }, 4000);
     }
@@ -3362,7 +4181,7 @@ const PlayerModule = {
     } else {
       this.hideBuffering();
       showToast(message, 'error');
-      this.showFallbackBar(content.url, message + ' Copie o link e abra em um player externo (ex: VLC).');
+      this.showFallbackBar(resolveContentUrl(content), message + ' Copie o link e abra em um player externo (ex: VLC).');
     }
   },
 
@@ -3443,7 +4262,7 @@ const PlayerModule = {
     if(document.fullscreenElement) document.exitFullscreen().catch(()=>{});
     const video = qs('#video-player');
     if(this.currentContent && this.currentContent.tipo !== 'live' && video.duration && !isNaN(video.duration)){
-      ProgressModule.saveProgress(this.currentContent.id, video.currentTime, video.duration);
+      ProgressModule.saveProgress(this.currentContent.id, video.currentTime, video.duration, this.currentContent.seriesKey);
     }
     this.cleanup();
     this.hideFallbackBar();
@@ -3556,13 +4375,38 @@ function renderContentCard(content, options){
   options = options || {};
   const card = el('div', { class:'content-card' });
   const thumb = el('div', { class:'thumb' });
-  if(content.logo){
+  const ownLogo = resolveContentLogo(content); // cobre capa plana (antiga) ou compactada (prefixo+sufixo)
+  const nameEl = el('div', { class:'name' }, [resolveContentName(content)]);
+  const needsSeriesFallback = content.tipo === 'series' && content.seriesKey && (!ownLogo || !content.nome);
+  if(ownLogo){
     const img = el('img', { loading:'lazy' });
-    img.src = content.logo;
+    img.src = ownLogo;
     img.onerror = function(){ img.remove(); thumb.appendChild(el('div',{class:'ph'},['🎬'])); };
     thumb.appendChild(img);
+  } else if(needsSeriesFallback){
+    thumb.appendChild(el('div',{class:'ph'},['🎬']));
   } else {
     thumb.appendChild(el('div',{class:'ph'},['🎬']));
+  }
+  if(needsSeriesFallback){
+    // Falta capa e/ou nome próprio (foram compactados/omitidos) e este
+    // card está FORA da tela da série (ex: Continuar Assistindo), onde não
+    // temos o resumo da série já em mãos. Uma única busca pontual e leve
+    // (1 registro pequeno) resolve os dois de uma vez.
+    const placeholder = thumb.querySelector('.ph');
+    IDB.getByKey(STORES.seriesSummary, content.seriesKey).then(summary => {
+      if(!summary) return;
+      if(!ownLogo && summary.logo && placeholder && thumb.contains(placeholder)){
+        const img = el('img', { loading:'lazy' });
+        img.src = summary.logo;
+        img.onerror = function(){ img.remove(); };
+        placeholder.remove();
+        thumb.insertBefore(img, thumb.firstChild);
+      }
+      if(!content.nome){
+        nameEl.textContent = resolveContentName(content, summary.name);
+      }
+    }).catch(()=>{});
   }
   if(content.tipo === 'live'){
     thumb.appendChild(el('div', { class:'live-badge' }, ['AO VIVO']));
@@ -3577,7 +4421,7 @@ function renderContentCard(content, options){
     const dlBtn = el('button', { class:'fav-btn', style:'position:static;', title:'Baixar' }, ['⬇']);
     dlBtn.addEventListener('click', function(e){
       e.stopPropagation();
-      downloadContentUrl(content.url, content.nome);
+      downloadContentUrl(resolveContentUrl(content), nameEl.textContent);
     });
     topRightWrap.appendChild(dlBtn);
   }
@@ -3621,7 +4465,7 @@ function renderContentCard(content, options){
 
   card.appendChild(thumb);
   const info = el('div', { class:'info' });
-  info.appendChild(el('div', { class:'name' }, [content.nome]));
+  info.appendChild(nameEl);
   const meta = el('div', { class:'meta' });
   meta.appendChild(el('span', { class:'server-tag', title: getServerName(content.serverId) }, [getServerName(content.serverId)]));
   info.appendChild(meta);
@@ -3709,29 +4553,70 @@ function renderEmptyState(icon, title, msg){
 /* ======================================================================
    VIEW: LIST (movies / live) with filters + pagination
    ====================================================================== */
+/**
+ * Busca servidores+categorias (metadados, cacheados sem depender da
+ * página) + a página de itens em si, pro tipo pedido ('movie'|'live'|
+ * 'series'). Usada tanto pelo pré-carregamento inicial quanto pela
+ * navegação normal — é o MESMO caminho, então se você clicar numa aba
+ * enquanto o pré-carregamento dela ainda está em andamento, reaproveita a
+ * busca já em curso (via `pageFetchesInFlight`) em vez de disparar outra
+ * do zero.
+ */
+async function loadTypePageData(type, filters, pageSize){
+  const metaKey = filterMetaCacheKey(type, filters);
+  const pageKey = pageCacheKey(type, filters);
+
+  const cachedMeta = State.pageCache.get(metaKey);
+  const cachedPage = State.pageCache.get(pageKey);
+  if(cachedMeta && cachedPage){
+    return { serverIds: cachedMeta.serverIds, catOptions: cachedMeta.catOptions, pageResult: cachedPage };
+  }
+
+  if(State.pageFetchesInFlight.has(pageKey)){
+    return State.pageFetchesInFlight.get(pageKey);
+  }
+
+  const promise = (async () => {
+    const metaPromise = cachedMeta ? Promise.resolve(cachedMeta) : (
+      type === 'series'
+        ? Promise.all([QueryModule.getServersForSeries(), QueryModule.getCategoriesForSeries()]).then(([s,c]) => ({ serverIds:s, catOptions:c }))
+        : Promise.all([QueryModule.getServersForType(type), QueryModule.getCategoriesForType(type)]).then(([s,c]) => ({ serverIds:s, catOptions:c }))
+    );
+    const pagePromise = type === 'series'
+      ? QueryModule.getSeriesPage(filters, filters.page, pageSize)
+      : QueryModule.getContentPage(type, filters, filters.page, pageSize);
+    const [meta, pageResult] = await Promise.all([metaPromise, pagePromise]);
+    State.pageCache.set(metaKey, meta);
+    State.pageCache.set(pageKey, pageResult);
+    return { serverIds: meta.serverIds, catOptions: meta.catOptions, pageResult };
+  })();
+
+  State.pageFetchesInFlight.set(pageKey, promise);
+  try{
+    return await promise;
+  } finally {
+    State.pageFetchesInFlight.delete(pageKey);
+  }
+}
+
 async function renderListView(type, titleLabel, container){
   const filters = State.ui.filters[type];
   container.appendChild(el('div', { class:'section-header' }, [ el('h2', {}, [titleLabel]) ]));
 
-  const cacheKey = pageCacheKey(type, filters);
-  let cached = State.pageCache.get(cacheKey);
-  let serverIds, catOptions, pageResult;
-
-  if(cached){
-    ({ serverIds, catOptions, pageResult } = cached);
-  } else {
-    const loading = el('div', { class:'loader-inline' }, [el('div',{class:'spinner'}), 'Carregando...']);
+  const pageKey = pageCacheKey(type, filters);
+  const alreadyCached = State.pageCache.has(filterMetaCacheKey(type, filters)) && State.pageCache.has(pageKey);
+  const alreadyInFlight = State.pageFetchesInFlight.has(pageKey);
+  let loading = null;
+  if(!alreadyCached && !alreadyInFlight){
+    loading = el('div', { class:'loader-inline' }, [el('div',{class:'spinner'}), 'Carregando...']);
     container.appendChild(loading);
-    const pageSize = State.settings.pageSize || PAGE_SIZE_DEFAULT;
-    [serverIds, catOptions, pageResult] = await Promise.all([
-      QueryModule.getServersForType(type),
-      QueryModule.getCategoriesForType(type),
-      QueryModule.getContentPage(type, filters, filters.page, pageSize)
-    ]);
-    if(State.ui.currentView !== (type === 'movie' ? 'movies' : 'live')) return; // usuário já navegou pra outro lugar
-    loading.remove();
-    State.pageCache.set(cacheKey, { serverIds, catOptions, pageResult });
   }
+  // Mesma função usada pelo pré-carregamento inicial — se ele já estiver
+  // buscando exatamente isso, reaproveita a mesma busca em vez de disparar
+  // outra do zero.
+  const { serverIds, catOptions, pageResult } = await loadTypePageData(type, filters, State.settings.pageSize || PAGE_SIZE_DEFAULT);
+  if(State.ui.currentView !== (type === 'movie' ? 'movies' : 'live')) return; // usuário já navegou pra outro lugar
+  if(loading) loading.remove();
 
   if(serverIds.length > 0){
     const chipRow = el('div', { class:'chip-row' });
@@ -3751,6 +4636,9 @@ async function renderListView(type, titleLabel, container){
   const totalPages = Math.max(1, Math.ceil(pageResult.total / pageSize));
   if(filters.page > totalPages && totalPages >= 1){ filters.page = totalPages; Router.render(); return; }
 
+  const counterEl0 = qs(type === 'movie' ? '#cnt-movies' : '#cnt-live');
+  if(counterEl0) counterEl0.textContent = pageResult.total;
+
   if(pageResult.total === 0){
     container.appendChild(renderEmptyState('📭', 'Nenhum conteúdo encontrado', 'Nenhum conteúdo importado ainda com esses filtros.'));
     return;
@@ -3760,6 +4648,7 @@ async function renderListView(type, titleLabel, container){
   for(const content of pageResult.items){ grid.appendChild(renderContentCard(content)); }
   container.appendChild(grid);
   container.appendChild(renderPagination(filters.page, totalPages, (p)=>{ filters.page = p; Router.render(); window.scrollTo(0,0); }));
+
 }
 
 /* ======================================================================
@@ -3769,25 +4658,17 @@ async function renderSeriesListView(container){
   const filters = State.ui.filters.series;
   container.appendChild(el('div', { class:'section-header' }, [ el('h2', {}, ['Séries']) ]));
 
-  const cacheKey = pageCacheKey('series', filters);
-  let cached = State.pageCache.get(cacheKey);
-  let serverIds, catOptions, pageResult;
-
-  if(cached){
-    ({ serverIds, catOptions, pageResult } = cached);
-  } else {
-    const loading = el('div', { class:'loader-inline' }, [el('div',{class:'spinner'}), 'Carregando...']);
+  const pageKey = pageCacheKey('series', filters);
+  const alreadyCached = State.pageCache.has(filterMetaCacheKey('series', filters)) && State.pageCache.has(pageKey);
+  const alreadyInFlight = State.pageFetchesInFlight.has(pageKey);
+  let loading = null;
+  if(!alreadyCached && !alreadyInFlight){
+    loading = el('div', { class:'loader-inline' }, [el('div',{class:'spinner'}), 'Carregando...']);
     container.appendChild(loading);
-    const pageSize = State.settings.pageSize || PAGE_SIZE_DEFAULT;
-    [serverIds, catOptions, pageResult] = await Promise.all([
-      QueryModule.getServersForSeries(),
-      QueryModule.getCategoriesForSeries(),
-      QueryModule.getSeriesPage(filters, filters.page, pageSize)
-    ]);
-    if(State.ui.currentView !== 'series') return;
-    loading.remove();
-    State.pageCache.set(cacheKey, { serverIds, catOptions, pageResult });
   }
+  const { serverIds, catOptions, pageResult } = await loadTypePageData('series', filters, State.settings.pageSize || PAGE_SIZE_DEFAULT);
+  if(State.ui.currentView !== 'series') return;
+  if(loading) loading.remove();
 
   if(serverIds.length > 0){
     const chipRow = el('div', { class:'chip-row' });
@@ -3806,6 +4687,9 @@ async function renderSeriesListView(container){
   const pageSize = State.settings.pageSize || PAGE_SIZE_DEFAULT;
   const totalPages = Math.max(1, Math.ceil(pageResult.total / pageSize));
   if(filters.page > totalPages && totalPages >= 1){ filters.page = totalPages; Router.render(); return; }
+
+  const seriesCounterEl = qs('#cnt-series');
+  if(seriesCounterEl) seriesCounterEl.textContent = pageResult.total;
 
   if(pageResult.total === 0){
     container.appendChild(renderEmptyState('📺', 'Nenhuma série encontrada', 'Nenhuma série importada ainda com esses filtros.'));
@@ -3869,7 +4753,9 @@ async function renderSeriesDetailView(container){
 
   const seasons = new Map();
   for(const content of episodes){
-    const se = ParserModule.extractSeasonEpisode(content.nome);
+    const se = (content.season !== undefined && content.episode !== undefined)
+      ? { season: content.season, episode: content.episode }
+      : ParserModule.extractSeasonEpisode(content.nome);
     if(!seasons.has(se.season)) seasons.set(se.season, []);
     seasons.get(se.season).push({ content, ep: se.episode });
   }
@@ -3885,12 +4771,16 @@ async function renderSeriesDetailView(container){
     const prog = ProgressModule.getProgress(content.id);
     const row = el('div', { class:'episode-row', onclick:()=>PlayerModule.open(content) });
     const eth = el('div', { class:'eth' });
-    if(content.logo){
-      const img = el('img'); img.src = content.logo; img.onerror=()=>img.remove();
+    // Se o episódio não tem capa própria salva (foi deduplicada por ser
+    // igual à da série, ver dedupeSeriesLogos), cai pra capa da série.
+    const episodeLogo = resolveContentLogo(content, entry.logo);
+    if(episodeLogo){
+      const img = el('img'); img.src = episodeLogo; img.onerror=()=>img.remove();
       eth.appendChild(img);
     }
     row.appendChild(eth);
-    row.appendChild(el('div', { class:'ename' }, [content.nome]));
+    const episodeName = resolveContentName(content, entry.name);
+    row.appendChild(el('div', { class:'ename' }, [episodeName]));
     let statusText = 'Não iniciado';
     let statusClass = '';
     if(prog){
@@ -3905,7 +4795,7 @@ async function renderSeriesDetailView(container){
     }, ['⬇']);
     dlBtn.addEventListener('click', function(e){
       e.stopPropagation();
-      downloadContentUrl(content.url, content.nome);
+      downloadContentUrl(resolveContentUrl(content), episodeName);
     });
     row.appendChild(dlBtn);
     return row;
@@ -3952,6 +4842,29 @@ async function renderSeriesDetailView(container){
 /* ======================================================================
    VIEW: DASHBOARD
    ====================================================================== */
+/** Busca os dados do Dashboard (Continuar Assistindo + Adicionados
+ * Recentemente), com dedup de buscas em andamento. */
+async function loadDashboardData(){
+  if(State.dashboardCache) return State.dashboardCache;
+  const inFlightKey = 'dashboard';
+  if(State.pageFetchesInFlight.has(inFlightKey)) return State.pageFetchesInFlight.get(inFlightKey);
+
+  const promise = (async () => {
+    const continueList = await ProgressModule.getContinueWatchingList(12);
+    const recentGroups = await getRecentlyAddedGroupedForDashboard(6, 8);
+    const result = { continueList, recentGroups };
+    State.dashboardCache = result;
+    return result;
+  })();
+
+  State.pageFetchesInFlight.set(inFlightKey, promise);
+  try{
+    return await promise;
+  } finally {
+    State.pageFetchesInFlight.delete(inFlightKey);
+  }
+}
+
 async function renderDashboardView(container){
   if(State.servers.size === 0){
     container.appendChild(el('div', { class:'section-header' }, [el('h2',{},['Dashboard'])]));
@@ -3959,18 +4872,16 @@ async function renderDashboardView(container){
     return;
   }
 
-  let continueList, recentGroups;
-  if(State.dashboardCache){
-    ({ continueList, recentGroups } = State.dashboardCache);
-  } else {
-    const loading = el('div', { class:'loader-inline' }, [el('div',{class:'spinner'}), 'Carregando...']);
+  const alreadyCached = !!State.dashboardCache;
+  const alreadyInFlight = State.pageFetchesInFlight.has('dashboard');
+  let loading = null;
+  if(!alreadyCached && !alreadyInFlight){
+    loading = el('div', { class:'loader-inline' }, [el('div',{class:'spinner'}), 'Carregando...']);
     container.appendChild(loading);
-    continueList = await ProgressModule.getContinueWatchingList(12);
-    recentGroups = await getRecentlyAddedGroupedForDashboard(6, 8);
-    if(State.ui.currentView !== 'dashboard') return;
-    loading.remove();
-    State.dashboardCache = { continueList, recentGroups };
   }
+  const { continueList, recentGroups } = await loadDashboardData();
+  if(State.ui.currentView !== 'dashboard') return;
+  if(loading) loading.remove();
 
   if(continueList.length > 0){
     container.appendChild(el('div', { class:'section-header' }, [
@@ -4025,16 +4936,14 @@ async function getRecentlyAddedGroupedForDashboard(maxServers, perServerLimit){
 /* ======================================================================
    VIEW: FAVORITES
    ====================================================================== */
-async function renderFavoritesView(container){
-  container.appendChild(el('div', { class:'section-header' }, [el('h2',{},['Favoritos'])]));
+/** Busca os favoritos (filme/ao vivo/série), com dedup de buscas em
+ * andamento — mesmo padrão usado pra Filmes/Séries/Ao Vivo (loadTypePageData). */
+async function loadFavoritesData(){
+  if(State.favoritesCache) return State.favoritesCache;
+  const inFlightKey = 'favorites';
+  if(State.pageFetchesInFlight.has(inFlightKey)) return State.pageFetchesInFlight.get(inFlightKey);
 
-  let favMovies, favLive, favSeries;
-  if(State.favoritesCache){
-    ({ favMovies, favLive, favSeries } = State.favoritesCache);
-  } else {
-    const loading = el('div', { class:'loader-inline' }, [el('div',{class:'spinner'}), 'Carregando...']);
-    container.appendChild(loading);
-
+  const promise = (async () => {
     const favs = await IDB.getAll(STORES.favorites);
     const favContentEntries = favs.filter(f => f.type !== 'series');
     const favSeriesEntries = favs.filter(f => f.type === 'series');
@@ -4043,14 +4952,36 @@ async function renderFavoritesView(container){
       Promise.all(favContentEntries.map(f => IDB.getByKey(STORES.contents, f.id).catch(()=>null))),
       Promise.all(favSeriesEntries.map(f => IDB.getByKey(STORES.seriesSummary, f.id).catch(()=>null)))
     ]);
-    if(State.ui.currentView !== 'favorites') return;
-    loading.remove();
 
-    favMovies = contents.filter(c => c && c.tipo === 'movie');
-    favLive = contents.filter(c => c && c.tipo === 'live');
-    favSeries = seriesList.filter(Boolean).map(s => { s.favorito = true; return s; });
-    State.favoritesCache = { favMovies, favLive, favSeries };
+    const favMovies = contents.filter(c => c && c.tipo === 'movie');
+    const favLive = contents.filter(c => c && c.tipo === 'live');
+    const favSeries = seriesList.filter(Boolean).map(s => { s.favorito = true; return s; });
+    const result = { favMovies, favLive, favSeries };
+    State.favoritesCache = result;
+    return result;
+  })();
+
+  State.pageFetchesInFlight.set(inFlightKey, promise);
+  try{
+    return await promise;
+  } finally {
+    State.pageFetchesInFlight.delete(inFlightKey);
   }
+}
+
+async function renderFavoritesView(container){
+  container.appendChild(el('div', { class:'section-header' }, [el('h2',{},['Favoritos'])]));
+
+  const alreadyCached = !!State.favoritesCache;
+  const alreadyInFlight = State.pageFetchesInFlight.has('favorites');
+  let loading = null;
+  if(!alreadyCached && !alreadyInFlight){
+    loading = el('div', { class:'loader-inline' }, [el('div',{class:'spinner'}), 'Carregando...']);
+    container.appendChild(loading);
+  }
+  const { favMovies, favLive, favSeries } = await loadFavoritesData();
+  if(State.ui.currentView !== 'favorites') return;
+  if(loading) loading.remove();
 
   if(favMovies.length===0 && favLive.length===0 && favSeries.length===0){
     container.appendChild(renderEmptyState('★','Nenhum favorito ainda','Marque filmes, séries ou canais como favoritos para vê-los aqui.'));
@@ -4080,20 +5011,40 @@ async function renderFavoritesView(container){
 /* ======================================================================
    VIEW: CONTINUE WATCHING
    ====================================================================== */
+/** Busca a lista COMPLETA de Continuar Assistindo (diferente da prévia do
+ * Dashboard, que é limitada a 12), com dedup de buscas em andamento. */
+async function loadContinueWatchingFullList(){
+  if(State.continueCache) return State.continueCache;
+  const inFlightKey = 'continue-full';
+  if(State.pageFetchesInFlight.has(inFlightKey)) return State.pageFetchesInFlight.get(inFlightKey);
+
+  const promise = (async () => {
+    const list = await ProgressModule.getContinueWatchingList();
+    State.continueCache = list;
+    return list;
+  })();
+
+  State.pageFetchesInFlight.set(inFlightKey, promise);
+  try{
+    return await promise;
+  } finally {
+    State.pageFetchesInFlight.delete(inFlightKey);
+  }
+}
+
 async function renderContinueView(container){
   container.appendChild(el('div', { class:'section-header' }, [el('h2',{},['Continuar Assistindo'])]));
 
-  let list;
-  if(State.continueCache){
-    list = State.continueCache;
-  } else {
-    const loading = el('div', { class:'loader-inline' }, [el('div',{class:'spinner'}), 'Carregando...']);
+  const alreadyCached = !!State.continueCache;
+  const alreadyInFlight = State.pageFetchesInFlight.has('continue-full');
+  let loading = null;
+  if(!alreadyCached && !alreadyInFlight){
+    loading = el('div', { class:'loader-inline' }, [el('div',{class:'spinner'}), 'Carregando...']);
     container.appendChild(loading);
-    list = await ProgressModule.getContinueWatchingList();
-    if(State.ui.currentView !== 'continue') return;
-    loading.remove();
-    State.continueCache = list;
   }
+  const list = await loadContinueWatchingFullList();
+  if(State.ui.currentView !== 'continue') return;
+  if(loading) loading.remove();
 
   if(list.length===0){
     container.appendChild(renderEmptyState('⏱️','Nada por aqui ainda','Assista a filmes ou episódios para retomá-los depois.'));
@@ -4158,8 +5109,9 @@ function renderServerItem(s){
   const sinfo = el('div', { class:'sinfo' });
 
   const isError = s.lastStatus === 'error';
-  const dotClass = 'status-dot' + (isError ? ' error' : '');
-  const dotTitle = isError ? ('Erro na última atualização: ' + (s.lastError || 'desconhecido')) : 'Última atualização OK';
+  const isUpdating = State.ui.serversUpdating.has(s.id);
+  const dotClass = 'status-dot' + (isError ? ' error' : '') + (isUpdating ? ' updating' : '');
+  const dotTitle = isUpdating ? 'Atualizando...' : (isError ? ('Erro na última atualização: ' + (s.lastError || 'desconhecido')) : 'Última atualização OK');
 
   sinfo.appendChild(el('div', { class:'sname' }, [
     el('span', { class:dotClass, title:dotTitle }),
@@ -4272,8 +5224,9 @@ function showMinimizedPill(overlay, getLabelText){
     id: 'import-minimized-pill',
     style: 'position:fixed;bottom:20px;left:20px;z-index:400;background:var(--bg-2);border:1px solid var(--border);border-radius:24px;padding:10px 18px;display:flex;align-items:center;gap:10px;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.45);font-size:13px;color:var(--text-0);'
   });
-  pill.appendChild(el('div', { class:'spinner' }));
+  // Texto primeiro, ícone (spinner/check) depois — fica à direita do texto.
   pill.appendChild(el('span', { id:'import-minimized-label' }, [getLabelText()]));
+  pill.appendChild(el('div', { class:'spinner', id:'import-minimized-spinner' }));
   pill.addEventListener('click', function(){
     overlay.style.display = 'flex';
     removeMinimizedPill();
@@ -4281,6 +5234,27 @@ function showMinimizedPill(overlay, getLabelText){
   document.body.appendChild(pill);
   minimizedPillEl = pill;
   return pill;
+}
+
+/** Troca o spinner por um check verde (parado, sem girar) e o texto por
+ * "Concluído", depois some sozinho depois de 3s — em vez de sumir abrupto
+ * ou ficar preso pra sempre esperando alguém clicar em "Fechar". */
+function showMinimizedPillDoneThenRemove(text){
+  if(!minimizedPillEl) return;
+  const spinner = qs('#import-minimized-spinner', minimizedPillEl);
+  if(spinner){
+    // Precisa tirar a CLASSE 'spinner' (não só o estilo de borda) — ela é
+    // quem carrega a animação de girar infinita; só zerar a borda não
+    // impedia o ícone de continuar girando.
+    spinner.className = '';
+    spinner.style.border = 'none';
+    spinner.style.width = '16px';
+    spinner.style.height = '16px';
+    spinner.style.animation = 'none';
+    spinner.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#34d399" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+  }
+  updateMinimizedPillText(text);
+  setTimeout(removeMinimizedPill, 3000);
 }
 
 function updateMinimizedPillText(text){
@@ -4334,19 +5308,55 @@ async function runImportWithProgressModal(servers){
 
   let lastCompleted = 0;
   let lastTotal = servers.length;
+  let importFullyDone = false;
 
   minimizeBtn.addEventListener('click', function(){
+    // Se a importação já terminou de vez (usuário demorou pra fechar e
+    // clicou em "Minimizar" por engano/hábito), faz o mesmo efeito de
+    // "Fechar" — sem isso, criava um pill minimizado que nenhum código
+    // nunca mais limpava sozinho (a limpeza automática já tinha rodado
+    // uma vez, antes desse clique).
+    if(importFullyDone){
+      overlay.remove();
+      Router.render();
+      return;
+    }
     overlay.style.display = 'none';
     showMinimizedPill(overlay, function(){ return 'Importando servidores... ' + lastCompleted + '/' + lastTotal; });
   });
 
   function updateServerUI(server, patch){
+    // Estado global (não é só do modal) — a tela de Servidores lê isso pra
+    // fazer a bolinha piscar, mesmo se você estiver lá enquanto uma
+    // importação roda minimizada em segundo plano.
+    const wasUpdating = State.ui.serversUpdating.has(server.id);
+    const isDone = patch.phase === 'process' && patch.status === 'done';
+    const isError = patch.phase === 'error';
+    if(isDone || isError){
+      State.ui.serversUpdating.delete(server.id);
+    } else {
+      State.ui.serversUpdating.add(server.id);
+    }
+    if((wasUpdating !== State.ui.serversUpdating.has(server.id)) && State.ui.currentView === 'servers'){
+      Router.render();
+    }
+
     const item = spElements.get(server.id);
     if(!item) return;
     const statusEl = item.querySelector('.sp-status');
     const dotEl = item.querySelector('.status-dot');
     const fillEl = item.querySelector('.pfill');
     const detailEl = item.querySelector('.sp-detail');
+
+    // As fases "process" e "save" são as ativamente em andamento (não só
+    // baixando em paralelo) — mover o item pro topo da lista deixa claro,
+    // de relance, qual servidor está sendo trabalhado agora, sem precisar
+    // rolar pra achar. Só move quando ainda está em progresso (não ao
+    // finalizar), e só se já não estiver lá.
+    const isActivelyWorking = (patch.phase === 'process' || patch.phase === 'save') && patch.status !== 'done';
+    if(isActivelyWorking && listWrap.firstElementChild !== item){
+      listWrap.insertBefore(item, listWrap.firstElementChild);
+    }
 
     if(patch.phase === 'download'){
       dotEl.className = 'status-dot processing';
@@ -4383,11 +5393,25 @@ async function runImportWithProgressModal(servers){
       // barra parecia travar em 100% depois do processamento terminar.
       dotEl.className = 'status-dot processing';
       statusEl.className = 'sp-status proc';
-      statusEl.textContent = 'Salvando...';
       const pct = patch.total ? Math.min(100,(patch.processed/patch.total)*100) : 0;
       fillEl.style.width = pct + '%';
       const c = patch.counts || {movie:0,series:0,live:0};
-      detailEl.textContent = (patch.processed||0) + '/' + (patch.total||0) + ' salvos  •  Filmes: '+c.movie+'  Séries: '+c.series+'  Ao Vivo: '+c.live;
+      if(patch.chunkMode){
+        // Processar e salvar acontecem em paralelo agora — vários lotes
+        // podem estar sendo gravados ao mesmo tempo enquanto o resto do
+        // arquivo ainda é processado, então o progresso aqui é por "lotes
+        // concluídos", não mais item a item.
+        statusEl.textContent = 'Salvando (' + (patch.processed||0) + '/' + (patch.total||0) + ' lotes)...';
+        detailEl.textContent = 'Filmes: '+c.movie+'  Séries: '+c.series+'  Ao Vivo: '+c.live;
+      } else {
+        // A confirmação final em disco não tem como reportar progresso
+        // (o navegador não expõe isso) — troca o texto pra deixar claro que
+        // ainda está trabalhando, em vez de parecer travado em "Salvando...".
+        statusEl.textContent = patch.committing ? 'Confirmando gravação...' : 'Salvando...';
+        detailEl.textContent = patch.committing
+          ? 'Finalizando ' + (patch.total||0) + ' itens no disco...'
+          : (patch.processed||0) + '/' + (patch.total||0) + ' salvos  •  Filmes: '+c.movie+'  Séries: '+c.series+'  Ao Vivo: '+c.live;
+      }
     } else if(patch.phase === 'error'){
       dotEl.className = 'status-dot error';
       statusEl.className = 'sp-status err';
@@ -4418,11 +5442,21 @@ async function runImportWithProgressModal(servers){
   State.ui.isImporting = false;
   State.pageCache.clear(); State.dashboardCache = null; State.favoritesCache = null; State.continueCache = null;
   updateSidebarCounts();
+  importFullyDone = true;
+
+  // Roda o pré-carregamento de novo, com os dados frescos que acabaram de
+  // ser importados — sem isso, a PRIMEIRA vez que você clicasse em
+  // Filmes/Séries/Ao Vivo/Dashboard/Favoritos/Continuar Assistindo depois
+  // de importar sempre carregava do zero, mesmo o pré-carregamento inicial
+  // já tendo rodado uma vez (só que aí ainda sem nenhum dado, no início do
+  // app). Não é aguardado aqui — roda em segundo plano, não atrasa o
+  // fechamento do modal.
+  prefetchFirstPages().catch(()=>{});
 
   if(minimizedPillEl){
-    // Import finished while minimized: notify via toast and clean up the pill.
-    removeMinimizedPill();
-    showToast('Importação concluída: ' + lastCompleted + '/' + lastTotal + ' servidores processados.', 'success');
+    // Terminou enquanto estava minimizado: mostra um check verde por 3s
+    // em vez de sumir abrupto ou (pior) ficar preso ali pra sempre.
+    showMinimizedPillDoneThenRemove('Importação concluída: ' + lastCompleted + '/' + lastTotal);
     overlay.remove();
   } else {
     closeBtnWrap.appendChild(el('button', { class:'btn primary', onclick:()=>{ overlay.remove(); Router.render(); } }, ['Fechar']));
@@ -4628,6 +5662,10 @@ const Router = {
   goTo(view){
     State.ui.currentView = view;
     if(view !== 'series-detail') State.ui.activeSeriesKey = null;
+    // Restaura os contadores globais ao navegar — se a tela pra onde foi
+    // (filme/série/ao vivo) tiver um filtro de servidor ativo, ela mesma
+    // sobrescreve seu próprio contador com o valor filtrado logo depois.
+    updateSidebarCounts();
     this.render();
     if(window.innerWidth <= 900){
       qs('#sidebar').classList.remove('open');
@@ -4744,33 +5782,91 @@ async function initApp(){
 async function prefetchFirstPages(){
   const pageSize = State.settings.pageSize || PAGE_SIZE_DEFAULT;
 
+  // Ordem pedida: Ao Vivo e Filmes primeiro (mais leves), Séries por
+  // último (mais pesado — muitos episódios por trás de cada resumo). Usa
+  // a MESMA função que a navegação normal usa (loadTypePageData) — assim,
+  // se o usuário clicar numa dessas abas enquanto o pré-carregamento dela
+  // ainda está rodando, a tela reaproveita essa mesma busca em vez de
+  // disparar outra do zero (dedução automática via pageFetchesInFlight).
   for(const type of ['live', 'movie']){
     const filters = State.ui.filters[type];
-    const cacheKey = pageCacheKey(type, filters);
-    if(State.pageCache.has(cacheKey)) continue;
     try{
-      const [serverIds, catOptions, pageResult] = await Promise.all([
-        QueryModule.getServersForType(type), QueryModule.getCategoriesForType(type), QueryModule.getContentPage(type, filters, filters.page, pageSize)
-      ]);
-      State.pageCache.set(cacheKey, { serverIds, catOptions, pageResult });
+      await loadTypePageData(type, filters, pageSize);
       if(['live','movies'].indexOf(State.ui.currentView) !== -1) Router.render();
     }catch(e){}
   }
 
-  // Séries é o mais pesado (muitas temporadas/episódios por trás de cada
-  // resumo) — carrega por último, de propósito, pra não atrasar o resto.
-  const sFilters = State.ui.filters.series;
-  const sKey = pageCacheKey('series', sFilters);
-  if(!State.pageCache.has(sKey)){
-    try{
-      const [serverIds, catOptions, pageResult] = await Promise.all([
-        QueryModule.getServersForSeries(), QueryModule.getCategoriesForSeries(), QueryModule.getSeriesPage(sFilters, sFilters.page, pageSize)
-      ]);
-      State.pageCache.set(sKey, { serverIds, catOptions, pageResult });
-      if(State.ui.currentView === 'series') Router.render();
-    }catch(e){}
-  }
+  // Séries é o mais pesado — carrega por último, de propósito, pra não
+  // atrasar o resto.
+  try{
+    await loadTypePageData('series', State.ui.filters.series, pageSize);
+    if(State.ui.currentView === 'series') Router.render();
+  }catch(e){}
+
+  // Favoritos também é pré-carregado — geralmente pequeno (poucas dezenas
+  // de itens), então não atrasa nada relevante.
+  try{
+    await loadFavoritesData();
+    if(State.ui.currentView === 'favorites') Router.render();
+  }catch(e){}
+
+  // Dashboard e Continuar Assistindo também — completa a lista de telas
+  // que devem estar prontas ao clicar, não só Filmes/Séries/Ao
+  // Vivo/Favoritos.
+  try{
+    await loadDashboardData();
+    if(State.ui.currentView === 'dashboard') Router.render();
+  }catch(e){}
+  try{
+    await loadContinueWatchingFullList();
+    if(State.ui.currentView === 'continue') Router.render();
+  }catch(e){}
+
+  // Servidores: já é 100% memória (State.servers, carregado na abertura
+  // do app) — não faz nenhuma consulta ao banco, então já está pronto sem
+  // precisar de nada extra aqui.
+
+  // Configurações: só faz 1 leitura de um registro pequeno, mas
+  // "esquenta" State.settings com antecedência de qualquer jeito, pra
+  // completar 100% do menu pré-carregado.
+  try{
+    const fresh = await IDB.getByKey(STORES.settings, 'app');
+    if(fresh) State.settings = Object.assign({}, DEFAULT_SETTINGS, fresh);
+  }catch(e){}
 }
+
+// Rede de segurança contra "a conexão com o banco caiu" (múltiplas abas do
+// app abertas ao mesmo tempo, ou o navegador derrubando a conexão sob
+// pressão de memória): em vez de deixar como um erro escondido no console,
+// avisa a pessoa com clareza e já tenta reabrir a conexão sozinho em
+// segundo plano, pra próxima ação funcionar de novo sem precisar recarregar
+// a página manualmente na maioria dos casos.
+// Rede de segurança extra: captura QUALQUER erro de script não tratado
+// (diferente da de promessa acima) e mostra na tela. Em dispositivos sem
+// acesso fácil ao console (ex: TV/projetor Android), isso é o único jeito
+// de saber o que realmente quebrou quando algo falha silenciosamente.
+window.addEventListener('error', function(e){
+  const msg = (e && e.message) ? e.message : 'Erro desconhecido';
+  const loc = (e && e.filename) ? (' (linha ' + e.lineno + ')') : '';
+  showToast('Erro inesperado: ' + msg + loc, 'error');
+});
+
+window.addEventListener('unhandledrejection', function(e){
+  const msg = e && e.reason && e.reason.message ? e.reason.message : '';
+  const isConnectionClosed = e && e.reason && e.reason.name === 'InvalidStateError'
+    && /closing|closed/i.test(msg);
+  if(!isConnectionClosed) return;
+  e.preventDefault(); // não deixa virar erro vermelho não tratado no console
+  if(State.db){ try{ State.db.close(); }catch(err){} }
+  State.db = null;
+  showToast('A conexão com o banco foi interrompida. Tentando reconectar...', 'error');
+  IDB.open().then(function(db){
+    State.db = db;
+    showToast('Reconectado — pode tentar novamente.', 'success');
+  }).catch(function(){
+    showToast('Não foi possível reconectar. Recarregue a página.', 'error');
+  });
+});
 
 window.addEventListener('DOMContentLoaded', initApp);
 </script>
