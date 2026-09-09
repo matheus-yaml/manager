@@ -1,5 +1,4 @@
 <!DOCTYPE html>
-
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
@@ -70,31 +69,19 @@ html,body{
 <body>
 
 <div id="loader">
-
-```
 <div class="spinner"></div>
-
 <div id="loaderText">
     Carregando aplicativo...
 </div>
-
 <div id="error">
-
     Não foi possível carregar o aplicativo.
-
     <br>
-
     Verifique sua conexão com a internet.
-
     <br>
-
     <button onclick="location.reload()">
         Tentar novamente
     </button>
-
 </div>
-```
-
 </div>
 
 <script>
@@ -670,6 +657,200 @@ let checking =
 
 let popupShown =
     false;
+
+
+/* =====================================================
+   PAINEL VISUAL DE DIAGNÓSTICO (NA TELA, SEM CONSOLE)
+   -----------------------------------------------------
+   Em alguns aparelhos (TVs/projetores Android) não dá pra
+   acessar o console facilmente, e às vezes os timers do
+   JS ficam mais restritos em segundo plano. Esse painel
+   mostra, direto na tela, o que o verificador de
+   atualização está fazendo agora — sem precisar de nenhuma
+   ferramenta externa pra diagnosticar.
+
+   Tem um botão "×" pra fechar — uma vez fechado, fica
+   fechado só NESSA sessão (não salva preferência nenhuma).
+   Da próxima vez que o app abrir do zero, o painel volta a
+   aparecer normalmente.
+   ===================================================== */
+
+let debugBadgeClosed =
+    false;
+
+function updateDebugBadge(text,isError){
+
+    if(debugBadgeClosed){
+
+        return;
+    }
+
+    let badge =
+        document.getElementById(
+            "__sm_debug_badge"
+        );
+
+    if(!badge){
+
+        badge =
+            document.createElement(
+                "div"
+            );
+
+        badge.id =
+            "__sm_debug_badge";
+
+        badge.style.position =
+            "fixed";
+
+        badge.style.bottom =
+            "6px";
+
+        badge.style.right =
+            "6px";
+
+        badge.style.zIndex =
+            "2147483647";
+
+        badge.style.background =
+            "rgba(0,0,0,.78)";
+
+        badge.style.color =
+            "#66ff99";
+
+        badge.style.font =
+            "10px monospace";
+
+        badge.style.padding =
+            "5px 8px 5px 9px";
+
+        badge.style.borderRadius =
+            "7px";
+
+        badge.style.maxWidth =
+            "62vw";
+
+        badge.style.lineHeight =
+            "1.5";
+
+        badge.style.userSelect =
+            "none";
+
+        badge.style.display =
+            "flex";
+
+        badge.style.alignItems =
+            "center";
+
+        badge.style.gap =
+            "8px";
+
+
+        const textEl =
+            document.createElement(
+                "span"
+            );
+
+        textEl.id =
+            "__sm_debug_badge_text";
+
+        textEl.style.whiteSpace =
+            "pre-wrap";
+
+        badge.appendChild(
+            textEl
+        );
+
+
+        const closeBtn =
+            document.createElement(
+                "span"
+            );
+
+        closeBtn.textContent =
+            "×";
+
+        closeBtn.style.cursor =
+            "pointer";
+
+        closeBtn.style.pointerEvents =
+            "auto";
+
+        closeBtn.style.fontSize =
+            "14px";
+
+        closeBtn.style.lineHeight =
+            "1";
+
+        closeBtn.style.color =
+            "#888";
+
+        closeBtn.style.flexShrink =
+            "0";
+
+        closeBtn.title =
+            "Fechar (volta a aparecer na próxima abertura do app)";
+
+        closeBtn.onclick =
+            function(){
+
+                debugBadgeClosed =
+                    true;
+
+                badge.remove();
+            };
+
+        badge.appendChild(
+            closeBtn
+        );
+
+
+        /*
+         * O painel em si não precisa ser clicável (só o
+         * botão de fechar), então deixa o resto "vazado"
+         * pros toques passarem direto.
+         */
+
+        badge.style.pointerEvents =
+            "none";
+
+        (document.body || document.documentElement)
+            .appendChild(
+                badge
+            );
+    }
+
+    const textEl =
+        document.getElementById(
+            "__sm_debug_badge_text"
+        );
+
+    if(textEl){
+
+        textEl.style.color =
+            isError
+                ? "#ff6b6b"
+                : "#66ff99";
+
+        textEl.textContent =
+            "[Manager] " +
+            text;
+    }
+}
+
+
+/*
+ * Mostra IMEDIATAMENTE, assim que o monitor liga — se essa
+ * mensagem aparecer na tela mas NUNCA mais mudar depois de
+ * ~3-4 segundos, quer dizer que os timers (setTimeout/
+ * setInterval) não estão disparando nesse aparelho. Se ela
+ * for atualizando normalmente a cada 15s, os timers estão
+ * ok e o problema (se houver) está em outra etapa.
+ */
+
+updateDebugBadge(
+    "monitor iniciado, aguardando 1ª checagem..."
+);
 
 
 /* =====================================================
@@ -1380,6 +1561,13 @@ async function updateNow(){
         );
 
 
+        updateDebugBadge(
+            "ERRO ao atualizar: " +
+            (error && error.message ? error.message : String(error)),
+            true
+        );
+
+
         if(button){
 
             button.disabled =
@@ -1421,6 +1609,12 @@ async function checkUpdate(){
         true;
 
 
+    updateDebugBadge(
+        "verificando... " +
+        new Date().toLocaleTimeString()
+    );
+
+
     console.log(
         "=============================================="
     );
@@ -1455,6 +1649,12 @@ async function checkUpdate(){
 
             console.warn(
                 "[Manager] Não foi possível comparar esta versão."
+            );
+
+            updateDebugBadge(
+                "sem hash local — não deu pra comparar. " +
+                new Date().toLocaleTimeString(),
+                true
             );
 
             return;
@@ -1529,6 +1729,12 @@ async function checkUpdate(){
             );
 
 
+            updateDebugBadge(
+                "atualização disponível! " +
+                new Date().toLocaleTimeString()
+            );
+
+
             showPopup();
 
 
@@ -1541,6 +1747,12 @@ async function checkUpdate(){
 
             console.log(
                 "[Manager] Código local e GitHub são iguais."
+            );
+
+
+            updateDebugBadge(
+                "ok, sem mudanças. última checagem: " +
+                new Date().toLocaleTimeString()
             );
         }
 
@@ -1559,6 +1771,16 @@ async function checkUpdate(){
 
         console.warn(
             error
+        );
+
+
+        updateDebugBadge(
+            "ERRO na checagem: " +
+            (error && error.message ? error.message : String(error)) +
+            " (" +
+            new Date().toLocaleTimeString() +
+            ")",
+            true
         );
 
 
