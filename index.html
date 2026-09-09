@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>const APP_VERSION = '1.0.2';</script>
+<script>const APP_VERSION = '1.0.1';</script>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -968,6 +968,7 @@ const State = {
     categoryFilterText: { movie:'', series:'', live:'' },
     isImporting: false,
     serversUpdating: new Set(), // ids dos servidores em atualização agora — bolinha pisca na tela de Servidores
+    debugPanelEnabled: false, // painel de diagnóstico — SEMPRE começa desligado, nunca é salvo/lembrado entre aberturas
     activeSeriesKey: null
   }
 };
@@ -1086,6 +1087,62 @@ function showToast(msg, type){
   wrap.appendChild(t);
   setTimeout(()=>{ t.style.opacity='0'; t.style.transition='opacity .3s'; setTimeout(()=>t.remove(), 300); }, 4000);
 }
+
+/* ======================================================================
+   PAINEL DE DIAGNÓSTICO
+   ------------------------------------------------------------------
+   Desligado por padrão, ligado só via Configurações, e SEMPRE volta a
+   ficar desligado da próxima vez que o app abrir (não é salvo em lugar
+   nenhum) — é uma ferramenta de troubleshoot pontual, não uma
+   configuração permanente. Mostra os últimos eventos relevantes (erros,
+   avisos, marcos de importação) direto na tela, sem precisar de console.
+   ====================================================================== */
+const MAX_DEBUG_LOG_ENTRIES = 60;
+State.debugLog = [];
+
+function pushDebugLog(message, isError){
+  State.debugLog.push({ time: new Date().toLocaleTimeString(), message, isError: !!isError });
+  if(State.debugLog.length > MAX_DEBUG_LOG_ENTRIES) State.debugLog.shift();
+  if(State.ui.debugPanelEnabled) renderDebugPanel();
+}
+
+function renderDebugPanel(){
+  let panel = document.getElementById('debug-panel');
+  if(!panel){
+    panel = el('div', { id:'debug-panel', style:
+      'position:fixed;bottom:10px;right:10px;z-index:100000;width:min(360px,80vw);max-height:40vh;' +
+      'background:rgba(10,11,18,.92);backdrop-filter:blur(14px);border:1px solid rgba(255,255,255,.15);' +
+      'border-radius:10px;font-family:monospace;font-size:11px;color:#8fd; display:flex;flex-direction:column;overflow:hidden;box-shadow:0 12px 32px -8px rgba(0,0,0,.6);'
+    });
+    const header = el('div', { style:'display:flex;align-items:center;justify-content:space-between;padding:7px 10px;border-bottom:1px solid rgba(255,255,255,.1);flex-shrink:0;' }, [
+      el('span', { style:'font-weight:700;color:#fff;' }, ['Diagnóstico']),
+    ]);
+    const closeBtn = el('span', { style:'cursor:pointer;color:#888;font-size:15px;line-height:1;padding:0 2px;', title:'Fechar (desliga o painel — pode religar em Configurações)' }, ['×']);
+    closeBtn.addEventListener('click', () => {
+      State.ui.debugPanelEnabled = false;
+      removeDebugPanel();
+      const checkbox = document.getElementById('debug-panel-toggle');
+      if(checkbox) checkbox.checked = false;
+    });
+    header.appendChild(closeBtn);
+    panel.appendChild(header);
+    const body = el('div', { id:'debug-panel-body', style:'overflow-y:auto;padding:6px 10px;white-space:pre-wrap;line-height:1.5;' });
+    panel.appendChild(body);
+    document.body.appendChild(panel);
+  }
+  const body = document.getElementById('debug-panel-body');
+  body.innerHTML = '';
+  for(const entry of State.debugLog){
+    body.appendChild(el('div', { style:'color:' + (entry.isError ? '#ff6b6b' : '#8fd9b0') }, ['[' + entry.time + '] ' + entry.message]));
+  }
+  body.scrollTop = body.scrollHeight;
+}
+
+function removeDebugPanel(){
+  const panel = document.getElementById('debug-panel');
+  if(panel) panel.remove();
+}
+
 function formatBytes(bytes){
   if(!bytes && bytes !== 0) return '--';
   if(bytes < 1024) return bytes + ' B';
@@ -5272,6 +5329,7 @@ function updateMinimizedPillText(text){
 async function runImportWithProgressModal(servers){
   if(State.ui.isImporting){ showToast('Já existe uma importação em andamento.', 'error'); return; }
   State.ui.isImporting = true;
+  pushDebugLog('Importação iniciada: ' + servers.map(s=>s.nome).join(', '));
 
   const overlay = el('div', { class:'modal-overlay' });
   const box = el('div', { class:'modal-box' });
@@ -5338,6 +5396,11 @@ async function runImportWithProgressModal(servers){
     const wasUpdating = State.ui.serversUpdating.has(server.id);
     const isDone = patch.phase === 'process' && patch.status === 'done';
     const isError = patch.phase === 'error';
+    if(isDone){
+      pushDebugLog('Servidor "' + server.nome + '" concluído: ' + (patch.total||0) + ' itens.');
+    } else if(isError){
+      pushDebugLog('Servidor "' + server.nome + '" falhou: ' + (patch.message || 'erro desconhecido'), true);
+    }
     if(isDone || isError){
       State.ui.serversUpdating.delete(server.id);
     } else {
@@ -5541,6 +5604,27 @@ async function renderSettingsView(container){
   });
   colorBlock.appendChild(resetColorsBtn);
   container.appendChild(colorBlock);
+
+  // Diagnóstico: painel de troubleshoot, SEMPRE desligado ao abrir o app
+  // (nunca é salvo) — só liga se você marcar aqui, útil pra investigar
+  // algo pontual sem precisar de console/ADB.
+  const debugBlock = el('div', { class:'settings-block' });
+  debugBlock.appendChild(el('h3', {}, ['Diagnóstico']));
+  debugBlock.appendChild(el('p', { style:'font-size:12.5px;color:var(--text-2);margin-bottom:12px;' }, [
+    'Mostra um painel na tela com erros e eventos recentes — útil pra investigar problemas sem precisar de ferramentas externas. Sempre começa desligado ao abrir o app.'
+  ]));
+  const debugToggleRow = el('label', { style:'display:flex;align-items:center;gap:10px;cursor:pointer;font-size:13px;' });
+  const debugCheckbox = el('input', { type:'checkbox', id:'debug-panel-toggle', style:'width:16px;height:16px;' });
+  debugCheckbox.checked = State.ui.debugPanelEnabled;
+  debugCheckbox.addEventListener('change', function(){
+    State.ui.debugPanelEnabled = debugCheckbox.checked;
+    if(State.ui.debugPanelEnabled) renderDebugPanel();
+    else removeDebugPanel();
+  });
+  debugToggleRow.appendChild(debugCheckbox);
+  debugToggleRow.appendChild(el('span', {}, ['Ativar painel de diagnóstico nesta sessão']));
+  debugBlock.appendChild(debugToggleRow);
+  container.appendChild(debugBlock);
 
   // Automatic servers block
   const autoBlock = el('div', { class:'settings-block' });
@@ -5852,22 +5936,32 @@ async function prefetchFirstPages(){
 window.addEventListener('error', function(e){
   const msg = (e && e.message) ? e.message : 'Erro desconhecido';
   const loc = (e && e.filename) ? (' (linha ' + e.lineno + ')') : '';
+  pushDebugLog('Erro de script: ' + msg + loc, true);
   showToast('Erro inesperado: ' + msg + loc, 'error');
 });
 
 window.addEventListener('unhandledrejection', function(e){
-  const msg = e && e.reason && e.reason.message ? e.reason.message : '';
+  const msg = e && e.reason && e.reason.message ? e.reason.message : String(e && e.reason);
   const isConnectionClosed = e && e.reason && e.reason.name === 'InvalidStateError'
     && /closing|closed/i.test(msg);
-  if(!isConnectionClosed) return;
+  if(!isConnectionClosed){
+    // Mesmo não sendo o erro específico de conexão, registra no
+    // diagnóstico — sem isso, qualquer OUTRA falha "silenciosa" (promessa
+    // sem .catch) nunca aparecia em lugar nenhum visível.
+    pushDebugLog('Promessa não tratada: ' + msg, true);
+    return;
+  }
+  pushDebugLog('Conexão com o banco caiu — reconectando...', true);
   e.preventDefault(); // não deixa virar erro vermelho não tratado no console
   if(State.db){ try{ State.db.close(); }catch(err){} }
   State.db = null;
   showToast('A conexão com o banco foi interrompida. Tentando reconectar...', 'error');
   IDB.open().then(function(db){
     State.db = db;
+    pushDebugLog('Reconectado ao banco com sucesso.');
     showToast('Reconectado — pode tentar novamente.', 'success');
   }).catch(function(){
+    pushDebugLog('Falha ao reconectar ao banco.', true);
     showToast('Não foi possível reconectar. Recarregue a página.', 'error');
   });
 });
