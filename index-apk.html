@@ -655,9 +655,6 @@ const STORE =
 let checking =
     false;
 
-let popupShown =
-    false;
-
 
 /* =====================================================
    PAINEL VISUAL DE DIAGNÓSTICO (NA TELA, SEM CONSOLE)
@@ -1315,217 +1312,257 @@ async function download(){
 }
 
 
+
+
 /* =====================================================
-   POPUP
+   NOTIFICAÇÃO (banner simples, não bloqueia nada)
    ===================================================== */
 
-function showPopup(){
+function showNotification(text,variant){
 
-    if(popupShown){
+    /*
+     * variant: 'info' (padrão, roxo, ícone de sincronizar),
+     * 'success' (verde, check) ou 'error' (vermelho, alerta).
+     * Visual combinando com o app principal: cartão de vidro
+     * escuro (fundo translúcido + blur), cantos arredondados,
+     * ícone circular com cor de destaque.
+     */
 
-        return;
-    }
+    variant =
+        variant || "info";
+
+    let wrap =
+        document.getElementById(
+            "__sm_update_banner"
+        );
+
+    let iconEl;
+    let textEl;
+
+    if(!wrap){
+
+        wrap =
+            document.createElement(
+                "div"
+            );
+
+        wrap.id =
+            "__sm_update_banner";
+
+        wrap.style.position =
+            "fixed";
+
+        wrap.style.top =
+            "16px";
+
+        wrap.style.left =
+            "50%";
+
+        wrap.style.transform =
+            "translateX(-50%)";
+
+        wrap.style.zIndex =
+            "2147483647";
+
+        wrap.style.display =
+            "flex";
+
+        wrap.style.alignItems =
+            "center";
+
+        wrap.style.gap =
+            "12px";
+
+        wrap.style.padding =
+            "10px 18px 10px 10px";
+
+        wrap.style.borderRadius =
+            "16px";
+
+        wrap.style.background =
+            "rgba(16,17,28,.82)";
+
+        wrap.style.backdropFilter =
+            "blur(18px) saturate(160%)";
+
+        wrap.style.webkitBackdropFilter =
+            "blur(18px) saturate(160%)";
+
+        wrap.style.border =
+            "1px solid rgba(255,255,255,.12)";
+
+        wrap.style.boxShadow =
+            "0 20px 50px -12px rgba(0,0,0,.65), inset 0 1px 0 rgba(255,255,255,.06)";
+
+        wrap.style.maxWidth =
+            "90vw";
+
+        wrap.style.pointerEvents =
+            "none";
+
+        wrap.style.fontFamily =
+            "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+
+        wrap.style.letterSpacing =
+            "-.01em";
 
 
-    popupShown =
-        true;
+        iconEl =
+            document.createElement(
+                "div"
+            );
 
+        iconEl.id =
+            "__sm_update_banner_icon";
 
-    const overlay =
-        document.createElement(
-            "div"
+        iconEl.style.width =
+            "34px";
+
+        iconEl.style.height =
+            "34px";
+
+        iconEl.style.borderRadius =
+            "50%";
+
+        iconEl.style.flexShrink =
+            "0";
+
+        iconEl.style.display =
+            "flex";
+
+        iconEl.style.alignItems =
+            "center";
+
+        iconEl.style.justifyContent =
+            "center";
+
+        iconEl.style.fontSize =
+            "16px";
+
+        wrap.appendChild(
+            iconEl
         );
 
 
-    overlay.id =
-        "__Manager_update_popup";
+        textEl =
+            document.createElement(
+                "span"
+            );
+
+        textEl.id =
+            "__sm_update_banner_text"
+
+        textEl.style.color =
+            "#f2f2f7";
+
+        textEl.style.fontSize =
+            "13.5px";
+
+        textEl.style.fontWeight =
+            "600";
+
+        textEl.style.lineHeight =
+            "1.4";
+
+        wrap.appendChild(
+            textEl
+        );
 
 
-    overlay.innerHTML = \`
-        <div style="
-            position:fixed;
-            inset:0;
-            z-index:2147483647;
-            display:flex;
-            align-items:center;
-            justify-content:center;
-            padding:20px;
-            box-sizing:border-box;
-            background:rgba(0,0,0,.78);
-            backdrop-filter:blur(7px);
-            -webkit-backdrop-filter:blur(7px);
-            font-family:Arial,sans-serif;
-        ">
+        document.body.appendChild(
+            wrap
+        );
 
-            <div style="
-                width:min(390px,100%);
-                box-sizing:border-box;
-                padding:25px;
-                border-radius:18px;
-                background:#171923;
-                color:#fff;
-                border:1px solid rgba(255,255,255,.12);
-                box-shadow:0 25px 70px rgba(0,0,0,.7);
-                text-align:center;
-            ">
+    }else{
 
-                <div style="
-                    width:54px;
-                    height:54px;
-                    margin:0 auto 16px;
-                    border-radius:50%;
-                    display:flex;
-                    align-items:center;
-                    justify-content:center;
-                    background:rgba(124,92,255,.15);
-                    color:#9b87ff;
-                    font-size:26px;
-                ">
-                    ↻
-                </div>
+        iconEl =
+            document.getElementById(
+                "__sm_update_banner_icon"
+            );
 
-                <h2 style="
-                    margin:0 0 10px;
-                    font-size:20px;
-                ">
-                    Seu aplicativo está desatualizado
-                </h2>
-
-                <p style="
-                    margin:0 0 21px;
-                    color:#aaa;
-                    font-size:14px;
-                    line-height:1.5;
-                ">
-                    Uma nova versão do aplicativo
-                    está disponível. Clique aqui para
-                    atualizar para a última versão.
-                </p>
-
-                <button
-                    id="__sm_update_now"
-                    style="
-                        width:100%;
-                        padding:13px 16px;
-                        border:0;
-                        border-radius:11px;
-                        background:linear-gradient(
-                            135deg,
-                            #7c5cff,
-                            #6347dc
-                        );
-                        color:#fff;
-                        font-size:14px;
-                        font-weight:bold;
-                        cursor:pointer;
-                    "
-                >
-                    Atualizar agora
-                </button>
-
-                <button
-                    id="__sm_update_later"
-                    style="
-                        width:100%;
-                        margin-top:9px;
-                        padding:11px 16px;
-                        border:0;
-                        border-radius:11px;
-                        background:rgba(255,255,255,.06);
-                        color:#aaa;
-                        font-size:13px;
-                        cursor:pointer;
-                    "
-                >
-                    Agora não
-                </button>
-
-            </div>
-
-        </div>
-    \`;
+        textEl =
+            document.getElementById(
+                "__sm_update_banner_text"
+            );
+    }
 
 
-    document.body.appendChild(
-        overlay
-    );
+    const palette = {
 
+        info: {
+            bg: "rgba(124,92,255,.18)",
+            color: "#b9a6ff",
+            symbol: "↻"
+        },
 
-    document
-        .getElementById(
-            "__sm_update_later"
-        )
-        .onclick =
-        function(){
+        success: {
+            bg: "rgba(52,211,153,.18)",
+            color: "#34d399",
+            symbol: "✓"
+        },
 
-            overlay.remove();
+        error: {
+            bg: "rgba(239,68,68,.18)",
+            color: "#f87171",
+            symbol: "!"
+        }
 
-            popupShown =
-                false;
-        };
+    };
 
+    const p =
+        palette[variant] ||
+        palette.info;
 
-    document
-        .getElementById(
-            "__sm_update_now"
-        )
-        .onclick =
-        updateNow;
+    iconEl.style.background =
+        p.bg;
+
+    iconEl.style.color =
+        p.color;
+
+    iconEl.textContent =
+        p.symbol;
+
+    textEl.textContent =
+        text;
+
+    wrap.style.display =
+        "flex";
+}
+
+function hideNotification(){
+
+    const banner =
+        document.getElementById(
+            "__sm_update_banner"
+        );
+
+    if(banner){
+
+        banner.style.display =
+            "none";
+    }
 }
 
 
 /* =====================================================
-   ATUALIZAR
+   ATUALIZAR (AUTOMÁTICO — sem pedir confirmação)
+   -----------------------------------------------------
+   Assim que uma versão diferente é detectada, atualiza
+   sozinho e só AVISA o usuário (não pede clique). Se der
+   erro, não fica insistindo na hora — a própria checagem
+   periódica (a cada 15s) tenta tudo de novo naturalmente,
+   do zero, na próxima vez.
    ===================================================== */
 
-async function updateNow(){
+async function performAutoUpdate(newHTML,newHash){
 
-    const button =
-        document.getElementById(
-            "__sm_update_now"
-        );
-
-
-    if(button){
-
-        button.disabled =
-            true;
-
-        button.style.opacity =
-            ".6";
-
-        button.textContent =
-            "Baixando atualização...";
-    }
+    showNotification(
+        "Nova versão encontrada — atualizando automaticamente...",
+        "info"
+    );
 
 
     try{
-
-        console.log(
-            "[Manager] Baixando nova versão..."
-        );
-
-
-        const newHTML =
-            await download();
-
-
-        console.log(
-            "[Manager] Calculando hash da nova versão..."
-        );
-
-
-        const newHash =
-            await makeHash(
-                newHTML
-            );
-
-
-        console.log(
-            "[Manager] Novo hash:",
-            newHash
-        );
-
 
         await saveNewVersion(
             newHTML,
@@ -1538,19 +1575,30 @@ async function updateNow(){
         );
 
 
-        console.log(
-            "[Manager] Recarregando aplicativo..."
+        showNotification(
+            "Atualizado! Reiniciando o aplicativo...",
+            "success"
+        );
+
+
+        updateDebugBadge(
+            "atualizado com sucesso, recarregando... " +
+            new Date().toLocaleTimeString()
         );
 
 
         /*
-         * O loader original será executado novamente.
-         *
-         * Como a nova versão já está salva,
-         * ele abrirá essa versão.
+         * Um instante pra pessoa conseguir ler o aviso antes
+         * de recarregar.
          */
 
-        location.reload();
+        setTimeout(
+            function(){
+
+                location.reload();
+            },
+            1200
+        );
 
 
     }catch(error){
@@ -1561,32 +1609,33 @@ async function updateNow(){
         );
 
 
+        showNotification(
+            "Falha ao atualizar — tentando de novo em breve.",
+            "error"
+        );
+
+
         updateDebugBadge(
             "ERRO ao atualizar: " +
-            (error && error.message ? error.message : String(error)),
+            (error && error.message ? error.message : String(error)) +
+            " — próxima tentativa em até 15s.",
             true
         );
 
 
-        if(button){
+        /*
+         * Some sozinho depois de um tempo — não precisa ficar
+         * poluindo a tela até a próxima tentativa.
+         */
 
-            button.disabled =
-                false;
-
-            button.style.opacity =
-                "1";
-
-            button.textContent =
-                "Tentar novamente";
-        }
-
-
-        alert(
-            "Não foi possível atualizar o aplicativo.\\n\\n" +
-            "Verifique sua conexão com a internet."
+        setTimeout(
+            hideNotification,
+            6000
         );
     }
 }
+
+
 
 
 /* =====================================================
@@ -1730,12 +1779,21 @@ async function checkUpdate(){
 
 
             updateDebugBadge(
-                "atualização disponível! " +
+                "atualização detectada — aplicando automaticamente... " +
                 new Date().toLocaleTimeString()
             );
 
 
-            showPopup();
+            /*
+             * Reaproveita o HTML e o hash que JÁ foram baixados
+             * e calculados aqui em cima pra comparar — não
+             * precisa baixar tudo de novo.
+             */
+
+            performAutoUpdate(
+                remoteHTML,
+                remoteHash
+            );
 
 
         }else{
