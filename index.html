@@ -773,8 +773,9 @@ const STORES = {
 
 // APP_VERSION agora fica lá no topo do arquivo (logo depois do <title>) — fácil de achar e ajustar
 const PAGE_SIZE_DEFAULT = 50;
-const MAX_CONCURRENT_DOWNLOADS = 10; // não usado mais como limite (downloads são todos simultâneos), mantido por compatibilidade
-const MAX_CONCURRENT_PROCESSING = 3; // 3 servidores podem estar "na vez" de processar ao mesmo tempo — não é paralelismo de CPU de verdade (só existe 1 thread principal), mas aproveita os intervalos ociosos de um servidor (esperando o Worker confirmar um lote) pra deixar os outros avançarem
+// Downloads/processamento simultâneos e tamanho do lote de gravação agora
+// são configuráveis em Configurações → Desempenho (State.settings.performance),
+// com valores padrão definidos em DEFAULT_SETTINGS.performance.
 
 /* ======================================================================
    PERSISTENCE WORKER
@@ -901,7 +902,16 @@ const DEFAULT_SETTINGS = {
   rawUser: '111111',
   rawPass: 'xxx',
   autoSaveServers: true,
-  colors: { accent:'#4d7dff', accent2:'#22d3ee', fav:'#ec4899', bg:'#06070c' }
+  colors: { accent:'#4d7dff', accent2:'#22d3ee', fav:'#ec4899', bg:'#06070c' },
+  // Desempenho: valores padrão são o que funcionava bem num computador
+  // normal (notebook). Em aparelhos mais fracos (TVs/projetores Android
+  // com pouca RAM), ajuste manualmente aqui em Configurações — não precisa
+  // mexer no código pra isso.
+  performance: {
+    maxConcurrentDownloads: 0,  // 0 = sem limite (baixa todos os servidores ao mesmo tempo — era o padrão de sempre)
+    maxConcurrentProcessing: 3, // quantos servidores processam "ao mesmo tempo" (revezando, só 1 thread de JS existe)
+    saveChunkSize: 3000         // itens por lote enviado ao Worker pra salvar
+  }
 };
 
 function hexToRgbString(hex){
@@ -3043,7 +3053,7 @@ const ServerModule = {
     // chance de "furar a fila" com muito mais frequência — não elimina a
     // espera (é estrutural do IndexedDB), mas diminui bastante o tempo
     // percebido enquanto uma importação roda em segundo plano (minimizada).
-    const SAVE_CHUNK_SIZE = 3000; // itens por lote enviado ao Worker
+    const SAVE_CHUNK_SIZE = (State.settings.performance && State.settings.performance.saveChunkSize) || DEFAULT_SETTINGS.performance.saveChunkSize;
     const state = createCompactionState();
     const batchSize = 4000; // lines per batch
     let pendingExtinf = null;
@@ -3346,39 +3356,60 @@ const ServerModule = {
       }
     }
 
-    // Kick off ALL downloads simultaneously (no concurrency limit).
-    servers.forEach(function(server, idx){
-      const report = function(patch){ if(onServerUpdate) onServerUpdate(server, patch); };
-      report({ phase:'download', status:'processing', downloaded:0, total:null, speed:0 });
-      let lastLoaded = 0;
-      let lastTime = Date.now();
+    // Downloads agora respeitam um limite de concorrência (MAX_CONCURRENT_DOWNLOADS)
+    // em vez de disparar todos ao mesmo tempo. Baixar várias playlists
+    // grandes simultaneamente pode estourar a RAM de aparelhos mais fracos
+    // (TVs/projetores Android) — cada download mantém o texto inteiro da
+    // playlist em memória até terminar, e vários ao mesmo tempo somam
+    // rápido. Um pool de workers, igual ao já usado pro processamento,
+    // resolve isso sem perder a velocidade em aparelhos que aguentam mais.
+    let downloadQueueIndex = 0;
 
-      ServerModule.downloadPlaylist(server.url, function(loaded, tot){
-        const now = Date.now();
-        const dt = (now - lastTime) / 1000;
-        let speed = 0;
-        if(dt > 0.2){
-          speed = (loaded - lastLoaded) / dt;
-          lastLoaded = loaded;
-          lastTime = now;
+    async function downloadWorker(){
+      while(downloadQueueIndex < servers.length){
+        const idx = downloadQueueIndex++;
+        const server = servers[idx];
+        const report = function(patch){ if(onServerUpdate) onServerUpdate(server, patch); };
+        report({ phase:'download', status:'processing', downloaded:0, total:null, speed:0 });
+        let lastLoaded = 0;
+        let lastTime = Date.now();
+
+        try{
+          const text = await ServerModule.downloadPlaylist(server.url, function(loaded, tot){
+            const now = Date.now();
+            const dt = (now - lastTime) / 1000;
+            let speed = 0;
+            if(dt > 0.2){
+              speed = (loaded - lastLoaded) / dt;
+              lastLoaded = loaded;
+              lastTime = now;
+            }
+            report({ phase:'download', status:'processing', downloaded: loaded, total: tot, speed: speed });
+          });
+          report({ phase:'download', status:'done', downloaded: text.length, total: text.length });
+          pushQueue({ server: server, idx: idx, text: text });
+        }catch(err){
+          const message = err && err.status ? ('Erro ' + err.status) : (err && err.message ? err.message : 'Erro desconhecido');
+          report({ phase:'error', status:'error', message: message });
+          results[idx] = { ok:false, error: err };
+          server.lastStatus = 'error';
+          server.lastError = message;
+          IDB.put(STORES.servers, server).catch(function(){});
+          completed++;
+          updateOverall();
         }
-        report({ phase:'download', status:'processing', downloaded: loaded, total: tot, speed: speed });
-      }).then(function(text){
-        report({ phase:'download', status:'done', downloaded: text.length, total: text.length });
-        pushQueue({ server: server, idx: idx, text: text });
         markDownloadSettled();
-      }).catch(function(err){
-        const message = err && err.status ? ('Erro ' + err.status) : (err && err.message ? err.message : 'Erro desconhecido');
-        report({ phase:'error', status:'error', message: message });
-        results[idx] = { ok:false, error: err };
-        server.lastStatus = 'error';
-        server.lastError = message;
-        IDB.put(STORES.servers, server).catch(function(){});
-        completed++;
-        updateOverall();
-        markDownloadSettled();
-      });
-    });
+      }
+    }
+
+    const configuredMaxDownloads = (State.settings.performance && State.settings.performance.maxConcurrentDownloads !== undefined)
+      ? State.settings.performance.maxConcurrentDownloads
+      : DEFAULT_SETTINGS.performance.maxConcurrentDownloads;
+    // 0 = sem limite — baixa todos os servidores ao mesmo tempo, era o
+    // comportamento padrão de sempre (bom pra computadores normais).
+    const downloadWorkerCount = configuredMaxDownloads > 0 ? Math.min(configuredMaxDownloads, total) : total;
+    const downloadWorkers = [];
+    for(let i=0;i<downloadWorkerCount;i++) downloadWorkers.push(downloadWorker());
 
     // Processing workers with limited concurrency, pulling from the queue as downloads complete.
     async function processingWorker(){
@@ -3481,7 +3512,7 @@ const ServerModule = {
     const workerCount = Math.min(processConcurrency, total) || 1;
     const workers = [];
     for(let i=0;i<workerCount;i++) workers.push(processingWorker());
-    await Promise.all(workers);
+    await Promise.all([...downloadWorkers, ...workers]);
     return results;
   }
 };
@@ -5503,7 +5534,8 @@ async function runImportWithProgressModal(servers){
   }
 
   try{
-    await ServerModule.importManyServersPipelined(servers, MAX_CONCURRENT_PROCESSING, updateServerUI, updateOverallUI, onFirstSuccess);
+    const configuredMaxProcessing = (State.settings.performance && State.settings.performance.maxConcurrentProcessing) || DEFAULT_SETTINGS.performance.maxConcurrentProcessing;
+    await ServerModule.importManyServersPipelined(servers, configuredMaxProcessing, updateServerUI, updateOverallUI, onFirstSuccess);
   }catch(err){
     showToast('Erro durante importação.', 'error');
   }
@@ -5625,6 +5657,40 @@ async function renderSettingsView(container){
   debugToggleRow.appendChild(el('span', {}, ['Ativar painel de diagnóstico nesta sessão']));
   debugBlock.appendChild(debugToggleRow);
   container.appendChild(debugBlock);
+
+  // Desempenho: ajustável por aparelho. Padrão = o que funciona bem num
+  // computador normal; reduza em TVs/projetores Android mais fracos.
+  const perfBlock = el('div', { class:'settings-block' });
+  perfBlock.appendChild(el('h3', {}, ['Desempenho']));
+  perfBlock.appendChild(el('p', { style:'font-size:12.5px;color:var(--text-2);margin-bottom:12px;' }, [
+    'Valores padrão funcionam bem num computador normal. Em TVs/projetores Android com pouca memória, reduza "Downloads simultâneos" (ex: 2 ou 3) pra evitar o app fechar sozinho ao importar vários servidores.'
+  ]));
+  const perf = Object.assign({}, DEFAULT_SETTINGS.performance, State.settings.performance);
+
+  function makePerfField(label, key, hint, min){
+    const group = el('div', { class:'form-group' });
+    group.appendChild(el('label', {}, [label]));
+    const input = el('input', { type:'number', min: String(min !== undefined ? min : 0) });
+    input.value = perf[key];
+    input.addEventListener('change', async function(){
+      let v = parseInt(input.value, 10);
+      if(isNaN(v) || v < (min !== undefined ? min : 0)) v = DEFAULT_SETTINGS.performance[key];
+      input.value = v;
+      State.settings.performance = Object.assign({}, State.settings.performance || DEFAULT_SETTINGS.performance, { [key]: v });
+      await IDB.put(STORES.settings, State.settings);
+      showToast('Configuração salva.', 'success');
+    });
+    group.appendChild(input);
+    if(hint) group.appendChild(el('div', { style:'font-size:11px;color:var(--text-2);margin-top:4px;' }, [hint]));
+    return group;
+  }
+
+  const perfRow = el('div', { class:'form-row' });
+  perfRow.appendChild(makePerfField('Downloads simultâneos', 'maxConcurrentDownloads', '0 = sem limite (baixa todos de uma vez — padrão de sempre)', 0));
+  perfRow.appendChild(makePerfField('Servidores processando ao mesmo tempo', 'maxConcurrentProcessing', 'Mínimo 1', 1));
+  perfRow.appendChild(makePerfField('Itens por lote ao salvar', 'saveChunkSize', 'Menor = mais responsivo durante a importação; maior = salva um pouco mais rápido', 500));
+  perfBlock.appendChild(perfRow);
+  container.appendChild(perfBlock);
 
   // Automatic servers block
   const autoBlock = el('div', { class:'settings-block' });
