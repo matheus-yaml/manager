@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>const APP_VERSION = '1.0.3';</script>
+<script>const APP_VERSION = '1.0.4';</script>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -86,6 +86,24 @@ input,select{
 input:focus,select:focus{border-color:var(--accent);background:rgba(var(--accent-rgb),.08);}
 input::placeholder{color:var(--text-2);}
 a{color:inherit;text-decoration:none;}
+
+/* Foco visível — essencial pra navegação por controle remoto (TV/projetor)
+   e teclado. Sem isso, dá pra "navegar" botão a botão sem NUNCA saber onde
+   está o cursor. Usa :focus normal (não :focus-visible) de propósito —
+   :focus-visible é relativamente recente e pode não existir em WebViews
+   mais antigos (a regra simplesmente seria ignorada nesse caso, quebrando
+   o foco visível justamente onde ele é mais necessário). */
+button:focus,
+a:focus,
+[tabindex]:focus,
+.nav-item:focus,
+.content-card:focus{
+  outline:3px solid var(--accent);
+  outline-offset:2px;
+  box-shadow:0 0 0 6px rgba(var(--accent-rgb),.25);
+}
+.content-card:focus{ transform:translateY(-4px); }
+.nav-item:focus{ background:var(--bg-2); }
 
 #app{
   display:flex;
@@ -684,14 +702,14 @@ a{color:inherit;text-decoration:none;}
       <div class="name">Stream<span>Manager</span></div>
     </div>
     <ul class="nav-list" id="nav-list">
-      <li class="nav-item" data-view="dashboard"><span class="ic">&#9635;</span>Dashboard</li>
-      <li class="nav-item" data-view="live"><span class="ic">&#9679;</span>Ao Vivo<span class="count" id="cnt-live">0</span></li>
-      <li class="nav-item" data-view="series"><span class="ic">&#127909;</span>Séries<span class="count" id="cnt-series">0</span></li>
-      <li class="nav-item" data-view="movies"><span class="ic">&#127916;</span>Filmes<span class="count" id="cnt-movies">0</span></li>
-      <li class="nav-item" data-view="favorites"><span class="ic">&#9733;</span>Favoritos<span class="count" id="cnt-favs">0</span></li>
-      <li class="nav-item" data-view="continue"><span class="ic">&#9199;</span>Continuar Assistindo<span class="count" id="cnt-continue">0</span></li>
-      <li class="nav-item" data-view="servers"><span class="ic">&#128421;</span>Servidores<span class="count" id="cnt-servers">0</span></li>
-      <li class="nav-item" data-view="settings"><span class="ic">&#9881;</span>Configurações</li>
+      <li class="nav-item" data-view="dashboard" tabindex="0"><span class="ic">&#9635;</span>Dashboard</li>
+      <li class="nav-item" data-view="live" tabindex="0"><span class="ic">&#9679;</span>Ao Vivo<span class="count" id="cnt-live">0</span></li>
+      <li class="nav-item" data-view="series" tabindex="0"><span class="ic">&#127909;</span>Séries<span class="count" id="cnt-series">0</span></li>
+      <li class="nav-item" data-view="movies" tabindex="0"><span class="ic">&#127916;</span>Filmes<span class="count" id="cnt-movies">0</span></li>
+      <li class="nav-item" data-view="favorites" tabindex="0"><span class="ic">&#9733;</span>Favoritos<span class="count" id="cnt-favs">0</span></li>
+      <li class="nav-item" data-view="continue" tabindex="0"><span class="ic">&#9199;</span>Continuar Assistindo<span class="count" id="cnt-continue">0</span></li>
+      <li class="nav-item" data-view="servers" tabindex="0"><span class="ic">&#128421;</span>Servidores<span class="count" id="cnt-servers">0</span></li>
+      <li class="nav-item" data-view="settings" tabindex="0"><span class="ic">&#9881;</span>Configurações</li>
     </ul>
     <div id="sidebar-search-counters" class="search-counters" style="display:none;"></div>
     <div class="footer-mini">StreamManager &middot; local &amp; offline-first &middot; <span id="app-version-label">v1.0.0</span></div>
@@ -4681,7 +4699,7 @@ function buildServerOptionsForType(type){
 
 function renderContentCard(content, options){
   options = options || {};
-  const card = el('div', { class:'content-card' });
+  const card = el('div', { class:'content-card', tabindex:'0' });
   const thumb = el('div', { class:'thumb' });
   const ownLogo = resolveContentLogo(content); // cobre capa plana (antiga) ou compactada (prefixo+sufixo)
   const nameEl = el('div', { class:'name' }, [resolveContentName(content)]);
@@ -4779,16 +4797,23 @@ function renderContentCard(content, options){
   info.appendChild(meta);
   card.appendChild(info);
 
-  card.addEventListener('click', function(){
+  const activateCard = function(){
     if(activeSearchOverlay) activeSearchOverlay.close(true);
     PlayerModule.open(content);
+  };
+  card.addEventListener('click', activateCard);
+  card.addEventListener('keydown', function(e){
+    if(e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar'){
+      e.preventDefault();
+      activateCard();
+    }
   });
 
   return card;
 }
 
 function renderSeriesCard(entry){
-  const card = el('div', { class:'content-card' });
+  const card = el('div', { class:'content-card', tabindex:'0' });
   const thumb = el('div', { class:'thumb' });
   if(entry.logo){
     const img = el('img', { loading:'lazy' });
@@ -4821,11 +4846,18 @@ function renderSeriesCard(entry){
   info.appendChild(meta);
   card.appendChild(info);
 
-  card.addEventListener('click', function(){
+  const activateSeriesCard = function(){
     if(activeSearchOverlay) activeSearchOverlay.close(true);
     State.ui.activeSeriesKey = entry.key;
     State.ui.currentView = 'series-detail';
     Router.render();
+  };
+  card.addEventListener('click', activateSeriesCard);
+  card.addEventListener('keydown', function(e){
+    if(e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar'){
+      e.preventDefault();
+      activateSeriesCard();
+    }
   });
 
   return card;
@@ -6078,9 +6110,45 @@ async function updateSidebarCounts(){
    GLOBAL EVENT LISTENERS
    ====================================================================== */
 function setupEventListeners(){
+  // Enter em qualquer campo (input/select) pula pro próximo elemento
+  // navegável da tela — útil tanto pra quem usa Tab no teclado quanto,
+  // principalmente, pra quem está preenchendo um campo com um controle
+  // remoto (onde não tem como "clicar" no próximo campo facilmente).
+  document.addEventListener('keydown', function(e){
+    if(e.key !== 'Enter') return;
+    const target = e.target;
+    if(!target) return;
+    const tag = target.tagName;
+    const isTextInput = tag === 'INPUT' && ['checkbox','radio','button','submit'].indexOf(target.type) === -1;
+    const isSelect = tag === 'SELECT';
+    if(!isTextInput && !isSelect) return; // não mexe em botões (Enter já ativa normalmente) nem textarea
+
+    e.preventDefault();
+    const focusable = Array.prototype.slice.call(
+      document.querySelectorAll('button, a[href], input, select, textarea, [tabindex]')
+    ).filter(function(el){
+      return el.offsetParent !== null && !el.disabled; // só o que está visível/habilitado agora na tela
+    });
+    const idx = focusable.indexOf(target);
+    if(idx !== -1 && idx < focusable.length - 1){
+      focusable[idx + 1].focus();
+    } else if(target.blur){
+      target.blur();
+    }
+  });
+
   qsa('.nav-item').forEach(function(item){
     item.addEventListener('click', function(){
       Router.goTo(item.getAttribute('data-view'));
+    });
+    // Suporte a controle remoto/teclado: Enter ou Espaço ativam o item
+    // focado, igual um clique — sem isso, dava pra "ver" o item em foco
+    // (depois da correção visual) mas não dava pra confirmar a seleção.
+    item.addEventListener('keydown', function(e){
+      if(e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar'){
+        e.preventDefault();
+        Router.goTo(item.getAttribute('data-view'));
+      }
     });
   });
 
