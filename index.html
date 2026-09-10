@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>const APP_VERSION = '1.0.2';</script>
+<script>const APP_VERSION = '1.0.3';</script>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -762,7 +762,7 @@ a{color:inherit;text-decoration:none;}
 'use strict';
 
 const DB_NAME = 'StreamManagerDB';
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 const STORES = {
   servers: 'servers',
   contents: 'contents',
@@ -770,7 +770,8 @@ const STORES = {
   settings: 'settings',
   favorites: 'favorites',
   seriesSummary: 'seriesSummary',
-  seriesEpisodes: 'seriesEpisodes' // separado do resumo pra listar/buscar séries continuar leve
+  seriesEpisodes: 'seriesEpisodes', // separado do resumo pra listar/buscar séries continuar leve
+  downloadChunks: 'downloadChunks' // temporária: pedaços de texto da playlist, só usada no modo "streaming" (Configurações → Desempenho)
 };
 
 // APP_VERSION agora fica lá no topo do arquivo (logo depois do <title>) — fácil de achar e ajustar
@@ -912,7 +913,8 @@ const DEFAULT_SETTINGS = {
   performance: {
     maxConcurrentDownloads: 0,  // 0 = sem limite (baixa todos os servidores ao mesmo tempo — era o padrão de sempre)
     maxConcurrentProcessing: 3, // quantos servidores processam "ao mesmo tempo" (revezando, só 1 thread de JS existe)
-    saveChunkSize: 3000         // itens por lote enviado ao Worker pra salvar
+    saveChunkSize: 3000,        // itens por lote enviado ao Worker pra salvar
+    streamDownload: false       // economiza RAM: baixa e processa em pedaços, sem nunca montar a playlist inteira em memória (mais lento, mas evita estourar memória em aparelhos fracos)
   }
 };
 
@@ -1240,6 +1242,13 @@ const IDB = {
         // si. Só a tela de detalhe de uma série específica lê daqui.
         if(!db.objectStoreNames.contains(STORES.seriesEpisodes)){
           db.createObjectStore(STORES.seriesEpisodes, { keyPath: 'key' });
+        }
+        // v5: pedaços de texto da playlist (modo "streaming", opcional em
+        // Configurações → Desempenho) — baixa em pedaços pequenos direto
+        // pro banco, sem nunca montar o texto inteiro (100MB+) em memória
+        // de uma vez. Chave composta serverId+índice do pedaço.
+        if(!db.objectStoreNames.contains(STORES.downloadChunks)){
+          db.createObjectStore(STORES.downloadChunks, { keyPath: 'key' });
         }
       };
       req.onsuccess = function(e){
@@ -3012,6 +3021,93 @@ const ServerModule = {
   },
 
   /**
+   * Versão "streaming" do download — usada só quando o modo economia de
+   * memória está ligado (Configurações → Desempenho). Em vez de acumular
+   * a playlist inteira numa string só (100MB+ ficando em memória do
+   * início ao fim), grava pedaços de ~2MB direto no IndexedDB conforme
+   * vão chegando da rede, e descarta cada pedaço da memória assim que é
+   * salvo. Cada pedaço só é "fechado" numa quebra de linha completa (nunca
+   * corta um item no meio entre dois pedaços). Já conta os itens (#EXTINF)
+   * nessa mesma passada, evitando uma segunda varredura depois.
+   */
+  async downloadPlaylistStreaming(url, serverId, onProgress){
+    const response = await fetch(url);
+    if(!response.ok){
+      const err = new Error('HTTP ' + response.status);
+      err.status = response.status;
+      throw err;
+    }
+    const contentLengthHeader = response.headers.get('Content-Length');
+    const total = contentLengthHeader ? parseInt(contentLengthHeader, 10) : null;
+
+    const CHUNK_TARGET_SIZE = 2 * 1024 * 1024; // ~2MB de texto por pedaço salvo
+    let buffer = '';
+    let chunkIndex = 0;
+    let totalItems = 0;
+    let received = 0;
+
+    function countExtinf(str){
+      let pos = 0;
+      const len = str.length;
+      while(pos < len){
+        let end = str.indexOf('\n', pos);
+        if(end === -1) end = len;
+        if(str.charCodeAt(pos) === 35 && str.slice(pos, pos+7).toUpperCase() === '#EXTINF'){
+          totalItems++;
+        }
+        pos = end + 1;
+      }
+    }
+
+    async function flushBuffer(force){
+      if(!force && buffer.length < CHUNK_TARGET_SIZE) return;
+      let toSave;
+      if(force){
+        // Última descarga: salva TUDO que sobrou, mesmo que a última
+        // linha do arquivo não termine com quebra de linha (comum —
+        // arquivos raramente terminam com \n depois da última linha).
+        toSave = buffer;
+        buffer = '';
+      } else {
+        const cutPoint = buffer.lastIndexOf('\n');
+        if(cutPoint === -1) return; // ainda sem quebra de linha completa — espera mais dados chegarem
+        toSave = buffer.slice(0, cutPoint + 1);
+        buffer = buffer.slice(cutPoint + 1);
+      }
+      if(!toSave) return;
+      countExtinf(toSave);
+      await IDB.put(STORES.downloadChunks, { key: serverId + '::' + chunkIndex, text: toSave });
+      chunkIndex++;
+    }
+
+    if(!response.body || !response.body.getReader){
+      // Fallback (sem suporte a streaming de rede): baixa tudo de uma vez
+      // mesmo, mas ainda grava em pedaços no IndexedDB pra manter o
+      // restante do fluxo (processamento) consistente.
+      const text = await response.text();
+      buffer = text;
+      if(onProgress) onProgress(text.length, total);
+      await flushBuffer(true);
+      return { chunkCount: chunkIndex, totalItems };
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    while(true){
+      const { done, value } = await reader.read();
+      if(done) break;
+      received += value.length;
+      buffer += decoder.decode(value, { stream: true });
+      if(onProgress) onProgress(received, total);
+      await flushBuffer(false);
+    }
+    buffer += decoder.decode();
+    await flushBuffer(true);
+
+    return { chunkCount: chunkIndex, totalItems };
+  },
+
+  /**
    * Processes raw M3U text into content objects for a server, in batches,
    * reporting progress. Returns array of content objects.
    *
@@ -3033,6 +3129,145 @@ const ServerModule = {
    * aquele lote em paralelo, numa thread separada. No final, todos os
    * lotes disparados são aguardados juntos (Promise.all).
    */
+  /**
+   * Núcleo compartilhado do parser — usado tanto pelo caminho padrão
+   * (texto inteiro já em memória) quanto pelo modo streaming (lendo
+   * pedaço por pedaço do IndexedDB, sem nunca montar o texto inteiro).
+   * `feedText` pode ser chamada uma vez só (com o texto inteiro) ou várias
+   * vezes seguidas (um pedaço de cada vez) — o resultado final é idêntico
+   * nos dois casos, porque qualquer linha cortada ao meio entre dois
+   * pedaços é "colada" automaticamente (guardada em `carry` até a próxima
+   * chamada completar ela).
+   */
+  createPlaylistParsingSession(serverId, total, onProgress, onSaveProgress){
+    const SAVE_CHUNK_SIZE = (State.settings.performance && State.settings.performance.saveChunkSize) || DEFAULT_SETTINGS.performance.saveChunkSize;
+    const state = createCompactionState();
+    const LINES_PER_BATCH = 4000; // a cada N linhas, cede a thread (yield) pra manter a UI viva
+    let pendingExtinf = null;
+    let counts = { movie:0, series:0, live:0 };
+    let processed = 0;
+    let totalCount = 0;
+    let pendingSaveBatch = [];
+    const saveTasks = [];
+    let chunksDispatched = 0;
+    let chunksCompleted = 0;
+    let estimatedTotalChunks = Math.max(1, Math.ceil((total||0) / SAVE_CHUNK_SIZE));
+    let writtenSeriesKeys = [];
+    let carry = ''; // pedacinho de linha incompleta entre chamadas de feedText
+    let linesSinceYield = 0;
+
+    function reportSaveProgress(){
+      if(onSaveProgress) onSaveProgress(chunksCompleted, estimatedTotalChunks);
+    }
+
+    function dispatchChunk(items, isFinal){
+      if(items.length === 0 && !isFinal) return;
+      chunksDispatched++;
+      const finalized = isFinal ? finalizeSeriesSummariesFromState(state, serverId) : { summaries: [], episodeRecords: [] };
+      if(isFinal) writtenSeriesKeys = finalized.summaries.map(s => s.key);
+      const task = PersistenceWorker.save(items, finalized.summaries, undefined, finalized.episodeRecords).then(() => {
+        chunksCompleted++;
+        reportSaveProgress();
+      });
+      saveTasks.push(task);
+    }
+
+    function processLine(line){
+      // Remove um \r final, caso a playlist use quebra de linha CRLF.
+      if(line.length > 0 && line.charCodeAt(line.length - 1) === 13){
+        line = line.slice(0, -1);
+      }
+      if(!line) return;
+      const trimmed = line.trim();
+      if(!trimmed) return;
+
+      if(trimmed.charAt(0) === '#'){
+        if(/^#EXTINF/i.test(trimmed)){
+          try{ pendingExtinf = ParserModule.parseExtinfLine(trimmed); }
+          catch(err){ pendingExtinf = null; }
+        }
+        return;
+      }
+      if(pendingExtinf){
+        const url = trimmed;
+        if(url){
+          try{
+            const entry = {
+              url: url,
+              name: pendingExtinf.name || url,
+              tvgId: pendingExtinf.tvgId || '',
+              tvgName: pendingExtinf.tvgName || '',
+              tvgLogo: pendingExtinf.tvgLogo || '',
+              groupTitle: pendingExtinf.groupTitle || 'Sem categoria'
+            };
+            const content = ParserModule.buildContent(entry, serverId);
+            if(content){
+              const goesToNormalBatch = compactItemIncremental(content, state);
+              counts[content.tipo]++;
+              totalCount++;
+              if(goesToNormalBatch){
+                pendingSaveBatch.push(content);
+                if(pendingSaveBatch.length >= SAVE_CHUNK_SIZE){
+                  dispatchChunk(pendingSaveBatch, false);
+                  pendingSaveBatch = [];
+                }
+              }
+              // Série não entra no lote normal — já foi guardada dentro
+              // do resumo da série (state.seriesInfo), e só vai pro
+              // banco no final, via finalizeSeriesSummariesFromState.
+            }
+            processed++;
+          }catch(err){
+            // ignore invalid entry individually, keep parsing the rest
+          }
+        }
+        pendingExtinf = null;
+      }
+    }
+
+    return {
+      async feedText(textChunk){
+        const combined = carry + (textChunk || '');
+        let pos = 0;
+        while(true){
+          let nl = combined.indexOf('\n', pos);
+          if(nl === -1) break;
+          processLine(combined.slice(pos, nl));
+          pos = nl + 1;
+          linesSinceYield++;
+          if(linesSinceYield >= LINES_PER_BATCH){
+            linesSinceYield = 0;
+            if(onProgress) onProgress(processed, total, counts);
+            await fastYield();
+          }
+        }
+        carry = combined.slice(pos);
+      },
+      async finish(){
+        if(carry){ processLine(carry); carry = ''; }
+        if(onProgress) onProgress(processed, total, counts);
+
+        // Último lote (o que sobrou) + os resumos finais de série, já com
+        // a contagem completa de episódios/temporadas de cada uma.
+        dispatchChunk(pendingSaveBatch, true);
+        estimatedTotalChunks = chunksDispatched;
+        reportSaveProgress();
+
+        await Promise.all(saveTasks);
+
+        return {
+          total: totalCount,
+          counts: counts,
+          urlPrefixes: state.urlPrefixList,
+          logoPrefixes: state.logoPrefixList,
+          movieCategories: Array.from(state.movieCategories),
+          liveCategories: Array.from(state.liveCategories),
+          seriesKeys: writtenSeriesKeys
+        };
+      }
+    };
+  },
+
   async processPlaylistText(text, serverId, onProgress, onSaveProgress){
     text = text || '';
     const textLen = text.length;
@@ -3058,137 +3293,27 @@ const ServerModule = {
       }
     }
 
-    // O IndexedDB SERIALIZA transações que tocam as mesmas stores — uma
-    // gravação em andamento (mesmo rodando no Worker, outra thread) faz
-    // qualquer LEITURA sua (navegar em Filmes, buscar) que toque as mesmas
-    // stores esperar na fila até aquela gravação terminar. Lotes menores
-    // significam transações de gravação mais curtas, então sua leitura tem
-    // chance de "furar a fila" com muito mais frequência — não elimina a
-    // espera (é estrutural do IndexedDB), mas diminui bastante o tempo
-    // percebido enquanto uma importação roda em segundo plano (minimizada).
-    const SAVE_CHUNK_SIZE = (State.settings.performance && State.settings.performance.saveChunkSize) || DEFAULT_SETTINGS.performance.saveChunkSize;
-    const state = createCompactionState();
-    const LINES_PER_BATCH = 4000; // a cada N linhas, cede a thread (yield) pra manter a UI viva
-    let pendingExtinf = null;
-    let counts = { movie:0, series:0, live:0 };
-    let processed = 0;
-    let totalCount = 0;
+    const session = ServerModule.createPlaylistParsingSession(serverId, total, onProgress, onSaveProgress);
+    await session.feedText(text);
+    return await session.finish();
+  },
 
-    let pendingSaveBatch = [];
-    const saveTasks = [];
-    let chunksDispatched = 0;
-    let chunksCompleted = 0;
-    // Estimativa grosseira de quantos lotes vão existir no total, só pra
-    // mostrar uma % razoável na barra de "salvando" (o valor exato só é
-    // possível saber no final, quando já processamos tudo).
-    let estimatedTotalChunks = Math.max(1, Math.ceil(total / SAVE_CHUNK_SIZE));
-    let writtenSeriesKeys = [];
-
-    function reportSaveProgress(){
-      if(onSaveProgress) onSaveProgress(chunksCompleted, estimatedTotalChunks);
+  /**
+   * Igual ao processPlaylistText, só que lendo pedaço por pedaço do
+   * IndexedDB (gravados por downloadPlaylistStreaming) em vez de um texto
+   * inteiro já em memória. Cada pedaço é apagado do banco assim que é
+   * processado — nunca ficam sobrando.
+   */
+  async processPlaylistFromChunks(serverId, chunkCount, totalItems, onProgress, onSaveProgress){
+    const session = ServerModule.createPlaylistParsingSession(serverId, totalItems, onProgress, onSaveProgress);
+    for(let i=0; i<chunkCount; i++){
+      const key = serverId + '::' + i;
+      let record = null;
+      try{ record = await IDB.getByKey(STORES.downloadChunks, key); }catch(e){}
+      if(record && record.text) await session.feedText(record.text);
+      try{ await IDB.delete(STORES.downloadChunks, key); }catch(e){}
     }
-
-    function dispatchChunk(items, isFinal){
-      if(items.length === 0 && !isFinal) return;
-      chunksDispatched++;
-      const finalized = isFinal ? finalizeSeriesSummariesFromState(state, serverId) : { summaries: [], episodeRecords: [] };
-      if(isFinal) writtenSeriesKeys = finalized.summaries.map(s => s.key);
-      const task = PersistenceWorker.save(items, finalized.summaries, undefined, finalized.episodeRecords).then(() => {
-        chunksCompleted++;
-        reportSaveProgress();
-      });
-      saveTasks.push(task);
-    }
-
-    // Escaneia o texto linha por linha DIRETO da string original — cada
-    // "linha" aqui é uma substring pequena e passageira (não uma cópia
-    // guardada num array gigante), então o coletor de lixo do navegador
-    // pode liberar cada uma assim que ela é usada.
-    let pos = 0;
-    let linesSinceYield = 0;
-    while(pos < textLen){
-      let end = text.indexOf('\n', pos);
-      if(end === -1) end = textLen;
-      let line = text.slice(pos, end);
-      pos = end + 1;
-      // Remove um \r final, caso a playlist use quebra de linha CRLF.
-      if(line.length > 0 && line.charCodeAt(line.length - 1) === 13){
-        line = line.slice(0, -1);
-      }
-
-      linesSinceYield++;
-
-      if(line){
-        const trimmed = line.trim();
-        if(trimmed){
-          if(trimmed.charAt(0) === '#'){
-            if(/^#EXTINF/i.test(trimmed)){
-              try{ pendingExtinf = ParserModule.parseExtinfLine(trimmed); }
-              catch(err){ pendingExtinf = null; }
-            }
-          } else if(pendingExtinf){
-            const url = trimmed;
-            if(url){
-              try{
-                const entry = {
-                  url: url,
-                  name: pendingExtinf.name || url,
-                  tvgId: pendingExtinf.tvgId || '',
-                  tvgName: pendingExtinf.tvgName || '',
-                  tvgLogo: pendingExtinf.tvgLogo || '',
-                  groupTitle: pendingExtinf.groupTitle || 'Sem categoria'
-                };
-                const content = ParserModule.buildContent(entry, serverId);
-                if(content){
-                  const goesToNormalBatch = compactItemIncremental(content, state);
-                  counts[content.tipo]++;
-                  totalCount++;
-                  if(goesToNormalBatch){
-                    pendingSaveBatch.push(content);
-                    if(pendingSaveBatch.length >= SAVE_CHUNK_SIZE){
-                      dispatchChunk(pendingSaveBatch, false);
-                      pendingSaveBatch = [];
-                    }
-                  }
-                  // Série não entra no lote normal — já foi guardada dentro
-                  // do resumo da série (state.seriesInfo), e só vai pro
-                  // banco no final, via finalizeSeriesSummariesFromState.
-                }
-                processed++;
-              }catch(err){
-                // ignore invalid entry individually, keep parsing the rest
-              }
-            }
-            pendingExtinf = null;
-          }
-        }
-      }
-
-      if(linesSinceYield >= LINES_PER_BATCH){
-        linesSinceYield = 0;
-        if(onProgress) onProgress(processed, total, counts);
-        await fastYield();
-      }
-    }
-    if(onProgress) onProgress(processed, total, counts);
-
-    // Último lote (o que sobrou) + os resumos finais de série, já com a
-    // contagem completa de episódios/temporadas de cada uma.
-    dispatchChunk(pendingSaveBatch, true);
-    estimatedTotalChunks = chunksDispatched; // agora sabemos o número exato
-    reportSaveProgress();
-
-    await Promise.all(saveTasks);
-
-    return {
-      total: totalCount,
-      counts: counts,
-      urlPrefixes: state.urlPrefixList,
-      logoPrefixes: state.logoPrefixList,
-      movieCategories: Array.from(state.movieCategories),
-      liveCategories: Array.from(state.liveCategories),
-      seriesKeys: writtenSeriesKeys
-    };
+    return await session.finish();
   },
 
   /**
@@ -3197,13 +3322,13 @@ const ServerModule = {
    */
   async importServerContent(server, statusCallback){
     const report = (patch) => { if(statusCallback) statusCallback(patch); };
+    const useStreaming = !!(State.settings.performance && State.settings.performance.streamDownload);
     try{
       report({ phase:'download', status:'processing', downloaded:0, total:null, speed:0 });
       const startTime = Date.now();
       let lastLoaded = 0;
       let lastTime = startTime;
-
-      const text = await ServerModule.downloadPlaylist(server.url, (loaded, total)=>{
+      const onDownloadProgress = (loaded, total)=>{
         const now = Date.now();
         const dt = (now - lastTime) / 1000;
         let speed = 0;
@@ -3213,35 +3338,67 @@ const ServerModule = {
           lastTime = now;
         }
         report({ phase:'download', status:'processing', downloaded: loaded, total: total, speed: speed });
-      });
+      };
 
-      report({ phase:'download', status:'done', downloaded: text.length, total: text.length });
-      report({ phase:'cleanup', status:'processing' });
+      let result;
+      let downloadedSize;
 
-      // Só CAPTURA quais chaves são do conteúdo antigo (leitura, não
-      // apaga nada ainda) — a remoção de verdade acontece DEPOIS que o
-      // conteúdo novo já estiver salvo, em segundo plano, sem travar o
-      // "concluído" esperando apagar tudo antes de poder escrever o novo.
-      const oldContentKeys = await IDB.getContentKeysForServer(server.id);
-      const oldSeriesKeys = await IDB.getSeriesKeysForServer(server.id);
+      if(useStreaming){
+        // Modo economia de memória: baixa e processa em pedaços, sem
+        // nunca montar a playlist inteira (texto ou linhas) em memória.
+        const { chunkCount, totalItems } = await ServerModule.downloadPlaylistStreaming(server.url, server.id, onDownloadProgress);
+        downloadedSize = lastLoaded;
+        report({ phase:'download', status:'done', downloaded: downloadedSize, total: downloadedSize });
+        report({ phase:'cleanup', status:'processing' });
 
-      report({ phase:'process', status:'processing', processed:0, total:0, counts:{movie:0,series:0,live:0} });
+        const oldContentKeys = await IDB.getContentKeysForServer(server.id);
+        const oldSeriesKeys = await IDB.getSeriesKeysForServer(server.id);
 
-      let latestCounts = { movie:0, series:0, live:0 };
-      const result = await ServerModule.processPlaylistText(
-        text, server.id,
-        (processed, total, counts) => {
-          latestCounts = counts;
-          report({ phase:'process', status:'processing', processed, total, counts });
-        },
-        (chunksDone, chunksTotal) => {
-          // Progresso da fase de salvar agora é por "lotes concluídos", já
-          // que vários lotes são salvos em paralelo enquanto o resto do
-          // arquivo ainda está sendo processado — não dá mais pra reportar
-          // item a item de forma precisa nesse esquema.
-          report({ phase:'save', status:'processing', processed: chunksDone, total: chunksTotal, counts: latestCounts, chunkMode: true });
-        }
-      );
+        report({ phase:'process', status:'processing', processed:0, total:0, counts:{movie:0,series:0,live:0} });
+        let latestCounts = { movie:0, series:0, live:0 };
+        result = await ServerModule.processPlaylistFromChunks(
+          server.id, chunkCount, totalItems,
+          (processed, total, counts) => {
+            latestCounts = counts;
+            report({ phase:'process', status:'processing', processed, total, counts });
+          },
+          (chunksDone, chunksTotal) => {
+            report({ phase:'save', status:'processing', processed: chunksDone, total: chunksTotal, counts: latestCounts, chunkMode: true });
+          }
+        );
+        result._oldContentKeys = oldContentKeys;
+        result._oldSeriesKeys = oldSeriesKeys;
+      } else {
+        const text = await ServerModule.downloadPlaylist(server.url, onDownloadProgress);
+        downloadedSize = text.length;
+        report({ phase:'download', status:'done', downloaded: text.length, total: text.length });
+        report({ phase:'cleanup', status:'processing' });
+
+        // Só CAPTURA quais chaves são do conteúdo antigo (leitura, não
+        // apaga nada ainda) — a remoção de verdade acontece DEPOIS que o
+        // conteúdo novo já estiver salvo, em segundo plano, sem travar o
+        // "concluído" esperando apagar tudo antes de poder escrever o novo.
+        const oldContentKeys = await IDB.getContentKeysForServer(server.id);
+        const oldSeriesKeys = await IDB.getSeriesKeysForServer(server.id);
+
+        report({ phase:'process', status:'processing', processed:0, total:0, counts:{movie:0,series:0,live:0} });
+        let latestCounts = { movie:0, series:0, live:0 };
+        result = await ServerModule.processPlaylistText(
+          text, server.id,
+          (processed, total, counts) => {
+            latestCounts = counts;
+            report({ phase:'process', status:'processing', processed, total, counts });
+          },
+          (chunksDone, chunksTotal) => {
+            report({ phase:'save', status:'processing', processed: chunksDone, total: chunksTotal, counts: latestCounts, chunkMode: true });
+          }
+        );
+        result._oldContentKeys = oldContentKeys;
+        result._oldSeriesKeys = oldSeriesKeys;
+      }
+
+      const oldContentKeys = result._oldContentKeys;
+      const oldSeriesKeys = result._oldSeriesKeys;
 
       report({ phase:'process', status:'done', processed: result.total, total: result.total, counts: result.counts });
 
@@ -5747,6 +5904,21 @@ async function renderSettingsView(container){
   perfRow.appendChild(makePerfField('Servidores processando ao mesmo tempo', 'maxConcurrentProcessing', 'Mínimo 1', 1));
   perfRow.appendChild(makePerfField('Itens por lote ao salvar', 'saveChunkSize', 'Menor = mais responsivo durante a importação; maior = salva um pouco mais rápido', 500));
   perfBlock.appendChild(perfRow);
+
+  const streamToggleRow = el('label', { style:'display:flex;align-items:center;gap:10px;cursor:pointer;font-size:13px;margin-top:14px;' });
+  const streamCheckbox = el('input', { type:'checkbox', style:'width:16px;height:16px;' });
+  streamCheckbox.checked = !!perf.streamDownload;
+  streamCheckbox.addEventListener('change', async function(){
+    State.settings.performance = Object.assign({}, State.settings.performance || DEFAULT_SETTINGS.performance, { streamDownload: streamCheckbox.checked });
+    await IDB.put(STORES.settings, State.settings);
+    showToast('Configuração salva.', 'success');
+  });
+  streamToggleRow.appendChild(streamCheckbox);
+  streamToggleRow.appendChild(el('span', {}, ['Economizar memória ao baixar (mais lento)']));
+  perfBlock.appendChild(streamToggleRow);
+  perfBlock.appendChild(el('div', { style:'font-size:11px;color:var(--text-2);margin-top:4px;margin-left:26px;' }, [
+    'Baixa e processa em pedaços pequenos, sem nunca montar a playlist inteira (nem o texto, nem as linhas) na memória de uma vez. Use JUNTO com "Downloads simultâneos" e "Servidores processando" em 1, pra funcionar de verdade em aparelhos com pouca RAM (TVs/projetores Android).'
+  ]));
   container.appendChild(perfBlock);
 
   // Automatic servers block
