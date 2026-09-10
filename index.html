@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>const APP_VERSION = '1.0.1';</script>
+<script>const APP_VERSION = '1.0.2';</script>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -3034,16 +3034,27 @@ const ServerModule = {
    * lotes disparados são aguardados juntos (Promise.all).
    */
   async processPlaylistText(text, serverId, onProgress, onSaveProgress){
-    const lines = text ? text.split(/\r\n|\r|\n/) : [];
-    const totalLines = lines.length;
+    text = text || '';
+    const textLen = text.length;
 
     // Fast upfront pass just to get an accurate total item count for the
-    // progress bar — cheap (no regex, no attribute parsing), unlike a full parse.
+    // progress bar — escaneia a string DIRETO (sem criar um array com
+    // todas as linhas antes), pra não duplicar o texto inteiro em memória
+    // só pra contar. Isso importa de verdade em playlists grandes
+    // (100MB+): um único .split() criaria uma segunda cópia quase do
+    // mesmo tamanho, só pra virar um array — em aparelhos com pouca RAM
+    // (TVs/projetores Android), essa duplicação sozinha já pode ser o
+    // suficiente pra estourar a memória disponível.
     let total = 0;
-    for(let i=0;i<totalLines;i++){
-      const l = lines[i];
-      if(l && l.length >= 7 && l.charCodeAt(0) === 35 /* '#' */ && l.slice(0,7).toUpperCase() === '#EXTINF'){
-        total++;
+    {
+      let pos = 0;
+      while(pos < textLen){
+        let end = text.indexOf('\n', pos);
+        if(end === -1) end = textLen;
+        if(text.charCodeAt(pos) === 35 /* '#' */ && text.slice(pos, pos+7).toUpperCase() === '#EXTINF'){
+          total++;
+        }
+        pos = end + 1;
       }
     }
 
@@ -3057,7 +3068,7 @@ const ServerModule = {
     // percebido enquanto uma importação roda em segundo plano (minimizada).
     const SAVE_CHUNK_SIZE = (State.settings.performance && State.settings.performance.saveChunkSize) || DEFAULT_SETTINGS.performance.saveChunkSize;
     const state = createCompactionState();
-    const batchSize = 4000; // lines per batch
+    const LINES_PER_BATCH = 4000; // a cada N linhas, cede a thread (yield) pra manter a UI viva
     let pendingExtinf = null;
     let counts = { movie:0, series:0, live:0 };
     let processed = 0;
@@ -3089,61 +3100,77 @@ const ServerModule = {
       saveTasks.push(task);
     }
 
-    for(let i=0; i<totalLines; i+=batchSize){
-      const end = Math.min(i+batchSize, totalLines);
-      for(let j=i; j<end; j++){
-        const line = lines[j];
-        if(!line) continue;
+    // Escaneia o texto linha por linha DIRETO da string original — cada
+    // "linha" aqui é uma substring pequena e passageira (não uma cópia
+    // guardada num array gigante), então o coletor de lixo do navegador
+    // pode liberar cada uma assim que ela é usada.
+    let pos = 0;
+    let linesSinceYield = 0;
+    while(pos < textLen){
+      let end = text.indexOf('\n', pos);
+      if(end === -1) end = textLen;
+      let line = text.slice(pos, end);
+      pos = end + 1;
+      // Remove um \r final, caso a playlist use quebra de linha CRLF.
+      if(line.length > 0 && line.charCodeAt(line.length - 1) === 13){
+        line = line.slice(0, -1);
+      }
+
+      linesSinceYield++;
+
+      if(line){
         const trimmed = line.trim();
-        if(!trimmed) continue;
-
-        if(trimmed.charAt(0) === '#'){
-          if(/^#EXTINF/i.test(trimmed)){
-            try{ pendingExtinf = ParserModule.parseExtinfLine(trimmed); }
-            catch(err){ pendingExtinf = null; }
-          }
-          continue;
-        }
-
-        if(pendingExtinf){
-          const url = trimmed;
-          if(url){
-            try{
-              const entry = {
-                url: url,
-                name: pendingExtinf.name || url,
-                tvgId: pendingExtinf.tvgId || '',
-                tvgName: pendingExtinf.tvgName || '',
-                tvgLogo: pendingExtinf.tvgLogo || '',
-                groupTitle: pendingExtinf.groupTitle || 'Sem categoria'
-              };
-              const content = ParserModule.buildContent(entry, serverId);
-              if(content){
-                const goesToNormalBatch = compactItemIncremental(content, state);
-                counts[content.tipo]++;
-                totalCount++;
-                if(goesToNormalBatch){
-                  pendingSaveBatch.push(content);
-                  if(pendingSaveBatch.length >= SAVE_CHUNK_SIZE){
-                    dispatchChunk(pendingSaveBatch, false);
-                    pendingSaveBatch = [];
-                  }
-                }
-                // Série não entra no lote normal — já foi guardada dentro
-                // do resumo da série (state.seriesInfo), e só vai pro
-                // banco no final, via finalizeSeriesSummariesFromState.
-              }
-              processed++;
-            }catch(err){
-              // ignore invalid entry individually, keep parsing the rest
+        if(trimmed){
+          if(trimmed.charAt(0) === '#'){
+            if(/^#EXTINF/i.test(trimmed)){
+              try{ pendingExtinf = ParserModule.parseExtinfLine(trimmed); }
+              catch(err){ pendingExtinf = null; }
             }
+          } else if(pendingExtinf){
+            const url = trimmed;
+            if(url){
+              try{
+                const entry = {
+                  url: url,
+                  name: pendingExtinf.name || url,
+                  tvgId: pendingExtinf.tvgId || '',
+                  tvgName: pendingExtinf.tvgName || '',
+                  tvgLogo: pendingExtinf.tvgLogo || '',
+                  groupTitle: pendingExtinf.groupTitle || 'Sem categoria'
+                };
+                const content = ParserModule.buildContent(entry, serverId);
+                if(content){
+                  const goesToNormalBatch = compactItemIncremental(content, state);
+                  counts[content.tipo]++;
+                  totalCount++;
+                  if(goesToNormalBatch){
+                    pendingSaveBatch.push(content);
+                    if(pendingSaveBatch.length >= SAVE_CHUNK_SIZE){
+                      dispatchChunk(pendingSaveBatch, false);
+                      pendingSaveBatch = [];
+                    }
+                  }
+                  // Série não entra no lote normal — já foi guardada dentro
+                  // do resumo da série (state.seriesInfo), e só vai pro
+                  // banco no final, via finalizeSeriesSummariesFromState.
+                }
+                processed++;
+              }catch(err){
+                // ignore invalid entry individually, keep parsing the rest
+              }
+            }
+            pendingExtinf = null;
           }
-          pendingExtinf = null;
         }
       }
-      if(onProgress) onProgress(processed, total, counts);
-      await fastYield();
+
+      if(linesSinceYield >= LINES_PER_BATCH){
+        linesSinceYield = 0;
+        if(onProgress) onProgress(processed, total, counts);
+        await fastYield();
+      }
     }
+    if(onProgress) onProgress(processed, total, counts);
 
     // Último lote (o que sobrou) + os resumos finais de série, já com a
     // contagem completa de episódios/temporadas de cada uma.
@@ -3324,6 +3351,37 @@ const ServerModule = {
     }
     updateOverall();
 
+    // Modo TOTALMENTE sequencial: quando "downloads simultâneos" e
+    // "servidores processando ao mesmo tempo" estão os dois configurados
+    // pra 1 (normalmente pra poupar RAM num aparelho fraco), baixa e
+    // processa CADA servidor por completo antes de sequer começar a
+    // baixar o próximo — nunca dois servidores com dados na memória ao
+    // mesmo tempo. No modo normal (fila), um download do próximo servidor
+    // já começa enquanto o anterior ainda está sendo processado — ótimo
+    // pra velocidade, mas mantém dois textos de playlist + objetos
+    // processados na memória simultaneamente, o que pode ser demais em
+    // playlists grandes (100MB+) num aparelho com pouca RAM.
+    const configuredMaxDownloads = (State.settings.performance && State.settings.performance.maxConcurrentDownloads !== undefined)
+      ? State.settings.performance.maxConcurrentDownloads
+      : DEFAULT_SETTINGS.performance.maxConcurrentDownloads;
+    const strictSequential = configuredMaxDownloads === 1 && processConcurrency === 1;
+
+    if(strictSequential){
+      for(let idx=0; idx<servers.length; idx++){
+        const server = servers[idx];
+        const report = function(patch){ if(onServerUpdate) onServerUpdate(server, patch); };
+        const result = await ServerModule.importServerContent(server, report);
+        results[idx] = result;
+        completed++;
+        updateOverall();
+        if(result.ok && !firstSuccessFired){
+          firstSuccessFired = true;
+          if(onFirstSuccess) onFirstSuccess();
+        }
+      }
+      return results;
+    }
+
     // Simple async queue: producers (downloads) push items, consumers (processing workers) pop them.
     const queue = [];
     const waiters = [];
@@ -3404,9 +3462,6 @@ const ServerModule = {
       }
     }
 
-    const configuredMaxDownloads = (State.settings.performance && State.settings.performance.maxConcurrentDownloads !== undefined)
-      ? State.settings.performance.maxConcurrentDownloads
-      : DEFAULT_SETTINGS.performance.maxConcurrentDownloads;
     // 0 = sem limite — baixa todos os servidores ao mesmo tempo, era o
     // comportamento padrão de sempre (bom pra computadores normais).
     const downloadWorkerCount = configuredMaxDownloads > 0 ? Math.min(configuredMaxDownloads, total) : total;
