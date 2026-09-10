@@ -670,12 +670,24 @@ let checking =
    fechado só NESSA sessão (não salva preferência nenhuma).
    Da próxima vez que o app abrir do zero, o painel volta a
    aparecer normalmente.
+
+   DESLIGADO por padrão agora (não é mais necessário pro
+   troubleshoot que motivou ele) — pra religar, é só trocar
+   DEBUG_BADGE_ENABLED pra true aqui embaixo.
    ===================================================== */
+
+const DEBUG_BADGE_ENABLED =
+    false;
 
 let debugBadgeClosed =
     false;
 
 function updateDebugBadge(text,isError){
+
+    if(!DEBUG_BADGE_ENABLED){
+
+        return;
+    }
 
     if(debugBadgeClosed){
 
