@@ -1,0 +1,1536 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sala de Controle</title>
+<style>
+  :root{
+    --bg:#12151b;
+    --bg-elev:#181c23;
+    --bg-elev-2:#1e2229;
+    --border:#2a313c;
+    --border-soft:#242a33;
+    --text:#e7ebf0;
+    --text-dim:#95a0ad;
+    --text-faint:#5c6572;
+    --accent:#ffb454;
+    --danger:#e0716b;
+    --add-green:#5fd18a;
+    --link:#3b9cff;
+    --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    --font-mono: ui-monospace, "Cascadia Mono", Consolas, "SFMono-Regular", Menlo, monospace;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%; margin:0; padding:0; scrollbar-width:none; -ms-overflow-style:none;}
+  html::-webkit-scrollbar, body::-webkit-scrollbar{ width:0; height:0; display:none; }
+  body{ margin:0; background:var(--bg); color:var(--text); font-family:var(--font-ui); font-size:14px; line-height:1.5; }
+  a{color:var(--link); cursor:pointer;}
+  .hidden{display:none !important;}
+
+  header{ position:sticky; top:0; z-index:20; background:var(--bg-elev); border-bottom:1px solid var(--border); }
+  .tab-strip{ display:flex; align-items:flex-end; gap:4px; padding:8px 14px 0; overflow-x:auto; overflow-y:hidden; }
+  .tab{
+    display:flex; align-items:center; max-width:220px;
+    background:var(--bg-elev-2); border:1px solid var(--border);
+    border-radius:8px 8px 0 0; padding:7px 10px; cursor:pointer; color:var(--text-dim);
+    margin-bottom:-1px; user-select:none; gap:4px;
+  }
+  .tab.active{ background:var(--bg); color:var(--text); border-bottom-color:var(--bg); }
+  .tab.drop-target{ outline:2px solid var(--accent); outline-offset:-2px; }
+  .tab-lock{ background:none; border:none; color:var(--text-dim); cursor:pointer; font-size:12px; padding:0; flex:0 0 auto; }
+  .tab-lock:hover{ color:var(--accent); }
+  .tab-title{ max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; outline:none; font-size:13px; }
+  .tab-add{ background:none; border:none; color:var(--text-faint); width:28px; height:31px; cursor:pointer; font-size:16px; margin-bottom:-1px; }
+  .tab-add:hover{ color:var(--accent); }
+
+  main{ padding:0; }
+  #page-content{
+    position:relative; min-height:200px;
+    background-image: radial-gradient(var(--border-soft) 1px, transparent 1px);
+    background-size:20px 20px;
+  }
+
+  .copy-page{ padding:30px 20px; max-width:640px; margin:0 auto; }
+  .copy-page-hint{ color:var(--text-faint); font-size:12.5px; margin-bottom:10px; }
+  .copy-textarea{
+    width:100%; min-height:220px; background:var(--bg-elev); border:1px solid var(--border); border-radius:6px;
+    color:var(--text); padding:14px 16px; font-family:var(--font-mono); font-size:12.5px; outline:none; resize:vertical;
+  }
+  .copy-textarea:focus{ border-color:var(--accent); }
+  .copy-locked-placeholder{
+    padding:60px 20px; text-align:center; color:var(--text-faint); border:1px dashed var(--border); border-radius:8px; font-size:13px;
+  }
+
+  .block{ position:absolute; }
+
+  /* ---------- text block: free width+height resize from one corner ---------- */
+  .editable{ outline:none; }
+  .text-body{
+    width:100%; background:var(--bg-elev); border-radius:6px; padding:14px 16px; min-height:100px; line-height:1.65;
+    overflow-wrap:break-word; word-break:break-word; overflow:hidden;
+  }
+  .text-block{ width:300px; }
+  .block.fixed-size .text-body{ height:100%; }
+  .resize-handle{
+    position:absolute; right:-6px; bottom:-6px; width:15px; height:15px; cursor:nwse-resize;
+    opacity:0; z-index:11; background:var(--bg-elev-2); border:1px solid var(--border); border-radius:4px;
+    background-image:linear-gradient(135deg, transparent 45%, var(--text-faint) 45%, var(--text-faint) 55%, transparent 55%);
+  }
+  .block:hover .resize-handle{ opacity:.85; }
+  .block.resizing .resize-handle, .block.selected .resize-handle{ opacity:1 !important; }
+  .resize-handle:hover{ opacity:1 !important; }
+  .text-body ul,.text-body ol{ padding-left:22px; margin:6px 0; }
+  .text-body hr{ border:none; border-top:1px solid var(--border); margin:10px 0; }
+  .text-body code{ background:#232830; color:#eab676; padding:1px 5px; border-radius:4px; font-family:var(--font-mono); font-size:12.5px; }
+  .code-embed{
+    background:#0e1116; border:1px solid var(--border); border-radius:6px; margin:6px 0;
+    padding:6px 0; overflow-x:auto; counter-reset:codeline; font-family:var(--font-mono); font-size:12.5px;
+  }
+  .code-embed-line{
+    counter-increment:codeline; position:relative; padding:1px 10px 1px 40px; white-space:pre; color:#d8dee6; min-height:1.5em;
+  }
+  .code-embed-line::before{
+    content:counter(codeline); position:absolute; left:0; top:1px; width:30px; text-align:right; padding-right:8px;
+    color:var(--text-faint); user-select:none;
+  }
+  details.exp-box{ border:1px solid var(--border); border-radius:6px; margin:6px 0; padding:6px 10px; background:var(--bg-elev-2); }
+  details.exp-box summary{ cursor:pointer; color:var(--text-dim); font-size:12.5px; }
+  details.exp-box[open] summary{ margin-bottom:6px; }
+
+  /* ---------- table block: handles measured via JS, outside the table ---------- */
+  .table-gutter{ display:inline-block; padding:34px 0 0 34px; }
+  .table-zoom{ display:inline-block; }
+  .editable-table{ border-collapse:collapse; }
+  .tcell{ border:1px solid var(--border-soft); min-width:60px; background:var(--bg-elev); padding:0; transition:background .1s; }
+  .tcell.hl-danger{ background:rgba(224,113,109,.22); }
+  .tcell-content{ padding:8px 12px; min-height:1.3em; outline:none; overflow-wrap:break-word; word-break:break-word; }
+  .tcell:focus-within{ background:var(--bg-elev-2); }
+  .tcell-content code{ background:#232830; color:#eab676; padding:1px 5px; border-radius:4px; font-family:var(--font-mono); font-size:12px; }
+
+  .handle-zone{
+    position:absolute; width:28px; height:28px; transform:translate(-50%,-50%);
+    display:flex; align-items:center; justify-content:center; cursor:pointer; z-index:15;
+  }
+  .handle-zone .handle{
+    width:16px; height:16px; border-radius:50%; border:1px solid var(--border); background:var(--bg-elev-2);
+    color:var(--text-faint); font-size:12px; font-weight:600; line-height:1; display:flex; align-items:center; justify-content:center;
+    opacity:0; transition:opacity .12s ease, background .12s ease, color .12s ease; pointer-events:none;
+  }
+  .handle-zone:hover .handle{ opacity:1; background:var(--bg-elev); color:var(--text); }
+  .handle-zone.zone-add:hover .handle{ background:rgba(95,209,138,.2); color:var(--add-green); border-color:var(--add-green); }
+  .handle-zone.zone-del:hover .handle{ background:rgba(224,113,109,.2); color:var(--danger); border-color:var(--danger); }
+  .handle-zone.is-disabled:hover .handle{ opacity:.3; }
+  .insert-preview-line{ position:absolute; background:var(--add-green); z-index:16; pointer-events:none; border-radius:2px; opacity:.85; }
+  .col-resize-strip{ position:absolute; width:10px; transform:translateX(-50%); cursor:col-resize; z-index:14; }
+  .col-resize-strip::after{ content:''; position:absolute; left:50%; top:0; bottom:0; width:2px; transform:translateX(-50%); background:transparent; }
+  .col-resize-strip:hover::after{ background:var(--text-faint); }
+  .zoom-resize-grip{
+    position:absolute; width:20px; height:20px; border-radius:6px; border:1px solid var(--border);
+    background:var(--bg-elev-2); color:var(--text-faint); cursor:nwse-resize; z-index:16;
+    display:flex; align-items:center; justify-content:center; font-size:11px;
+  }
+  .zoom-resize-grip:hover{ background:var(--bg-elev); color:var(--text); }
+  .open-all-btn{
+    position:absolute; top:-4px; right:-4px; width:20px; height:18px; border-radius:0 4px 0 6px;
+    background:var(--bg-elev-2); color:var(--link); font-size:12px; line-height:18px; text-align:center;
+    cursor:pointer; user-select:none; z-index:12;
+  }
+  .open-all-btn:hover{ color:#eafff2; }
+
+  /* ---------- code block ---------- */
+  .code-block{ width:380px; }
+  .code-wrap{ display:flex; background:#0e1116; border:1px solid var(--border); border-radius:6px; overflow:hidden; align-items:flex-start; }
+  .code-linenums{ background:#12151b; color:var(--text-faint); font-family:var(--font-mono); font-size:12.5px; line-height:1.55; padding:10px 8px; text-align:right; user-select:none; }
+  .code-editor{
+    flex:1; background:transparent; border:none; color:#d8dee6; font-family:var(--font-mono);
+    font-size:12.5px; line-height:1.55; padding:10px 10px; resize:none; outline:none;
+    white-space:pre-wrap; overflow-wrap:anywhere; overflow:hidden; min-width:0;
+  }
+  .code-resize-e{
+    position:absolute; right:-4px; top:18px; bottom:18px; width:7px; cursor:ew-resize; opacity:0;
+    background:var(--text-faint); border-radius:3px; z-index:11;
+  }
+  .block:hover .code-resize-e{ opacity:.7; }
+  .code-resize-e:hover{ opacity:1 !important; }
+
+  /* ---------- shared block chrome ---------- */
+  .block-handle{
+    position:absolute; top:-4px; left:-4px; width:20px; height:18px; border-radius:4px 0 6px 0;
+    background:var(--bg-elev-2); color:#c7cdd6; font-size:12px; line-height:18px; text-align:center;
+    cursor:grab; user-select:none; z-index:17;
+  }
+  .block.selected .block-handle{ color:var(--accent); }
+  .block.dragging{ box-shadow:0 12px 30px rgba(0,0,0,.45); z-index:200; }
+  .block.dragging .block-handle{ cursor:grabbing; }
+  .block.selected{ outline:1px solid var(--accent); outline-offset:3px; border-radius:6px; }
+
+  .drag-ghost{ box-shadow:0 14px 34px rgba(0,0,0,.5); opacity:.85; pointer-events:none; z-index:1000; }
+
+  .status-dot{
+    position:fixed; bottom:16px; right:16px; width:9px; height:9px; border-radius:50%;
+    background:var(--text-faint); cursor:pointer; z-index:40; box-shadow:0 0 0 5px rgba(0,0,0,.22);
+  }
+  .status-dot.ok{ background:#5cb88a; }
+  .status-dot.warn{ background:var(--accent); }
+  .status-dot.danger{ background:var(--danger); }
+
+  #toast{
+    position:fixed; bottom:36px; right:16px; background:var(--bg-elev-2); color:var(--text); border:1px solid var(--border);
+    padding:8px 14px; border-radius:6px; font-size:12.5px; opacity:0; transform:translateY(6px);
+    transition:opacity .15s, transform .15s; pointer-events:none; z-index:90;
+  }
+  #toast.show{ opacity:1; transform:translateY(0); }
+
+  .ctx-menu{
+    position:fixed; z-index:80; background:var(--bg-elev-2); border:1px solid var(--border); border-radius:6px;
+    padding:5px; min-width:200px; box-shadow:0 8px 24px rgba(0,0,0,.4); max-height:80vh; overflow-y:auto;
+  }
+  .ctx-menu button{
+    display:block; width:100%; text-align:left; background:none; border:none; color:var(--text);
+    padding:7px 10px; border-radius:4px; cursor:pointer; font-size:13px;
+  }
+  .ctx-menu button:hover{ background:var(--bg-elev); }
+  .ctx-sep{ height:1px; background:var(--border); margin:5px 3px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div id="tab-strip" class="tab-strip"></div>
+</header>
+
+<main>
+  <div id="page-content"></div>
+</main>
+
+<div id="status-dot" class="status-dot" title=""></div>
+<div id="toast"></div>
+<div id="ctx-menu" class="ctx-menu hidden"></div>
+<input type="file" id="import-input" accept="application/json" class="hidden">
+
+<script id="app-data" type="application/json"></script>
+<script>
+(function(){
+  "use strict";
+
+  const LS_KEY = 'sala_de_controle_data_v13';
+  const GRID = 20;
+  let fileHandle = null;
+  let saveTimer = null;
+  let lastEditable = null;
+  let clickTimer = null;
+  let currentCtxItems = null;
+  let selectedBlockId = null;
+  let dragState = null;
+  let spawnCounter = 0;
+  let toastTimer = null;
+  const fileSupport = typeof window.showOpenFilePicker === 'function';
+
+  function uid(){ return 'id' + Math.random().toString(36).slice(2, 10); }
+  function esc(str){
+    return String(str == null ? '' : str).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  function encodeData(obj){ return JSON.stringify(obj).replace(/</g, '\\u003C'); }
+  function showToast(msg){
+    const toast = document.getElementById('toast');
+    toast.textContent = msg;
+    toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toast.classList.remove('show'), 1800);
+  }
+
+  function defaultData(){
+    const p1 = uid();
+    return { version: 13, activePageId: p1, pages: [ { id: p1, title: 'Página 1', blocks: [ {id: uid(), type: 'text', x:40, y:40, html: ''} ] } ] };
+  }
+  function normalize(d){
+    if(!d.pages || !d.pages.length) d.pages = [{id: uid(), title: 'Página 1', blocks: []}];
+    if(!d.activePageId || !d.pages.find(p => p.id === d.activePageId)) d.activePageId = d.pages[0].id;
+    d.pages.forEach(p => {
+      if(!p.blocks) p.blocks = [];
+      p.blocks.forEach((b, i) => {
+        if(typeof b.x !== 'number') b.x = 40 + (i % 6) * 24;
+        if(typeof b.y !== 'number') b.y = 40 + (i % 6) * 24;
+      });
+    });
+    return d;
+  }
+  function emptyData(){ return normalize({version:13, pages:[], activePageId:null}); }
+
+  function loadInitialData(){
+    try{
+      const tag = document.getElementById('app-data');
+      const raw = (tag.textContent || '').trim();
+      if(raw){ const d = JSON.parse(raw); if(d && d.pages) return normalize(d); }
+    }catch(e){ console.warn('Falha ao ler dados do arquivo:', e); }
+    try{
+      const ls = localStorage.getItem(LS_KEY);
+      if(ls){ const d = JSON.parse(ls); if(d && d.pages) return normalize(d); }
+    }catch(e){}
+    return normalize(defaultData());
+  }
+
+  let appData = loadInitialData();
+
+  function findPage(id){ return appData.pages.find(p => p.id === id); }
+  function findBlock(pageId, blockId){ const p = findPage(pageId); return p && p.blocks.find(b => b.id === blockId); }
+
+  // ---------- persistence ----------
+  function buildHTMLSnapshot(){
+    document.getElementById('app-data').textContent = encodeData(appData);
+    return '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
+  }
+  async function verifyPermission(handle, write){
+    const opts = write ? {mode:'readwrite'} : {};
+    try{
+      if((await handle.queryPermission(opts)) === 'granted') return true;
+      if((await handle.requestPermission(opts)) === 'granted') return true;
+    }catch(e){}
+    return false;
+  }
+  async function saveToFile(){
+    if(!fileHandle) return;
+    try{
+      const ok = await verifyPermission(fileHandle, true);
+      if(!ok){ setConnStatus('pending'); return; }
+      const writable = await fileHandle.createWritable();
+      await writable.write(buildHTMLSnapshot());
+      await writable.close();
+      setConnStatus(true);
+    }catch(e){ console.warn('Erro ao salvar no arquivo:', e); setConnStatus('error'); }
+  }
+  function schedule(){
+    try{ localStorage.setItem(LS_KEY, JSON.stringify(appData)); }catch(e){}
+    clearTimeout(saveTimer);
+    if(fileHandle) setConnStatus('saving');
+    saveTimer = setTimeout(() => { if(fileHandle) saveToFile(); }, 700);
+  }
+  function persist(){ schedule(); render(); }
+
+  const DB_NAME = 'sala_de_controle_db', STORE = 'kv';
+  function idbOpen(){
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(DB_NAME, 1);
+      req.onupgradeneeded = () => req.result.createObjectStore(STORE);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+  async function idbSet(key, val){
+    const db = await idbOpen();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE, 'readwrite');
+      tx.objectStore(STORE).put(val, key);
+      tx.oncomplete = resolve; tx.onerror = () => reject(tx.error);
+    });
+  }
+  async function idbGet(key){
+    const db = await idbOpen();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE, 'readonly');
+      const req = tx.objectStore(STORE).get(key);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+  async function connectFile(){
+    if(!fileSupport){ alert('Este navegador não suporta salvar direto no arquivo (funciona no Chrome/Edge). Use "Baixar cópia atualizada".'); return; }
+    try{
+      const [handle] = await window.showOpenFilePicker({ types: [{ description: 'HTML', accept: { 'text/html': ['.html', '.htm'] } }] });
+      const ok = await verifyPermission(handle, true);
+      if(!ok){ alert('Permissão negada para salvar neste arquivo.'); return; }
+      fileHandle = handle;
+      try{ await idbSet('fileHandle', handle); }catch(e){}
+      setConnStatus(true);
+      await saveToFile();
+    }catch(e){ /* usuário cancelou */ }
+  }
+  async function reconnectFile(){
+    try{
+      let h = fileHandle || await idbGet('fileHandle');
+      if(!h) return connectFile();
+      const ok = await verifyPermission(h, true);
+      if(ok){ fileHandle = h; setConnStatus(true); await saveToFile(); }
+      else { fileHandle = h; setConnStatus('pending'); }
+    }catch(e){ setConnStatus('pending'); }
+  }
+  function downloadCopy(){
+    const blob = new Blob([buildHTMLSnapshot()], {type:'text/html'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = 'sala-de-controle.html';
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  }
+  function exportJSON(){
+    const blob = new Blob([JSON.stringify(appData, null, 2)], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = 'sala-de-controle-backup.json';
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  }
+  function setConnStatus(state){
+    const dot = document.getElementById('status-dot');
+    if(!fileSupport){ dot.className = 'status-dot'; dot.title = 'Navegador sem suporte a salvar direto — clique para baixar cópia'; return; }
+    if(state === true){ dot.className = 'status-dot ok'; dot.title = 'Conectado — salvando automaticamente'; }
+    else if(state === 'saving'){ dot.className = 'status-dot warn'; dot.title = 'Salvando…'; }
+    else if(state === 'pending'){ dot.className = 'status-dot warn'; dot.title = 'Desconectado — clique para reconectar'; }
+    else if(state === 'error'){ dot.className = 'status-dot danger'; dot.title = 'Erro ao salvar — clique para reconectar'; }
+    else { dot.className = 'status-dot'; dot.title = 'Sem arquivo conectado — clique para conectar'; }
+  }
+
+  // ---------- base64 helpers ----------
+  function decodeBase64Utf8(b64){
+    const binary = atob(b64.replace(/\s+/g, ''));
+    const bytes = Uint8Array.from(binary, c => c.charCodeAt(0));
+    return new TextDecoder('utf-8').decode(bytes);
+  }
+  async function copyDecodedContent(p){
+    let decoded;
+    try{ decoded = decodeBase64Utf8(p.copyText || ''); }
+    catch(e){ alert('Conteúdo base64 inválido nesta guia.'); return; }
+    try{ await navigator.clipboard.writeText(decoded); showToast('Copiado para a área de transferência ✓'); }
+    catch(e){
+      const ta = document.createElement('textarea');
+      ta.value = decoded; ta.style.position = 'fixed'; ta.style.left = '-9999px';
+      document.body.appendChild(ta); ta.select();
+      try{ document.execCommand('copy'); showToast('Copiado para a área de transferência ✓'); }catch(err){}
+      ta.remove();
+    }
+  }
+
+  // ---------- render ----------
+  function render(){ renderTabs(); renderPage(); }
+
+  function renderTabs(){
+    const wrap = document.getElementById('tab-strip');
+    wrap.innerHTML = appData.pages.map(p => {
+      const isCopy = p.kind === 'copy';
+      const lockIcon = isCopy ? `<button class="tab-lock" data-page="${p.id}" title="${p.locked ? 'Bloqueada — clique para desbloquear' : 'Desbloqueada — clique para bloquear'}">${p.locked ? '🔒' : '🔓'}</button>` : '';
+      return `
+        <div class="tab ${p.id === appData.activePageId ? 'active' : ''}" data-page="${p.id}">
+          ${lockIcon}
+          <span class="tab-title editable" contenteditable="true" spellcheck="false" data-field="page-title" data-page="${p.id}">${esc(p.title)}</span>
+        </div>`;
+    }).join('') + `<button class="tab-add" title="Nova página">+</button>`;
+  }
+
+  function renderPage(){
+    const page = findPage(appData.activePageId);
+    const c = document.getElementById('page-content');
+    if(page.kind === 'copy'){
+      c.innerHTML = renderCopyPage(page);
+      c.style.minHeight = ''; c.style.minWidth = '';
+      return;
+    }
+    c.innerHTML = page.blocks.map(b => {
+      if(b.type === 'table' || b.type === 'linktable') return renderTableBlock(page, b);
+      if(b.type === 'code') return renderCodeBlock(page, b);
+      return renderTextBlock(page, b);
+    }).join('');
+    autosizeCodeEditors();
+    page.blocks.forEach(b => {
+      if(b.type === 'text' && b.h){
+        const el = c.querySelector(`.block[data-block-id="${b.id}"]`);
+        if(el) enforceMinSize(page.id, b.id, el);
+      }
+    });
+    fitCanvasSize();
+    if(dragState) reapplyDragHiding();
+    requestAnimationFrame(() => {
+      page.blocks.forEach(b => {
+        if(b.type !== 'table' && b.type !== 'linktable') return;
+        const el = c.querySelector(`.block[data-block-id="${b.id}"]`);
+        if(el) positionTableHandles(page, b, el);
+      });
+      fitCanvasSize();
+    });
+  }
+
+  function renderCopyPage(page){
+    return `
+      <div class="copy-page">
+        <div class="copy-page-hint">${page.locked ? 'Guia bloqueada — o conteúdo abaixo fica oculto. Clique no cadeado, na aba, para desbloquear.' : 'Cole aqui o conteúdo em base64.'}</div>
+        ${page.locked
+          ? `<div class="copy-locked-placeholder">🔒 Conteúdo oculto</div>`
+          : `<textarea class="copy-textarea" data-page="${page.id}" placeholder="Cole o base64 aqui...">${esc(page.copyText || '')}</textarea>`
+        }
+      </div>`;
+  }
+
+  function renderTextBlock(page, block){
+    const selCls = block.id === selectedBlockId ? ' selected' : '';
+    const fixed = block.h ? ' fixed-size' : '';
+    let s = `left:${block.x}px; top:${block.y}px; width:${block.w || 300}px;`;
+    if(block.h) s += ` height:${block.h}px;`;
+    return `<div class="block text-block${selCls}${fixed}" data-block-id="${block.id}" style="${s}">
+      <div class="block-handle">⋮⋮</div>
+      <div class="editable text-body" contenteditable="true" data-field="block-text" data-page="${page.id}" data-block="${block.id}">${block.html}</div>
+      <div class="resize-handle"></div>
+    </div>`;
+  }
+
+  function renderTableBlock(page, block){
+    const selCls = block.id === selectedBlockId ? ' selected' : '';
+    const scale = block.scale || 1;
+    const colWidths = block.colWidths || [];
+    const rowsHTML = block.rows.map((row, ri) => `
+      <tr>
+        ${row.map((cellHtml, ci) => `<td class="tcell" data-row="${ri}" data-col="${ci}" style="width:${colWidths[ci] || 110}px;"><div class="tcell-content editable" contenteditable="true" data-field="table-cell" data-page="${page.id}" data-block="${block.id}" data-row="${ri}" data-col="${ci}">${cellHtml}</div></td>`).join('')}
+      </tr>`).join('');
+    const openAllBtn = block.type === 'linktable' ? `<div class="open-all-btn" data-openall="${block.id}" title="Abrir todos os links">↗</div>` : '';
+    return `<div class="block table-block${selCls}" data-block-id="${block.id}" style="left:${block.x}px; top:${block.y}px;">
+      <div class="block-handle">⋮⋮</div>
+      ${openAllBtn}
+      <div class="table-gutter">
+        <div class="table-zoom" style="zoom:${scale};">
+          <table class="editable-table"><tbody>${rowsHTML}</tbody></table>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  function renderCodeBlock(page, block){
+    const selCls = block.id === selectedBlockId ? ' selected' : '';
+    const lines = (block.code || '').split('\n');
+    const lineNums = lines.map((_, i) => `<div>${i + 1}</div>`).join('');
+    return `<div class="block code-block${selCls}" data-block-id="${block.id}" style="left:${block.x}px; top:${block.y}px; width:${block.w || 380}px;">
+      <div class="block-handle">⋮⋮</div>
+      <div class="code-wrap">
+        <div class="code-linenums">${lineNums}</div>
+        <textarea class="code-editor editable" spellcheck="false" data-field="code-text" data-page="${page.id}" data-block="${block.id}">${esc(block.code || '')}</textarea>
+      </div>
+      <div class="code-resize-e"></div>
+    </div>`;
+  }
+
+  function autosizeCodeEditors(){
+    document.querySelectorAll('.code-editor').forEach(ta => {
+      ta.style.height = 'auto';
+      ta.style.height = ta.scrollHeight + 'px';
+    });
+  }
+
+  function fitCanvasSize(){
+    const c = document.getElementById('page-content');
+    let maxBottom = 0, maxRight = 0;
+    c.querySelectorAll('.block').forEach(el => {
+      const bottom = el.offsetTop + el.offsetHeight;
+      const right = el.offsetLeft + el.offsetWidth;
+      if(bottom > maxBottom) maxBottom = bottom;
+      if(right > maxRight) maxRight = right;
+    });
+    c.style.minHeight = Math.max(120, maxBottom + 80) + 'px';
+    c.style.minWidth = Math.max(0, maxRight + 80) + 'px';
+  }
+
+  function enforceMinSize(pageId, blockId, blockEl){
+    const block = findBlock(pageId, blockId);
+    if(!block || !block.h) return;
+    const textEl = blockEl.querySelector('.text-body');
+    if(!textEl) return;
+    const neededH = textEl.scrollHeight;
+    if(block.h < neededH + 2){
+      block.h = neededH + 2;
+      blockEl.style.height = block.h + 'px';
+      schedule();
+    }
+  }
+
+  // ---------- text block: simple fixed corner handle, mirroring the reference exactly —
+  // just tracks the mouse delta, no extra content-based clamping getting in the way ----------
+  function startResize(blockEl, block, e){
+    e.stopPropagation(); e.preventDefault();
+    blockEl.classList.add('resizing');
+    document.body.style.userSelect = 'none';
+    const startX = e.clientX, startY = e.clientY;
+    const originalWidth = blockEl.offsetWidth;
+    const originalHeight = blockEl.offsetHeight;
+    function onMove(ev){
+      const dx = ev.clientX - startX;
+      const dy = ev.clientY - startY;
+      const w = Math.max(140, originalWidth + dx);
+      const h = Math.max(70, originalHeight + dy);
+      blockEl.style.width = w + 'px';
+      blockEl.classList.add('fixed-size');
+      blockEl.style.height = h + 'px';
+      fitCanvasSize();
+    }
+    function onUp(){
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      blockEl.classList.remove('resizing');
+      document.body.style.userSelect = '';
+      block.w = blockEl.offsetWidth;
+      block.h = blockEl.offsetHeight;
+      schedule();
+      fitCanvasSize();
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }
+
+  // ---------- generic zoom-resize grip, glued to the real measured corner of a zoomed wrapper (used by tables) ----------
+  function positionZoomGrip(block, blockEl, zoomSelector){
+    blockEl.querySelectorAll('.zoom-resize-grip').forEach(el => el.remove());
+    const zoomWrap = blockEl.querySelector(zoomSelector);
+    if(!zoomWrap) return;
+    const blockRect = blockEl.getBoundingClientRect();
+    const zoomRect = zoomWrap.getBoundingClientRect();
+    const grip = document.createElement('div');
+    grip.className = 'zoom-resize-grip';
+    grip.title = 'Redimensionar';
+    grip.textContent = '⤡';
+    grip.style.left = (zoomRect.right - blockRect.left + 4) + 'px';
+    grip.style.top = (zoomRect.bottom - blockRect.top + 4) + 'px';
+    grip.addEventListener('mousedown', ev => startZoomResize(block, blockEl, zoomSelector, ev));
+    blockEl.appendChild(grip);
+  }
+  function startZoomResize(block, blockEl, zoomSelector, e){
+    e.stopPropagation(); e.preventDefault();
+    blockEl.classList.add('resizing');
+    document.body.style.userSelect = 'none';
+    const zoomWrap = blockEl.querySelector(zoomSelector);
+    const startScale = block.scale || 1;
+    const startX = e.clientX, startY = e.clientY;
+    function onMove(ev){
+      const dx = ev.clientX - startX, dy = ev.clientY - startY;
+      const delta = (dx + dy) / 2;
+      let next = startScale + delta / 260;
+      next = Math.min(2.4, Math.max(0.5, next));
+      zoomWrap.style.zoom = next;
+      positionZoomGrip(block, blockEl, zoomSelector);
+      if(blockEl.querySelector('.table-gutter')){
+        const page = findPage(appData.activePageId);
+        positionTableHandles(page, block, blockEl);
+      }
+      fitCanvasSize();
+    }
+    function onUp(){
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      blockEl.classList.remove('resizing');
+      document.body.style.userSelect = '';
+      block.scale = parseFloat(zoomWrap.style.zoom) || 1;
+      schedule();
+      fitCanvasSize();
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }
+
+  // ---------- table handles: measured via getBoundingClientRect, positioned OUTSIDE the table ----------
+  function positionTableHandles(page, block, blockEl){
+    blockEl.querySelectorAll('.handle-zone, .col-resize-strip, .zoom-resize-grip, .insert-preview-line').forEach(el => el.remove());
+
+    const table = blockEl.querySelector('.editable-table');
+    if(!table || !table.rows.length) return;
+    const blockRect = blockEl.getBoundingClientRect();
+    const headCells = Array.from(table.rows[0].cells);
+    const rowEls = Array.from(table.rows);
+
+    const colBorders = [], colCenters = [];
+    headCells.forEach((cell, i) => {
+      const r = cell.getBoundingClientRect();
+      if(i === 0) colBorders.push(r.left);
+      colBorders.push(r.right);
+      colCenters.push((r.left + r.right) / 2);
+    });
+    const rowBorders = [], rowCenters = [];
+    rowEls.forEach((row, i) => {
+      const r = row.getBoundingClientRect();
+      if(i === 0) rowBorders.push(r.top);
+      rowBorders.push(r.bottom);
+      rowCenters.push((r.top + r.bottom) / 2);
+    });
+
+    const gutterY = 17, gutterX = 17;
+    const tableTop = rowBorders[0] - blockRect.top;
+    const tableBottom = rowBorders[rowBorders.length - 1] - blockRect.top;
+    const tableLeft = colBorders[0] - blockRect.left;
+    const tableRight = colBorders[colBorders.length - 1] - blockRect.left;
+
+    function showColPreview(x){
+      const line = document.createElement('div');
+      line.className = 'insert-preview-line';
+      line.style.left = x + 'px'; line.style.top = tableTop + 'px';
+      line.style.width = '3px'; line.style.height = (tableBottom - tableTop) + 'px';
+      blockEl.appendChild(line);
+    }
+    function showRowPreview(y){
+      const line = document.createElement('div');
+      line.className = 'insert-preview-line';
+      line.style.top = y + 'px'; line.style.left = tableLeft + 'px';
+      line.style.height = '3px'; line.style.width = (tableRight - tableLeft) + 'px';
+      blockEl.appendChild(line);
+    }
+    function clearPreview(){ blockEl.querySelectorAll('.insert-preview-line').forEach(el => el.remove()); }
+
+    colBorders.forEach((x, i) => {
+      const localX = x - blockRect.left;
+      const zone = document.createElement('div');
+      zone.className = 'handle-zone zone-add';
+      zone.style.left = localX + 'px';
+      zone.style.top = gutterY + 'px';
+      zone.title = 'Adicionar coluna aqui';
+      zone.innerHTML = '<span class="handle">+</span>';
+      zone.addEventListener('mousedown', ev => ev.stopPropagation());
+      zone.addEventListener('mouseenter', () => showColPreview(localX));
+      zone.addEventListener('mouseleave', clearPreview);
+      zone.addEventListener('click', ev => { ev.stopPropagation(); insertColAt(page.id, block.id, i); });
+      blockEl.appendChild(zone);
+    });
+    colCenters.forEach((x, i) => {
+      const disabled = block.rows[0].length <= 1;
+      const zone = document.createElement('div');
+      zone.className = 'handle-zone zone-del' + (disabled ? ' is-disabled' : '');
+      zone.style.left = (x - blockRect.left) + 'px';
+      zone.style.top = gutterY + 'px';
+      zone.title = 'Remover esta coluna';
+      zone.innerHTML = '<span class="handle">−</span>';
+      zone.addEventListener('mousedown', ev => ev.stopPropagation());
+      if(!disabled){
+        zone.addEventListener('mouseenter', () => blockEl.querySelectorAll(`.tcell[data-col="${i}"]`).forEach(td => td.classList.add('hl-danger')));
+        zone.addEventListener('mouseleave', () => blockEl.querySelectorAll('.tcell').forEach(td => td.classList.remove('hl-danger')));
+        zone.addEventListener('click', ev => { ev.stopPropagation(); removeColAt(page.id, block.id, i); });
+      }
+      blockEl.appendChild(zone);
+    });
+    rowBorders.forEach((y, i) => {
+      const localY = y - blockRect.top;
+      const zone = document.createElement('div');
+      zone.className = 'handle-zone zone-add';
+      zone.style.top = localY + 'px';
+      zone.style.left = gutterX + 'px';
+      zone.title = 'Adicionar linha aqui';
+      zone.innerHTML = '<span class="handle">+</span>';
+      zone.addEventListener('mousedown', ev => ev.stopPropagation());
+      zone.addEventListener('mouseenter', () => showRowPreview(localY));
+      zone.addEventListener('mouseleave', clearPreview);
+      zone.addEventListener('click', ev => { ev.stopPropagation(); insertRowAt(page.id, block.id, i); });
+      blockEl.appendChild(zone);
+    });
+    rowCenters.forEach((y, i) => {
+      const disabled = block.rows.length <= 1;
+      const zone = document.createElement('div');
+      zone.className = 'handle-zone zone-del' + (disabled ? ' is-disabled' : '');
+      zone.style.top = (y - blockRect.top) + 'px';
+      zone.style.left = gutterX + 'px';
+      zone.title = 'Remover esta linha';
+      zone.innerHTML = '<span class="handle">−</span>';
+      zone.addEventListener('mousedown', ev => ev.stopPropagation());
+      if(!disabled){
+        zone.addEventListener('mouseenter', () => blockEl.querySelectorAll(`.tcell[data-row="${i}"]`).forEach(td => td.classList.add('hl-danger')));
+        zone.addEventListener('mouseleave', () => blockEl.querySelectorAll('.tcell').forEach(td => td.classList.remove('hl-danger')));
+        zone.addEventListener('click', ev => { ev.stopPropagation(); removeRowAt(page.id, block.id, i); });
+      }
+      blockEl.appendChild(zone);
+    });
+
+    block.rows[0].forEach((_, colIdx) => {
+      const rightX = colBorders[colIdx + 1] - blockRect.left;
+      const strip = document.createElement('div');
+      strip.className = 'col-resize-strip';
+      strip.style.left = rightX + 'px';
+      strip.style.top = tableTop + 'px';
+      strip.style.height = (tableBottom - tableTop) + 'px';
+      strip.title = 'Ajustar largura da coluna';
+      strip.addEventListener('mousedown', ev => startColResize(page, block, blockEl, colIdx, ev));
+      blockEl.appendChild(strip);
+    });
+
+    const tableRect = table.getBoundingClientRect();
+    const grip = document.createElement('div');
+    grip.className = 'zoom-resize-grip';
+    grip.title = 'Redimensionar tabela';
+    grip.textContent = '⤡';
+    grip.style.left = (tableRect.right - blockRect.left + 4) + 'px';
+    grip.style.top = (tableRect.bottom - blockRect.top + 4) + 'px';
+    grip.addEventListener('mousedown', ev => startZoomResize(block, blockEl, '.table-zoom', ev));
+    blockEl.appendChild(grip);
+  }
+
+  function insertColAt(pageId, blockId, borderIdx){
+    const b = findBlock(pageId, blockId);
+    b.rows.forEach(r => r.splice(borderIdx, 0, ''));
+    if(b.colWidths) b.colWidths.splice(borderIdx, 0, undefined);
+    persist();
+  }
+  function removeColAt(pageId, blockId, colIdx){
+    const b = findBlock(pageId, blockId);
+    if(!b.rows[0] || b.rows[0].length <= 1) return;
+    b.rows.forEach(r => r.splice(colIdx, 1));
+    if(b.colWidths) b.colWidths.splice(colIdx, 1);
+    persist();
+  }
+  function insertRowAt(pageId, blockId, borderIdx){
+    const b = findBlock(pageId, blockId);
+    const cols = b.rows[0] ? b.rows[0].length : 1;
+    b.rows.splice(borderIdx, 0, new Array(cols).fill(''));
+    persist();
+  }
+  function removeRowAt(pageId, blockId, rowIdx){
+    const b = findBlock(pageId, blockId);
+    if(b.rows.length <= 1) return;
+    b.rows.splice(rowIdx, 1);
+    persist();
+  }
+
+  function startColResize(page, block, blockEl, colIdx, e){
+    e.stopPropagation(); e.preventDefault();
+    document.body.style.userSelect = 'none';
+    const scale = block.scale || 1;
+    const cells = Array.from(blockEl.querySelectorAll(`.tcell[data-col="${colIdx}"]`));
+    const startW = (block.colWidths && block.colWidths[colIdx]) || 110;
+    const startX = e.clientX;
+    function onMove(ev){
+      const dx = (ev.clientX - startX) / scale;
+      const w = Math.max(50, startW + dx);
+      cells.forEach(c => c.style.width = w + 'px');
+      if(!block.colWidths) block.colWidths = [];
+      block.colWidths[colIdx] = w;
+      positionTableHandles(page, block, blockEl);
+    }
+    function onUp(){
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.userSelect = '';
+      schedule();
+      fitCanvasSize();
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }
+
+  window.addEventListener('resize', () => {
+    const page = findPage(appData.activePageId);
+    if(!page || page.kind === 'copy') return;
+    page.blocks.forEach(b => {
+      if(b.type !== 'table' && b.type !== 'linktable') return;
+      const el = document.querySelector(`.block[data-block-id="${b.id}"]`);
+      if(el) positionTableHandles(page, b, el);
+    });
+  });
+
+  // ---------- sync editable content without losing cursor ----------
+  function syncEditable(el){
+    const field = el.dataset.field;
+    if(field === 'block-text'){
+      const b = findBlock(el.dataset.page, el.dataset.block);
+      if(b) b.html = el.innerHTML;
+      schedule();
+    } else if(field === 'table-cell'){
+      const b = findBlock(el.dataset.page, el.dataset.block);
+      if(b) b.rows[+el.dataset.row][+el.dataset.col] = el.innerHTML;
+      schedule();
+    } else if(field === 'page-title'){
+      const p = findPage(el.dataset.page);
+      if(p) p.title = el.textContent.trim() || 'Página';
+      schedule();
+    } else if(field === 'code-text'){
+      const b = findBlock(el.dataset.page, el.dataset.block);
+      if(b) b.code = el.value;
+      schedule();
+    }
+  }
+
+  // ---------- robust "start of line" detection (DOM-based, not text-serialization based) ----------
+  function isAtLineStart(node, rootClass){
+    let prev = node.previousSibling;
+    while(prev){
+      if(prev.nodeType === 3 && prev.textContent.length > 0) return false;
+      if(prev.nodeType === 1) return prev.tagName === 'BR';
+      prev = prev.previousSibling;
+    }
+    let parent = node.parentElement;
+    while(parent && !parent.classList.contains(rootClass)){
+      if(parent.previousSibling) return true;
+      parent = parent.parentElement;
+    }
+    return true;
+  }
+
+  function handleAutoDash(el, e){
+    if(e.inputType !== 'insertText' || e.data !== '-') return;
+    const sel = window.getSelection();
+    if(!sel.rangeCount) return;
+    const range = sel.getRangeAt(0);
+    const node = range.startContainer;
+    if(node.nodeType !== 3) return;
+    const offset = range.startOffset;
+    if(offset !== 3) return;
+    if(node.textContent.slice(0, 3) !== '---') return;
+    if(!isAtLineStart(node, 'text-body')) return;
+    for(let i = 0; i < 3; i++) sel.modify('extend', 'backward', 'character');
+    document.execCommand('insertHTML', false, '<hr><br>');
+  }
+
+  function handleAutoCapitalize(el, e){
+    if(e.inputType !== 'insertText' || !e.data || e.data.length !== 1) return;
+    const ch = e.data;
+    if(ch < 'a' || ch > 'z') return;
+    const sel = window.getSelection();
+    if(!sel.rangeCount) return;
+    const range = sel.getRangeAt(0);
+    const node = range.startContainer;
+    if(node.nodeType !== 3) return;
+    if(node.parentElement && node.parentElement.closest('a')) return;
+    const offset = range.startOffset;
+    if(offset !== 1) return;
+    if(!isAtLineStart(node, 'text-body')) return;
+    const text = node.textContent;
+    if(text[0] !== ch) return;
+    node.textContent = ch.toUpperCase() + text.slice(1);
+    const newRange = document.createRange();
+    newRange.setStart(node, offset);
+    newRange.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(newRange);
+  }
+
+  document.addEventListener('input', e => {
+    const el = e.target;
+    if(!el.classList) return;
+    if(el.classList.contains('text-body')){
+      handleAutoDash(el, e);
+      handleAutoCapitalize(el, e);
+    }
+    if(el.classList.contains('editable')) syncEditable(el);
+    if(el.classList.contains('code-editor')){
+      const lineCount = el.value.split('\n').length;
+      const gutter = el.previousElementSibling;
+      if(gutter){
+        let html = '';
+        for(let i = 1; i <= lineCount; i++) html += `<div>${i}</div>`;
+        gutter.innerHTML = html;
+      }
+      el.style.height = 'auto';
+      el.style.height = el.scrollHeight + 'px';
+      fitCanvasSize();
+    }
+    if(el.classList.contains('copy-textarea')){
+      const p = findPage(el.dataset.page);
+      if(p) p.copyText = el.value;
+      schedule();
+    }
+  });
+  document.addEventListener('focusin', e => { if(e.target.classList && e.target.classList.contains('editable')) lastEditable = e.target; });
+
+  // ---------- Enter inside an embedded code block: manual line handling so numbering keeps working ----------
+  document.addEventListener('keydown', e => {
+    if(e.key === 'Escape'){ deselectBlock(); hideContextMenu(); return; }
+    if(e.key === 'Enter'){
+      const sel = window.getSelection();
+      if(sel && sel.rangeCount){
+        const anchor = sel.anchorNode;
+        const hostEl = anchor && (anchor.nodeType === 3 ? anchor.parentElement : anchor);
+        const codeLine = hostEl && hostEl.closest && hostEl.closest('.code-embed-line');
+        if(codeLine){
+          e.preventDefault();
+          const newLine = document.createElement('div');
+          newLine.className = 'code-embed-line';
+          newLine.innerHTML = '<br>';
+          codeLine.after(newLine);
+          const range = document.createRange();
+          range.setStart(newLine, 0);
+          range.collapse(true);
+          sel.removeAllRanges();
+          sel.addRange(range);
+          const editable = codeLine.closest('.editable');
+          if(editable) syncEditable(editable);
+          return;
+        }
+      }
+    }
+    if((e.key === 'Delete' || e.key === 'Backspace') && selectedBlockId){
+      const active = document.activeElement;
+      const isEditing = active && active.classList && active.classList.contains('editable');
+      if(!isEditing){
+        e.preventDefault();
+        const pageId = appData.activePageId, blockId = selectedBlockId;
+        deselectBlock();
+        const p = findPage(pageId);
+        p.blocks = p.blocks.filter(b => b.id !== blockId);
+        persist();
+      }
+    }
+  });
+
+  // ---------- links ----------
+  const URL_RE = /(https?:\/\/[^\s<]+[^\s<.,;:!?)\]]|www\.[^\s<]+[^\s<.,;:!?)\]])/g;
+  function linkifyPlainUrls(root){
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode(node){
+        if(node.parentElement && node.parentElement.closest('a')) return NodeFilter.FILTER_REJECT;
+        if(node.parentElement && node.parentElement.closest('.code-embed')) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+    const nodes = [];
+    let n;
+    while((n = walker.nextNode())) nodes.push(n);
+    let changed = false;
+    nodes.forEach(node => {
+      const text = node.textContent;
+      URL_RE.lastIndex = 0;
+      if(!URL_RE.test(text)) return;
+      URL_RE.lastIndex = 0;
+      const frag = document.createDocumentFragment();
+      let lastIndex = 0, m;
+      while((m = URL_RE.exec(text))){
+        if(m.index > lastIndex) frag.appendChild(document.createTextNode(text.slice(lastIndex, m.index)));
+        const raw = m[0];
+        let href = raw;
+        if(!/^https?:\/\//i.test(href)) href = 'https://' + href;
+        const a = document.createElement('a');
+        a.href = href;
+        a.textContent = raw;
+        frag.appendChild(a);
+        lastIndex = m.index + raw.length;
+      }
+      if(lastIndex < text.length) frag.appendChild(document.createTextNode(text.slice(lastIndex)));
+      node.parentNode.replaceChild(frag, node);
+      changed = true;
+    });
+    return changed;
+  }
+
+  // Paste is handled manually and directly, and linkifyPlainUrls always runs synchronously
+  // right after — regardless of which branch ran (or if it partly failed), so links show up
+  // blue and clickable the instant you paste, never requiring a click elsewhere first.
+  document.addEventListener('paste', e => {
+    const target = e.target;
+    if(!target.classList || !(target.classList.contains('text-body') || target.classList.contains('tcell-content'))) return;
+    const sel = window.getSelection();
+    if(sel && sel.anchorNode){
+      const n = sel.anchorNode.nodeType === 3 ? sel.anchorNode.parentElement : sel.anchorNode;
+      if(n && n.closest('.code-embed')) return;
+    }
+    const raw = (e.clipboardData || window.clipboardData).getData('text/plain');
+    const trimmed = raw.trim();
+    e.preventDefault();
+
+    const isSingleUrl = /^(https?:\/\/|www\.)\S+$/i.test(trimmed);
+    const hadSelection = !!(sel && !sel.isCollapsed);
+    const selectedText = hadSelection ? sel.toString() : '';
+
+    if(isSingleUrl){
+      let url = trimmed;
+      if(!/^https?:\/\//i.test(url)) url = 'https://' + url;
+      const label = hadSelection ? selectedText : trimmed;
+      document.execCommand('insertHTML', false, `<a href="${esc(url)}">${esc(label)}</a>&#8203;`);
+    } else {
+      document.execCommand('insertText', false, raw);
+    }
+    linkifyPlainUrls(target);
+    lastEditable = target;
+    syncEditable(target);
+  });
+  document.addEventListener('focusout', e => {
+    const el = e.target;
+    if(el.classList && (el.classList.contains('text-body') || el.classList.contains('tcell-content'))){
+      if(linkifyPlainUrls(el)) syncEditable(el);
+    }
+  });
+
+  // ---------- selection ----------
+  function selectBlock(id){
+    selectedBlockId = id;
+    document.querySelectorAll('.block').forEach(el => el.classList.toggle('selected', el.dataset.blockId === id));
+  }
+  function deselectBlock(){
+    if(!selectedBlockId) return;
+    selectedBlockId = null;
+    document.querySelectorAll('.block.selected').forEach(el => el.classList.remove('selected'));
+  }
+
+  // ---------- data actions ----------
+  function nextSpawnPos(){
+    const pos = { x: 40 + (spawnCounter % 6) * 24, y: 40 + (spawnCounter % 6) * 24 };
+    spawnCounter++;
+    return pos;
+  }
+  function addPage(){
+    deselectBlock();
+    const p = {id: uid(), title: 'Nova página', blocks: []};
+    appData.pages.push(p); appData.activePageId = p.id; persist();
+  }
+  function addCopyPage(){
+    deselectBlock();
+    const p = {id: uid(), title: 'Copy', kind: 'copy', locked: false, copyText: '', blocks: []};
+    appData.pages.push(p); appData.activePageId = p.id; persist();
+  }
+  function closePage(pageId){
+    if(appData.pages.length <= 1) return;
+    if(!confirm('Fechar esta página e todo o conteúdo dela?')) return;
+    deselectBlock();
+    const idx = appData.pages.findIndex(p => p.id === pageId);
+    appData.pages = appData.pages.filter(p => p.id !== pageId);
+    if(appData.activePageId === pageId) appData.activePageId = appData.pages[Math.max(0, idx - 1)].id;
+    persist();
+  }
+  function addBlock(type, x, y){
+    const page = findPage(appData.activePageId);
+    if(x == null || y == null){ const pos = nextSpawnPos(); x = pos.x; y = pos.y; }
+    x = Math.max(0, Math.round(x)); y = Math.max(0, Math.round(y));
+    if(type === 'table') page.blocks.push({id: uid(), type: 'table', x, y, rows: [['', '']]});
+    else if(type === 'linktable') page.blocks.push({id: uid(), type: 'linktable', x, y, rows: [['', '']]});
+    else if(type === 'code') page.blocks.push({id: uid(), type: 'code', x, y, code: ''});
+    else page.blocks.push({id: uid(), type: 'text', x, y, html: ''});
+    persist();
+  }
+  function deleteBlock(pageId, blockId){
+    if(!confirm('Excluir este bloco?')) return;
+    if(selectedBlockId === blockId) deselectBlock();
+    const p = findPage(pageId);
+    p.blocks = p.blocks.filter(b => b.id !== blockId);
+    persist();
+  }
+  function clearAll(){
+    if(!confirm('Isso vai apagar TODAS as páginas. Tem certeza?')) return;
+    deselectBlock();
+    appData = emptyData(); persist();
+  }
+  function runFmt(cmd){
+    if(!lastEditable) return;
+    document.execCommand(cmd, false, null);
+    syncEditable(lastEditable);
+  }
+  function markAsCode(){
+    const sel = window.getSelection();
+    if(!sel || sel.isCollapsed) return;
+    const text = sel.toString();
+    document.execCommand('insertHTML', false, '<code>' + esc(text) + '</code>');
+    if(lastEditable) syncEditable(lastEditable);
+  }
+  function insertExpandBox(){
+    if(!lastEditable) return;
+    document.execCommand('insertHTML', false, '<details class="exp-box" open><summary>Clique para expandir/recolher</summary><div>Escreva aqui…</div></details>');
+    syncEditable(lastEditable);
+  }
+  function insertCodeEmbed(){
+    if(!lastEditable) return;
+    document.execCommand('insertHTML', false, '<div class="code-embed"><div class="code-embed-line">código aqui</div></div><br>');
+    syncEditable(lastEditable);
+  }
+  function pickColorAndApply(execCmd){
+    const sel = window.getSelection();
+    if(!sel || sel.isCollapsed) return;
+    const savedRange = sel.getRangeAt(0).cloneRange();
+    const savedEditable = lastEditable;
+    const input = document.createElement('input');
+    input.type = 'color';
+    input.style.position = 'fixed'; input.style.left = '-9999px';
+    document.body.appendChild(input);
+    input.addEventListener('input', () => {
+      const sel2 = window.getSelection();
+      sel2.removeAllRanges();
+      sel2.addRange(savedRange);
+      document.execCommand(execCmd, false, input.value);
+      if(savedEditable) syncEditable(savedEditable);
+    });
+    input.addEventListener('blur', () => { setTimeout(() => { if(input.parentNode) input.remove(); }, 200); });
+    input.click();
+  }
+
+  // ---------- code block: width-only resize handle (height auto-grows on input) ----------
+  function startCodeResize(blockEl, block, e){
+    e.stopPropagation(); e.preventDefault();
+    document.body.style.userSelect = 'none';
+    const startW = blockEl.offsetWidth;
+    const startX = e.clientX;
+    const codeEl = blockEl.querySelector('.code-editor');
+    function onMove(ev){
+      const w = Math.max(160, startW + (ev.clientX - startX));
+      blockEl.style.width = w + 'px';
+      if(codeEl){ codeEl.style.height = 'auto'; codeEl.style.height = codeEl.scrollHeight + 'px'; }
+      fitCanvasSize();
+    }
+    function onUp(){
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.userSelect = '';
+      block.w = blockEl.offsetWidth;
+      schedule();
+      fitCanvasSize();
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }
+
+  // ---------- dragging (move + drop on a tab to change page, with live preview) ----------
+  // The block being dragged is the REAL element itself, temporarily switched to position:fixed
+  // and moved out to <body> — not a cloned "ghost". This guarantees it's always visible
+  // (nothing to go stale or get shadowed by other layers) and survives the destination
+  // page's own re-render while you're hovering a different tab, since it's no longer a
+  // child of #page-content at all during the drag.
+  function reapplyDragHiding(){ /* no-op: the dragged element lives outside #page-content now */ }
+  function startDrag(blockEl, block, e){
+    const rect = blockEl.getBoundingClientRect();
+    blockEl.style.position = 'fixed';
+    blockEl.style.left = rect.left + 'px';
+    blockEl.style.top = rect.top + 'px';
+    blockEl.style.margin = '0';
+    blockEl.style.zIndex = '2000';
+    blockEl.style.pointerEvents = 'none';
+    document.body.appendChild(blockEl);
+    document.body.style.userSelect = 'none';
+
+    dragState = {
+      blockId: block.id, el: blockEl,
+      sourcePageId: appData.activePageId,
+      currentPreviewPageId: appData.activePageId,
+      grabDX: e.clientX - rect.left, grabDY: e.clientY - rect.top,
+      startClientX: e.clientX, startClientY: e.clientY,
+      moved: false, finalX: block.x, finalY: block.y
+    };
+    document.addEventListener('mousemove', onDragMove);
+    document.addEventListener('mouseup', onDragEnd);
+  }
+  function clearTabDropHighlight(){ document.querySelectorAll('.tab.drop-target').forEach(el => el.classList.remove('drop-target')); }
+  function onDragMove(e){
+    if(!dragState) return;
+    const dx = e.clientX - dragState.startClientX;
+    const dy = e.clientY - dragState.startClientY;
+    if(Math.abs(dx) > 3 || Math.abs(dy) > 3) dragState.moved = true;
+    if(!dragState.moved) return;
+
+    dragState.el.style.left = (e.clientX - dragState.grabDX) + 'px';
+    dragState.el.style.top = (e.clientY - dragState.grabDY) + 'px';
+
+    const headerRect = document.querySelector('header').getBoundingClientRect();
+    if(e.clientY >= headerRect.top && e.clientY <= headerRect.bottom){
+      clearTabDropHighlight();
+      const tabs = document.querySelectorAll('.tab');
+      for(const tabEl of tabs){
+        const r = tabEl.getBoundingClientRect();
+        if(e.clientX >= r.left && e.clientX <= r.right){
+          tabEl.classList.add('drop-target');
+          if(dragState.currentPreviewPageId !== tabEl.dataset.page){
+            dragState.currentPreviewPageId = tabEl.dataset.page;
+            appData.activePageId = tabEl.dataset.page;
+            render(); // rebuilds #page-content fresh — the dragged element lives in <body> now, untouched by this
+          }
+          break;
+        }
+      }
+      return;
+    }
+    clearTabDropHighlight();
+
+    const canvasRect = document.getElementById('page-content').getBoundingClientRect();
+    let localX = (e.clientX - dragState.grabDX) - canvasRect.left;
+    let localY = (e.clientY - dragState.grabDY) - canvasRect.top;
+    if(!e.altKey){
+      localX = Math.round(localX / GRID) * GRID;
+      localY = Math.round(localY / GRID) * GRID;
+    }
+    dragState.finalX = Math.max(0, localX);
+    dragState.finalY = Math.max(0, localY);
+    // grow the canvas live as the block approaches the edge, so it always feels infinite
+    const c = document.getElementById('page-content');
+    if(dragState.finalX + 300 > parseInt(c.style.minWidth || 0)) c.style.minWidth = (dragState.finalX + 500) + 'px';
+    if(dragState.finalY + 200 > parseInt(c.style.minHeight || 0)) c.style.minHeight = (dragState.finalY + 500) + 'px';
+  }
+  function restoreDraggedElementStyle(el){
+    el.style.position = '';
+    el.style.left = '';
+    el.style.top = '';
+    el.style.margin = '';
+    el.style.zIndex = '';
+    el.style.pointerEvents = '';
+    if(el.parentNode) el.parentNode.removeChild(el);
+  }
+  function onDragEnd(){
+    document.removeEventListener('mousemove', onDragMove);
+    document.removeEventListener('mouseup', onDragEnd);
+    clearTabDropHighlight();
+    document.body.style.userSelect = '';
+    if(!dragState) return;
+    const ds = dragState;
+    dragState = null;
+    restoreDraggedElementStyle(ds.el);
+
+    if(ds.moved){
+      const srcPage = findPage(ds.sourcePageId);
+      const idx = srcPage.blocks.findIndex(b => b.id === ds.blockId);
+      if(idx > -1){
+        const [block] = srcPage.blocks.splice(idx, 1);
+        block.x = ds.finalX; block.y = ds.finalY;
+        const destPage = findPage(ds.currentPreviewPageId) || srcPage;
+        destPage.blocks.push(block);
+        appData.activePageId = destPage.id;
+      }
+      deselectBlock();
+      schedule();
+      render();
+    } else {
+      selectBlock(ds.blockId);
+      render();
+    }
+  }
+
+  document.getElementById('page-content').addEventListener('mousedown', e => {
+    const resizeHandle = e.target.closest('.resize-handle');
+    if(resizeHandle){
+      const blockEl = resizeHandle.closest('.block');
+      const page = findPage(appData.activePageId);
+      const block = page.blocks.find(b => b.id === blockEl.dataset.blockId);
+      if(block) startResize(blockEl, block, e);
+      return;
+    }
+    const codeResize = e.target.closest('.code-resize-e');
+    if(codeResize){
+      const blockEl = codeResize.closest('.block');
+      const page = findPage(appData.activePageId);
+      const block = page.blocks.find(b => b.id === blockEl.dataset.blockId);
+      if(block) startCodeResize(blockEl, block, e);
+      return;
+    }
+    const handle = e.target.closest('.block-handle');
+    if(handle){
+      e.preventDefault();
+      const blockEl = handle.closest('.block');
+      const blockId = blockEl.dataset.blockId;
+      const page = findPage(appData.activePageId);
+      const block = page.blocks.find(b => b.id === blockId);
+      if(block) startDrag(blockEl, block, e);
+      return;
+    }
+    deselectBlock();
+  });
+
+  document.getElementById('page-content').addEventListener('click', e => {
+    const openAll = e.target.closest('[data-openall]');
+    if(openAll){
+      const blockEl = openAll.closest('.block');
+      blockEl.querySelectorAll('a[href]').forEach(a => window.open(a.getAttribute('href'), '_blank', 'noopener'));
+      return;
+    }
+  });
+
+  // ---------- links: click opens new tab, dblclick edits/removes ----------
+  document.addEventListener('click', e => {
+    const a = e.target.closest('a');
+    if(a && a.closest('.text-body, .tcell-content')){
+      e.preventDefault();
+      clearTimeout(clickTimer);
+      const href = a.getAttribute('href');
+      clickTimer = setTimeout(() => { if(href) window.open(href, '_blank', 'noopener'); }, 220);
+    }
+  });
+  document.addEventListener('dblclick', e => {
+    const a = e.target.closest('a');
+    const editable = a && a.closest('.text-body, .tcell-content');
+    if(!editable) return;
+    e.preventDefault();
+    clearTimeout(clickTimer);
+    const current = a.getAttribute('href') || '';
+    const newUrl = prompt('Editar link (deixe vazio para remover):', current);
+    if(newUrl === null) return;
+    if(newUrl.trim() === ''){
+      a.replaceWith(document.createTextNode(a.textContent));
+    } else {
+      let url = newUrl.trim();
+      if(!/^https?:\/\//i.test(url) && !/^mailto:/i.test(url)) url = 'https://' + url;
+      a.setAttribute('href', url);
+    }
+    syncEditable(editable);
+  });
+
+  // ---------- context menu ----------
+  function showContextMenu(x, y, items){
+    const menu = document.getElementById('ctx-menu');
+    menu.innerHTML = items.map(it => it.sep ? '<div class="ctx-sep"></div>' : `<button data-ctx="${it.id}">${esc(it.label)}</button>`).join('');
+    menu.style.left = x + 'px';
+    menu.style.top = y + 'px';
+    menu.classList.remove('hidden');
+    currentCtxItems = items;
+    requestAnimationFrame(() => {
+      const rect = menu.getBoundingClientRect();
+      if(rect.right > window.innerWidth) menu.style.left = Math.max(4, window.innerWidth - rect.width - 4) + 'px';
+      if(rect.bottom > window.innerHeight) menu.style.top = Math.max(4, window.innerHeight - rect.height - 4) + 'px';
+    });
+  }
+  function hideContextMenu(){ document.getElementById('ctx-menu').classList.add('hidden'); currentCtxItems = null; }
+
+  document.getElementById('ctx-menu').addEventListener('mousedown', e => e.preventDefault());
+  document.getElementById('ctx-menu').addEventListener('click', e => {
+    const btn = e.target.closest('[data-ctx]');
+    if(!btn) return;
+    const item = currentCtxItems && currentCtxItems.find(i => i.id === btn.dataset.ctx);
+    hideContextMenu();
+    if(item && item.action) item.action();
+  });
+  document.addEventListener('mousedown', e => {
+    const menu = document.getElementById('ctx-menu');
+    if(!menu.classList.contains('hidden') && !e.target.closest('#ctx-menu')) hideContextMenu();
+  });
+  window.addEventListener('scroll', hideContextMenu, true);
+
+  function pageMenuItems(x, y){
+    const items = [
+      {id:'newtable', label:'Nova tabela', action: () => addBlock('table', x, y)},
+      {id:'newlinktable', label:'Nova tabela de links', action: () => addBlock('linktable', x, y)},
+      {id:'newtext', label:'Novo texto', action: () => addBlock('text', x, y)},
+      {id:'newcode', label:'Novo bloco de código', action: () => addBlock('code', x, y)},
+      {sep:true},
+    ];
+    if(fileSupport) items.push({id:'connect', label: fileHandle ? 'Reconectar arquivo' : 'Conectar arquivo (salvar automático)', action: () => fileHandle ? reconnectFile() : connectFile()});
+    items.push({id:'download', label:'Baixar cópia atualizada', action: downloadCopy});
+    items.push({sep:true});
+    items.push({id:'exportjson', label:'Exportar backup (.json)', action: exportJSON});
+    items.push({id:'importjson', label:'Importar backup (.json)', action: () => document.getElementById('import-input').click()});
+    items.push({sep:true});
+    items.push({id:'clear', label:'Limpar tudo', action: clearAll});
+    return items;
+  }
+
+  document.getElementById('status-dot').addEventListener('click', e => showContextMenu(e.clientX, e.clientY, pageMenuItems()));
+  document.getElementById('status-dot').addEventListener('contextmenu', e => { e.preventDefault(); showContextMenu(e.clientX, e.clientY, pageMenuItems()); });
+
+  function textFormatItems(){
+    return [
+      {id:'bold', label:'Negrito', action: () => runFmt('bold')},
+      {id:'italic', label:'Itálico', action: () => runFmt('italic')},
+      {id:'underline', label:'Sublinhado', action: () => runFmt('underline')},
+      {id:'forecolor', label:'Cor do texto…', action: () => pickColorAndApply('foreColor')},
+      {id:'backcolor', label:'Cor de fundo…', action: () => pickColorAndApply('hiliteColor')},
+      {id:'code', label:'Formatar como código', action: markAsCode},
+      {id:'codeblock', label:'Bloco de código', action: insertCodeEmbed},
+      {id:'expand', label:'Caixa expansível', action: insertExpandBox},
+    ];
+  }
+
+  document.getElementById('page-content').addEventListener('contextmenu', e => {
+    e.preventDefault();
+    const page = findPage(appData.activePageId);
+    if(page.kind === 'copy') return;
+    const tblock = e.target.closest('.text-body');
+    const tcellEl = e.target.closest('.tcell-content');
+    const codeBlockEl = e.target.closest('.code-block');
+
+    if(tblock){
+      lastEditable = tblock;
+      const blockId = tblock.dataset.block, pageId = tblock.dataset.page;
+      const items = [
+        {id:'list', label:'Lista', action: () => runFmt('insertUnorderedList')},
+        ...textFormatItems(),
+        {sep:true},
+        {id:'del', label:'Excluir bloco', action: () => deleteBlock(pageId, blockId)}
+      ];
+      showContextMenu(e.clientX, e.clientY, items);
+      return;
+    }
+    if(tcellEl){
+      lastEditable = tcellEl;
+      const pageId = tcellEl.dataset.page, blockId = tcellEl.dataset.block, row = +tcellEl.dataset.row, col = +tcellEl.dataset.col;
+      const blockData = findBlock(pageId, blockId);
+      const isLinkTable = blockData && blockData.type === 'linktable';
+      const items = [
+        {id:'addrow', label:'Adicionar linha abaixo', action: () => insertRowAt(pageId, blockId, row + 1)},
+        {id:'addcol', label:'Adicionar coluna à direita', action: () => insertColAt(pageId, blockId, col + 1)},
+        {id:'delrow', label:'Remover esta linha', action: () => removeRowAt(pageId, blockId, row)},
+        {id:'delcol', label:'Remover esta coluna', action: () => removeColAt(pageId, blockId, col)},
+        {sep:true},
+        ...textFormatItems(),
+        {sep:true},
+        {id:'del', label: isLinkTable ? 'Excluir tabela de links' : 'Excluir tabela', action: () => deleteBlock(pageId, blockId)}
+      ];
+      showContextMenu(e.clientX, e.clientY, items);
+      return;
+    }
+    if(codeBlockEl){
+      showContextMenu(e.clientX, e.clientY, [
+        {id:'del', label:'Excluir bloco de código', action: () => deleteBlock(appData.activePageId, codeBlockEl.dataset.blockId)}
+      ]);
+      return;
+    }
+    const canvasRect = document.getElementById('page-content').getBoundingClientRect();
+    const x = e.clientX - canvasRect.left, y = e.clientY - canvasRect.top;
+    showContextMenu(e.clientX, e.clientY, pageMenuItems(x, y));
+  });
+
+  document.getElementById('tab-strip').addEventListener('click', e => {
+    if(e.target.closest('.tab-add')){
+      showContextMenu(e.clientX, e.clientY, [
+        {id:'newnormal', label:'Guia normal', action: addPage},
+        {id:'newcopy', label:'Guia de copy', action: addCopyPage}
+      ]);
+      return;
+    }
+    const lockBtn = e.target.closest('.tab-lock');
+    if(lockBtn){
+      const p = findPage(lockBtn.dataset.page);
+      if(p){ p.locked = !p.locked; persist(); }
+      return;
+    }
+    const tabEl = e.target.closest('.tab');
+    if(!tabEl) return;
+    const p = findPage(tabEl.dataset.page);
+
+    if(p && p.kind === 'copy' && p.locked){
+      copyDecodedContent(p);
+    }
+
+    if(appData.activePageId === tabEl.dataset.page){
+      renderPage();
+      return;
+    }
+    deselectBlock();
+    appData.activePageId = tabEl.dataset.page;
+    persist();
+  });
+  document.getElementById('tab-strip').addEventListener('contextmenu', e => {
+    e.preventDefault();
+    const tabEl = e.target.closest('.tab');
+    if(tabEl){
+      const pageId = tabEl.dataset.page;
+      showContextMenu(e.clientX, e.clientY, [
+        {id:'rename', label:'Renomear', action: () => { const el = tabEl.querySelector('.tab-title'); el.focus(); document.execCommand('selectAll', false, null); }},
+        {sep:true},
+        {id:'close', label:'Fechar página', action: () => closePage(pageId)}
+      ]);
+    } else {
+      showContextMenu(e.clientX, e.clientY, [
+        {id:'newnormal', label:'Guia normal', action: addPage},
+        {id:'newcopy', label:'Guia de copy', action: addCopyPage}
+      ]);
+    }
+  });
+
+  document.getElementById('import-input').addEventListener('change', e => {
+    const file = e.target.files[0];
+    if(!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try{
+        const parsed = JSON.parse(reader.result);
+        if(!parsed.pages) throw new Error('formato inválido');
+        deselectBlock();
+        appData = normalize(parsed);
+        persist();
+      }catch(err){ alert('Arquivo de backup inválido.'); }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  });
+
+  // ---------- init ----------
+  render();
+  (async function initConn(){
+    if(!fileSupport){ setConnStatus(undefined); return; }
+    try{
+      const h = await idbGet('fileHandle');
+      if(h){
+        const perm = await h.queryPermission({mode: 'readwrite'});
+        fileHandle = h;
+        setConnStatus(perm === 'granted' ? true : 'pending');
+      } else setConnStatus(undefined);
+    }catch(e){ setConnStatus(undefined); }
+  })();
+
+})();
+</script>
+</body>
+</html>
