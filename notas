@@ -427,7 +427,8 @@
     c.innerHTML = page.blocks.map(b => {
       if(b.type === 'table' || b.type === 'linktable') return renderTableBlock(page, b);
       if(b.type === 'code') return renderCodeBlock(page, b);
-      return renderTextBlock(page, b);
+      if(b.type === 'text' || !b.type) return renderTextBlock(page, b);
+      return renderUnknownBlock(page, b);
     }).join('');
     autosizeCodeEditors();
     page.blocks.forEach(b => {
@@ -1058,6 +1059,45 @@
     return changed;
   }
 
+  // Walks pasted rich HTML (from OneNote/Word/etc.), keeping real <a href> links intact and
+  // collapsing everything else (table rows, paragraphs) into plain text with line breaks —
+  // so a cell whose visible text is just "LINK" but whose real target is a URL keeps that URL.
+  function extractLinksHtml(node){
+    let out = '';
+    node.childNodes.forEach(child => {
+      if(child.nodeType === 3){
+        out += esc(child.textContent);
+      } else if(child.nodeType === 1){
+        const tag = child.tagName.toLowerCase();
+        if(tag === 'a' && child.getAttribute('href')){
+          const label = child.textContent.trim() || child.getAttribute('href');
+          out += `<a href="${esc(child.getAttribute('href'))}">${esc(label)}</a>`;
+        } else if(tag === 'tr' || tag === 'p' || tag === 'div'){
+          const inner = extractLinksHtml(child);
+          if(inner) out += inner + '<br>';
+        } else if(tag === 'br'){
+          out += '<br>';
+        } else if(tag === 'td' || tag === 'th'){
+          out += extractLinksHtml(child) + '  ';
+        } else if(tag === 'script' || tag === 'style'){
+          /* skip */
+        } else {
+          out += extractLinksHtml(child);
+        }
+      }
+    });
+    return out;
+  }
+
+  // Copying a WHOLE table (e.g. from OneNote) shouldn't dump everything into one cell —
+  // it becomes a proper new table block instead, with real rows/columns and every link intact.
+  function extractTableRows(tableEl){
+    const rows = Array.from(tableEl.rows).map(tr => Array.from(tr.cells).map(td => extractLinksHtml(td)));
+    const maxCols = Math.max(1, ...rows.map(r => r.length));
+    rows.forEach(r => { while(r.length < maxCols) r.push(''); });
+    return rows;
+  }
+
   // Paste is handled manually and directly, and linkifyPlainUrls always runs synchronously
   // right after — regardless of which branch ran (or if it partly failed), so links show up
   // blue and clickable the instant you paste, never requiring a click elsewhere first.
@@ -1069,9 +1109,50 @@
       const n = sel.anchorNode.nodeType === 3 ? sel.anchorNode.parentElement : sel.anchorNode;
       if(n && n.closest('.code-embed')) return;
     }
-    const raw = (e.clipboardData || window.clipboardData).getData('text/plain');
+    const cd = e.clipboardData || window.clipboardData;
+    const html = cd.getData('text/html');
+    const raw = cd.getData('text/plain');
     const trimmed = raw.trim();
     e.preventDefault();
+
+    if(html){
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+
+      // A whole table was pasted (e.g. selected and copied straight out of OneNote) —
+      // rebuild it as its own linked table block, not as text crammed into one cell.
+      const tableEl = doc.querySelector('table');
+      if(tableEl && tableEl.rows.length){
+        const rows = extractTableRows(tableEl);
+        if(rows.length && rows[0].length){
+          const hostBlock = target.closest('.block');
+          let x = 40, y = 40;
+          if(hostBlock){ x = hostBlock.offsetLeft; y = hostBlock.offsetTop + hostBlock.offsetHeight + 30; }
+          const page = findPage(appData.activePageId);
+          page.blocks.push({id: uid(), type: 'linktable', x, y, rows});
+          persist();
+          showToast('Tabela colada como um novo bloco ✓');
+          return;
+        }
+      }
+
+      // Rich paste that carries a real hyperlink target — use that href, even if the visible
+      // text is just a label like "LINK".
+      if(/<a\s[^>]*href=/i.test(html)){
+        const anchors = doc.querySelectorAll('a[href]');
+        if(anchors.length === 1 && doc.body.textContent.trim() === anchors[0].textContent.trim()){
+          const href = anchors[0].getAttribute('href');
+          const hadSelection = !!(sel && !sel.isCollapsed);
+          const label = hadSelection ? sel.toString() : (anchors[0].textContent.trim() || href);
+          document.execCommand('insertHTML', false, `<a href="${esc(href)}">${esc(label)}</a>&#8203;`);
+        } else {
+          document.execCommand('insertHTML', false, extractLinksHtml(doc.body) + '&#8203;');
+        }
+        linkifyPlainUrls(target);
+        lastEditable = target;
+        syncEditable(target);
+        return;
+      }
+    }
 
     const isSingleUrl = /^(https?:\/\/|www\.)\S+$/i.test(trimmed);
     const hadSelection = !!(sel && !sel.isCollapsed);
