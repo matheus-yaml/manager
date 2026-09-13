@@ -29,7 +29,8 @@
   .hidden{display:none !important;}
 
   header{ position:sticky; top:0; z-index:20; background:var(--bg-elev); border-bottom:1px solid var(--border); }
-  .tab-strip{ display:flex; align-items:flex-end; gap:4px; padding:8px 14px 0; overflow-x:auto; overflow-y:hidden; }
+  .tab-strip{ display:flex; align-items:flex-end; gap:4px; padding:8px 14px 0; overflow-x:auto; overflow-y:hidden; scrollbar-width:none; -ms-overflow-style:none; }
+  .tab-strip::-webkit-scrollbar{ display:none; height:0; }
   .tab{
     display:flex; align-items:center; max-width:220px;
     background:var(--bg-elev-2); border:1px solid var(--border);
@@ -132,11 +133,11 @@
   }
   .zoom-resize-grip:hover{ background:var(--bg-elev); color:var(--text); }
   .open-all-btn{
-    position:absolute; top:-4px; right:-4px; width:20px; height:18px; border-radius:0 4px 0 6px;
-    background:var(--bg-elev-2); color:var(--link); font-size:12px; line-height:18px; text-align:center;
-    cursor:pointer; user-select:none; z-index:12;
+    position:absolute; top:-16px; right:-6px; width:26px; height:22px; border-radius:6px;
+    background:var(--bg-elev-2); border:1px solid var(--border); color:var(--link); font-size:14px; line-height:20px; text-align:center;
+    cursor:pointer; user-select:none; z-index:18;
   }
-  .open-all-btn:hover{ color:#eafff2; }
+  .open-all-btn:hover{ color:#eafff2; background:var(--bg-elev); }
 
   /* ---------- code block ---------- */
   .code-block{ width:380px; }
@@ -888,13 +889,43 @@
     sel.addRange(newRange);
   }
 
+
+  // Converts a URL to a link the instant you finish typing it (as soon as you hit space
+  // right after it) — so you never have to click away for it to turn blue.
+  function linkifyOnBoundary(el, e){
+    if(e.inputType !== 'insertText' || e.data !== ' ') return;
+    const sel = window.getSelection();
+    if(!sel.rangeCount) return;
+    const range = sel.getRangeAt(0);
+    const node = range.startContainer;
+    if(node.nodeType !== 3) return;
+    if(node.parentElement && node.parentElement.closest('a')) return;
+    if(node.parentElement && node.parentElement.closest('.code-embed')) return;
+    const offset = range.startOffset;
+    const textBefore = node.textContent.slice(0, offset - 1);
+    const m = textBefore.match(/(https?:\/\/\S+|www\.\S+)$/i);
+    if(!m) return;
+    const url = m[0];
+    const start = offset - 1 - url.length;
+    const r = document.createRange();
+    r.setStart(node, start);
+    r.setEnd(node, offset - 1);
+    sel.removeAllRanges();
+    sel.addRange(r);
+    let href = url;
+    if(!/^https?:\/\//i.test(href)) href = 'https://' + href;
+    document.execCommand('insertHTML', false, `<a href="${esc(href)}">${esc(url)}</a>&#8203;`);
+  }
+
   document.addEventListener('input', e => {
     const el = e.target;
     if(!el.classList) return;
     if(el.classList.contains('text-body')){
       handleAutoDash(el, e);
       handleAutoCapitalize(el, e);
+      linkifyOnBoundary(el, e);
     }
+    if(el.classList.contains('tcell-content')) linkifyOnBoundary(el, e);
     if(el.classList.contains('editable')) syncEditable(el);
     if(el.classList.contains('code-editor')){
       const lineCount = el.value.split('\n').length;
@@ -916,8 +947,40 @@
   });
   document.addEventListener('focusin', e => { if(e.target.classList && e.target.classList.contains('editable')) lastEditable = e.target; });
 
-  // ---------- Enter inside an embedded code block: manual line handling so numbering keeps working ----------
+  // ---------- Tab: 4 spaces in text/code boxes (never inside tables); indents into a sub-list
+  // instead, if the caret is already inside a list item — and Ctrl/Cmd+S forces an immediate save ----------
   document.addEventListener('keydown', e => {
+    if((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's'){
+      e.preventDefault();
+      if(fileHandle){ saveToFile().then(() => showToast('Salvo no arquivo ✓')); }
+      else { connectFile(); }
+      return;
+    }
+    if(e.key === 'Tab'){
+      const codeTa = e.target.closest && e.target.closest('.code-editor');
+      if(codeTa){
+        e.preventDefault();
+        const start = codeTa.selectionStart, end = codeTa.selectionEnd;
+        codeTa.value = codeTa.value.slice(0, start) + '    ' + codeTa.value.slice(end);
+        codeTa.selectionStart = codeTa.selectionEnd = start + 4;
+        codeTa.dispatchEvent(new Event('input', {bubbles: true}));
+        return;
+      }
+      const el = e.target.closest && e.target.closest('.text-body');
+      if(el){
+        e.preventDefault();
+        const sel = window.getSelection();
+        let inList = false;
+        if(sel && sel.anchorNode){
+          const node = sel.anchorNode.nodeType === 3 ? sel.anchorNode.parentElement : sel.anchorNode;
+          inList = !!(node && node.closest('li'));
+        }
+        if(inList) document.execCommand(e.shiftKey ? 'outdent' : 'indent', false, null);
+        else if(!e.shiftKey) document.execCommand('insertText', false, '    ');
+        syncEditable(el);
+        return;
+      }
+    }
     if(e.key === 'Escape'){ deselectBlock(); hideContextMenu(); return; }
     if(e.key === 'Enter'){
       const sel = window.getSelection();
@@ -1067,6 +1130,19 @@
     const idx = appData.pages.findIndex(p => p.id === pageId);
     appData.pages = appData.pages.filter(p => p.id !== pageId);
     if(appData.activePageId === pageId) appData.activePageId = appData.pages[Math.max(0, idx - 1)].id;
+    persist();
+  }
+  function duplicatePage(pageId){
+    const p = findPage(pageId);
+    if(!p) return;
+    const copy = JSON.parse(JSON.stringify(p));
+    copy.id = uid();
+    copy.title = (p.title || 'Página') + ' (cópia)';
+    if(copy.blocks) copy.blocks.forEach(b => { b.id = uid(); });
+    const idx = appData.pages.findIndex(pp => pp.id === pageId);
+    appData.pages.splice(idx + 1, 0, copy);
+    deselectBlock();
+    appData.activePageId = copy.id;
     persist();
   }
   function addBlock(type, x, y){
@@ -1488,6 +1564,7 @@
       const pageId = tabEl.dataset.page;
       showContextMenu(e.clientX, e.clientY, [
         {id:'rename', label:'Renomear', action: () => { const el = tabEl.querySelector('.tab-title'); el.focus(); document.execCommand('selectAll', false, null); }},
+        {id:'duplicate', label:'Duplicar página', action: () => duplicatePage(pageId)},
         {sep:true},
         {id:'close', label:'Fechar página', action: () => closePage(pageId)}
       ]);
