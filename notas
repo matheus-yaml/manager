@@ -7,17 +7,17 @@
 <style>
   :root{
     --bg:#12151b;
-    --bg-elev:#181c23;
-    --bg-elev-2:#1e2229;
-    --border:#2a313c;
-    --border-soft:#242a33;
-    --text:#e7ebf0;
-    --text-dim:#95a0ad;
-    --text-faint:#5c6572;
+    --bg-elev:#242a34;
+    --bg-elev-2:#2d3542;
+    --border:#454f60;
+    --border-soft:#3a4250;
+    --text:#eef1f5;
+    --text-dim:#a7b1bf;
+    --text-faint:#78828f;
     --accent:#ffb454;
     --danger:#e0716b;
     --add-green:#5fd18a;
-    --link:#3b9cff;
+    --link:#5cadff;
     --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
     --font-mono: ui-monospace, "Cascadia Mono", Consolas, "SFMono-Regular", Menlo, monospace;
   }
@@ -28,8 +28,9 @@
   a{color:var(--link); cursor:pointer;}
   .hidden{display:none !important;}
 
-  header{ position:sticky; top:0; z-index:20; background:var(--bg-elev); border-bottom:1px solid var(--border); }
-  .tab-strip{ display:flex; align-items:flex-end; gap:4px; padding:8px 14px 0; overflow-x:auto; overflow-y:hidden; scrollbar-width:none; -ms-overflow-style:none; }
+  header{ position:fixed; top:0; left:0; right:0; z-index:20; background:var(--bg-elev); border-bottom:1px solid var(--border); }
+  .tab-strip-wrap{ display:flex; align-items:flex-end; }
+  .tab-strip{ display:flex; align-items:flex-end; gap:4px; padding:8px 6px 0 14px; overflow-x:auto; overflow-y:hidden; scrollbar-width:none; -ms-overflow-style:none; flex:1; min-width:0; }
   .tab-strip::-webkit-scrollbar{ display:none; height:0; }
   .tab{
     display:flex; align-items:center; max-width:220px;
@@ -42,10 +43,10 @@
   .tab-lock{ background:none; border:none; color:var(--text-dim); cursor:pointer; font-size:12px; padding:0; flex:0 0 auto; }
   .tab-lock:hover{ color:var(--accent); }
   .tab-title{ max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; outline:none; font-size:13px; }
-  .tab-add{ background:none; border:none; color:var(--text-faint); width:28px; height:31px; cursor:pointer; font-size:16px; margin-bottom:-1px; }
+  .tab-add{ background:none; border:none; color:var(--text-faint); width:28px; height:31px; cursor:pointer; font-size:16px; margin-bottom:1px; flex:0 0 auto; margin-right:6px; }
   .tab-add:hover{ color:var(--accent); }
 
-  main{ padding:0; }
+  main{ padding:0; margin-top:48px; }
   #page-content{
     position:relative; min-height:200px;
     background-image: radial-gradient(var(--border-soft) 1px, transparent 1px);
@@ -69,7 +70,7 @@
   .editable{ outline:none; }
   .text-body{
     width:100%; background:var(--bg-elev); border-radius:6px; padding:14px 16px; min-height:100px; line-height:1.65;
-    overflow-wrap:break-word; word-break:break-word; overflow:hidden;
+    overflow-wrap:break-word; word-break:break-word; overflow:hidden; box-shadow:0 1px 4px rgba(0,0,0,.35);
   }
   .text-block{ width:300px; }
   .block.fixed-size .text-body{ height:100%; }
@@ -101,6 +102,7 @@
 
   /* ---------- table block: handles measured via JS, outside the table ---------- */
   .table-gutter{ display:inline-block; padding:34px 0 0 34px; }
+  .table-zoom table{ box-shadow:0 1px 4px rgba(0,0,0,.35); }
   .table-zoom{ display:inline-block; }
   .editable-table{ border-collapse:collapse; }
   .tcell{ border:1px solid var(--border-soft); min-width:60px; background:var(--bg-elev); padding:0; transition:background .1s; }
@@ -141,7 +143,7 @@
 
   /* ---------- code block ---------- */
   .code-block{ width:380px; }
-  .code-wrap{ display:flex; background:#0e1116; border:1px solid var(--border); border-radius:6px; overflow:hidden; align-items:flex-start; }
+  .code-wrap{ display:flex; background:#0e1116; border:1px solid var(--border); border-radius:6px; overflow:hidden; align-items:flex-start; box-shadow:0 1px 4px rgba(0,0,0,.35); }
   .code-linenums{ background:#12151b; color:var(--text-faint); font-family:var(--font-mono); font-size:12.5px; line-height:1.55; padding:10px 8px; text-align:right; user-select:none; }
   .code-editor{
     flex:1; background:transparent; border:none; color:#d8dee6; font-family:var(--font-mono);
@@ -167,6 +169,42 @@
   .block.selected{ outline:1px solid var(--accent); outline-offset:3px; border-radius:6px; }
 
   .drag-ghost{ box-shadow:0 14px 34px rgba(0,0,0,.5); opacity:.85; pointer-events:none; z-index:1000; }
+
+  .reconnect-banner{
+    position:fixed; top:48px; left:0; right:0; z-index:60; background:var(--accent); color:#241b06;
+    display:flex; align-items:center; justify-content:center; gap:12px; padding:8px 14px; font-size:13px; font-weight:600;
+  }
+  .reconnect-banner button{
+    background:#241b06; color:var(--accent); border:none; padding:5px 12px; border-radius:5px; cursor:pointer; font-size:12.5px; font-weight:700;
+  }
+  .reconnect-banner button:hover{ opacity:.85; }
+
+  .undo-redo-bar{ position:fixed; top:48px; left:14px; z-index:30; display:flex; gap:4px; }  .undo-redo-bar button{
+    width:26px; height:26px; border-radius:6px; border:1px solid var(--border); background:var(--bg-elev-2);
+    color:var(--text-dim); cursor:pointer; font-size:14px; display:flex; align-items:center; justify-content:center;
+  }
+  .undo-redo-bar button:hover:not(:disabled){ background:var(--bg-elev); color:var(--text); }
+  .undo-redo-bar button:disabled{ opacity:.3; cursor:default; }
+
+  .search-panel{
+    position:fixed; top:54px; right:14px; z-index:70; background:var(--bg-elev-2); border:1px solid var(--border);
+    border-radius:8px; padding:7px; box-shadow:0 8px 24px rgba(0,0,0,.4); display:flex; flex-direction:column; gap:5px;
+  }
+  .search-row{ display:flex; align-items:center; gap:4px; }
+  .search-row input{
+    background:var(--bg-elev); border:1px solid var(--border); color:var(--text); border-radius:4px;
+    padding:5px 8px; font-size:13px; width:170px; outline:none;
+  }
+  .search-row input:focus{ border-color:var(--accent); }
+  .search-count{ font-size:11.5px; color:var(--text-faint); min-width:40px; text-align:center; }
+  .search-row button{
+    width:24px; height:24px; border-radius:4px; border:1px solid var(--border); background:var(--bg-elev);
+    color:var(--text-dim); cursor:pointer; font-size:12px; display:flex; align-items:center; justify-content:center; flex:0 0 auto;
+  }
+  .search-row button:hover{ background:var(--bg-elev-2); color:var(--text); }
+  .search-text-btn{ width:auto !important; padding:0 8px; font-size:11.5px; }
+  mark.search-hit{ background:#5a4a1a; color:#ffd54a; border-radius:2px; }
+  mark.search-hit.current{ background:var(--accent); color:#1a1a1a; }
 
   .status-dot{
     position:fixed; bottom:16px; right:16px; width:9px; height:9px; border-radius:50%;
@@ -198,12 +236,41 @@
 <body>
 
 <header>
-  <div id="tab-strip" class="tab-strip"></div>
+  <div class="tab-strip-wrap">
+    <div id="tab-strip" class="tab-strip"></div>
+    <button class="tab-add" id="tab-add-btn" title="Nova página">+</button>
+  </div>
 </header>
 
 <main>
   <div id="page-content"></div>
 </main>
+
+<div id="reconnect-banner" class="reconnect-banner hidden">
+  <span>O navegador precisa de um clique seu pra continuar salvando neste arquivo.</span>
+  <button id="reconnect-banner-btn">Continuar salvando</button>
+</div>
+
+<div id="undo-redo" class="undo-redo-bar">
+  <button id="undo-btn" title="Desfazer (Ctrl+Z)" disabled>↺</button>
+  <button id="redo-btn" title="Refazer (Ctrl+Shift+Z)" disabled>↻</button>
+</div>
+
+<div id="search-panel" class="search-panel hidden">
+  <div class="search-row">
+    <input id="search-input" type="text" placeholder="Buscar">
+    <span id="search-count" class="search-count">0/0</span>
+    <button id="search-prev" title="Anterior (Shift+Enter)">↑</button>
+    <button id="search-next" title="Próximo (Enter)">↓</button>
+    <button id="search-toggle-replace" title="Substituir (Ctrl+Alt+H)">⇄</button>
+    <button id="search-close" title="Fechar (Esc)">✕</button>
+  </div>
+  <div class="search-row hidden" id="replace-row">
+    <input id="replace-input" type="text" placeholder="Substituir por">
+    <button id="replace-one" class="search-text-btn" title="Substituir esta ocorrência">Substituir</button>
+    <button id="replace-all" class="search-text-btn" title="Substituir todas">Tudo</button>
+  </div>
+</div>
 
 <div id="status-dot" class="status-dot" title=""></div>
 <div id="toast"></div>
@@ -226,6 +293,13 @@
   let dragState = null;
   let spawnCounter = 0;
   let toastTimer = null;
+  let undoStack = [];
+  let redoStack = [];
+  let lastSnapshot = null;
+  let undoDebounceTimer = null;
+  const MAX_UNDO = 60;
+  let searchState = null;
+  let dbNS = null;
   const fileSupport = typeof window.showOpenFilePicker === 'function';
 
   function uid(){ return 'id' + Math.random().toString(36).slice(2, 10); }
@@ -259,6 +333,7 @@
   }
   function emptyData(){ return normalize({version:13, pages:[], activePageId:null}); }
 
+  let loadedFromFallback = false;
   function loadInitialData(){
     try{
       const tag = document.getElementById('app-data');
@@ -267,7 +342,7 @@
     }catch(e){ console.warn('Falha ao ler dados do arquivo:', e); }
     try{
       const ls = localStorage.getItem(LS_KEY);
-      if(ls){ const d = JSON.parse(ls); if(d && d.pages) return normalize(d); }
+      if(ls){ const d = JSON.parse(ls); if(d && d.pages){ loadedFromFallback = true; return normalize(d); } }
     }catch(e){}
     return normalize(defaultData());
   }
@@ -304,10 +379,70 @@
   function schedule(){
     try{ localStorage.setItem(LS_KEY, JSON.stringify(appData)); }catch(e){}
     clearTimeout(saveTimer);
+    if(dbNS){
+      setConnStatus('saving');
+      saveTimer = setTimeout(() => {
+        dbNS.doc('app/state').set(appData).then(() => setConnStatus('db')).catch(() => setConnStatus('error'));
+      }, 500);
+      return;
+    }
     if(fileHandle) setConnStatus('saving');
     saveTimer = setTimeout(() => { if(fileHandle) saveToFile(); }, 700);
   }
-  function persist(){ schedule(); render(); }
+
+  // ---------- undo/redo: a lightweight snapshot stack. persist() (structural changes) commits
+  // a checkpoint immediately; plain typing groups into one checkpoint after a short pause,
+  // so Ctrl+Z undoes a "burst" of typing rather than one character at a time. ----------
+  function snapshotNow(){ return JSON.stringify(appData); }
+  function updateUndoRedoButtons(){
+    const u = document.getElementById('undo-btn'), r = document.getElementById('redo-btn');
+    if(u) u.disabled = undoStack.length === 0;
+    if(r) r.disabled = redoStack.length === 0;
+  }
+  function commitUndoCheckpoint(){
+    clearTimeout(undoDebounceTimer);
+    const current = snapshotNow();
+    if(lastSnapshot !== null && lastSnapshot !== current){
+      undoStack.push(lastSnapshot);
+      if(undoStack.length > MAX_UNDO) undoStack.shift();
+      redoStack = [];
+    }
+    lastSnapshot = current;
+    updateUndoRedoButtons();
+  }
+  function scheduleUndoCheckpoint(){
+    if(lastSnapshot === null) lastSnapshot = snapshotNow();
+    clearTimeout(undoDebounceTimer);
+    undoDebounceTimer = setTimeout(commitUndoCheckpoint, 800);
+  }
+  function performUndo(){
+    commitUndoCheckpoint();
+    if(!undoStack.length) return;
+    const current = snapshotNow();
+    const prev = undoStack.pop();
+    redoStack.push(current);
+    appData = JSON.parse(prev);
+    lastSnapshot = prev;
+    deselectBlock();
+    render();
+    schedule();
+    updateUndoRedoButtons();
+    showToast('Desfeito ↺');
+  }
+  function performRedo(){
+    if(!redoStack.length) return;
+    const current = snapshotNow();
+    const next = redoStack.pop();
+    undoStack.push(current);
+    appData = JSON.parse(next);
+    lastSnapshot = next;
+    deselectBlock();
+    render();
+    schedule();
+    updateUndoRedoButtons();
+    showToast('Refeito ↻');
+  }
+  function persist(){ commitUndoCheckpoint(); schedule(); render(); }
 
   const DB_NAME = 'sala_de_controle_db', STORE = 'kv';
   function idbOpen(){
@@ -352,9 +487,17 @@
       let h = fileHandle || await idbGet('fileHandle');
       if(!h) return connectFile();
       const ok = await verifyPermission(h, true);
-      if(ok){ fileHandle = h; setConnStatus(true); await saveToFile(); }
+      if(ok){ fileHandle = h; setConnStatus(true); hideReconnectBanner(); await saveToFile(); }
       else { fileHandle = h; setConnStatus('pending'); }
     }catch(e){ setConnStatus('pending'); }
+  }
+  function showReconnectBanner(){
+    const b = document.getElementById('reconnect-banner');
+    if(b) b.classList.remove('hidden');
+  }
+  function hideReconnectBanner(){
+    const b = document.getElementById('reconnect-banner');
+    if(b) b.classList.add('hidden');
   }
   function downloadCopy(){
     const blob = new Blob([buildHTMLSnapshot()], {type:'text/html'});
@@ -372,6 +515,8 @@
   }
   function setConnStatus(state){
     const dot = document.getElementById('status-dot');
+    if(state === 'db'){ dot.className = 'status-dot ok'; dot.title = 'Sincronizado — acessível de qualquer aparelho pelo link'; return; }
+    if(dbNS && state === 'saving'){ dot.className = 'status-dot warn'; dot.title = 'Sincronizando…'; return; }
     if(!fileSupport){ dot.className = 'status-dot'; dot.title = 'Navegador sem suporte a salvar direto — clique para baixar cópia'; return; }
     if(state === true){ dot.className = 'status-dot ok'; dot.title = 'Conectado — salvando automaticamente'; }
     else if(state === 'saving'){ dot.className = 'status-dot warn'; dot.title = 'Salvando…'; }
@@ -412,8 +557,7 @@
         <div class="tab ${p.id === appData.activePageId ? 'active' : ''}" data-page="${p.id}">
           ${lockIcon}
           <span class="tab-title editable" contenteditable="true" spellcheck="false" data-field="page-title" data-page="${p.id}">${esc(p.title)}</span>
-        </div>`;
-    }).join('') + `<button class="tab-add" title="Nova página">+</button>`;
+        </div>`;    }).join('');
   }
 
   function renderPage(){
@@ -834,6 +978,7 @@
       if(b) b.code = el.value;
       schedule();
     }
+    scheduleUndoCheckpoint();
   }
 
   // ---------- robust "start of line" detection (DOM-based, not text-serialization based) ----------
@@ -918,6 +1063,17 @@
     document.execCommand('insertHTML', false, `<a href="${esc(href)}">${esc(url)}</a>&#8203;`);
   }
 
+  // Catch-all safety net: shortly after ANY pause in typing (finished the URL and hit Enter,
+  // punctuation, or just stopped), sweep the box for plain-text URLs and turn them into real
+  // links — so it never depends on clicking somewhere else first.
+  let linkifyPassTimer = null;
+  function scheduleLinkifyPass(el){
+    clearTimeout(linkifyPassTimer);
+    linkifyPassTimer = setTimeout(() => {
+      if(document.body.contains(el) && linkifyPlainUrls(el)) syncEditable(el);
+    }, 450);
+  }
+
   document.addEventListener('input', e => {
     const el = e.target;
     if(!el.classList) return;
@@ -925,8 +1081,12 @@
       handleAutoDash(el, e);
       handleAutoCapitalize(el, e);
       linkifyOnBoundary(el, e);
+      scheduleLinkifyPass(el);
     }
-    if(el.classList.contains('tcell-content')) linkifyOnBoundary(el, e);
+    if(el.classList.contains('tcell-content')){
+      linkifyOnBoundary(el, e);
+      scheduleLinkifyPass(el);
+    }
     if(el.classList.contains('editable')) syncEditable(el);
     if(el.classList.contains('code-editor')){
       const lineCount = el.value.split('\n').length;
@@ -957,6 +1117,34 @@
       else { connectFile(); }
       return;
     }
+    if((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z'){
+      e.preventDefault();
+      performUndo();
+      return;
+    }
+    if((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'z'){
+      e.preventDefault();
+      performRedo();
+      return;
+    }
+    if((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f'){
+      e.preventDefault();
+      openSearchPanel(false);
+      return;
+    }
+    // Ctrl+H is reserved by Chrome for browser History and can't be intercepted by a page,
+    // so the "open with replace" shortcut lives on Ctrl+Alt+H instead — the ⇄ button inside
+    // the search box itself is the main way to reach it.
+    if((e.ctrlKey || e.metaKey) && e.altKey && e.key.toLowerCase() === 'h'){
+      e.preventDefault();
+      openSearchPanel(true);
+      return;
+    }
+    if(e.key === 'Escape'){
+      const panel = document.getElementById('search-panel');
+      if(panel && !panel.classList.contains('hidden')){ closeSearchPanel(); return; }
+      deselectBlock(); hideContextMenu(); return;
+    }
     if(e.key === 'Tab'){
       const codeTa = e.target.closest && e.target.closest('.code-editor');
       if(codeTa){
@@ -982,7 +1170,6 @@
         return;
       }
     }
-    if(e.key === 'Escape'){ deselectBlock(); hideContextMenu(); return; }
     if(e.key === 'Enter'){
       const sel = window.getSelection();
       if(sel && sel.rangeCount){
@@ -1533,8 +1720,12 @@
       {id:'newcode', label:'Novo bloco de código', action: () => addBlock('code', x, y)},
       {sep:true},
     ];
-    if(fileSupport) items.push({id:'connect', label: fileHandle ? 'Reconectar arquivo' : 'Conectar arquivo (salvar automático)', action: () => fileHandle ? reconnectFile() : connectFile()});
-    items.push({id:'download', label:'Baixar cópia atualizada', action: downloadCopy});
+    if(dbNS){
+      items.push({id:'syncinfo', label:'Sincronizado automaticamente (link público)', action: () => showToast('Já está sincronizado ✓')});
+    } else {
+      if(fileSupport) items.push({id:'connect', label: fileHandle ? 'Reconectar arquivo' : 'Conectar arquivo (salvar automático)', action: () => fileHandle ? reconnectFile() : connectFile()});
+      items.push({id:'download', label:'Baixar cópia atualizada', action: downloadCopy});
+    }
     items.push({sep:true});
     items.push({id:'exportjson', label:'Exportar backup (.json)', action: exportJSON});
     items.push({id:'importjson', label:'Importar backup (.json)', action: () => document.getElementById('import-input').click()});
@@ -1608,7 +1799,7 @@
     showContextMenu(e.clientX, e.clientY, pageMenuItems(x, y));
   });
 
-  document.getElementById('tab-strip').addEventListener('click', e => {
+  document.querySelector('.tab-strip-wrap').addEventListener('click', e => {
     if(e.target.closest('.tab-add')){
       showContextMenu(e.clientX, e.clientY, [
         {id:'newnormal', label:'Guia normal', action: addPage},
@@ -1638,7 +1829,7 @@
     appData.activePageId = tabEl.dataset.page;
     persist();
   });
-  document.getElementById('tab-strip').addEventListener('contextmenu', e => {
+  document.querySelector('.tab-strip-wrap').addEventListener('contextmenu', e => {
     e.preventDefault();
     const tabEl = e.target.closest('.tab');
     if(tabEl){
@@ -1674,16 +1865,211 @@
     e.target.value = '';
   });
 
+  // ---------- find & replace (Ctrl+F / Ctrl+H) ----------
+  function collectSearchTargets(){
+    const page = findPage(appData.activePageId);
+    if(!page) return [];
+    if(page.kind === 'copy'){
+      const ta = document.querySelector('.copy-textarea');
+      return ta ? [{type:'textarea', el: ta}] : [];
+    }
+    const targets = [];
+    document.querySelectorAll('#page-content .text-body, #page-content .tcell-content').forEach(el => targets.push({type:'dom', el}));
+    document.querySelectorAll('#page-content .code-editor').forEach(el => targets.push({type:'textarea', el}));
+    return targets;
+  }
+  function findAllMatches(query){
+    if(!query) return [];
+    const q = query.toLowerCase();
+    const matches = [];
+    collectSearchTargets().forEach(target => {
+      if(target.type === 'textarea'){
+        const val = target.el.value.toLowerCase();
+        let idx = 0;
+        while((idx = val.indexOf(q, idx)) !== -1){
+          matches.push({type:'textarea', el: target.el, start: idx, end: idx + q.length});
+          idx += q.length;
+        }
+      } else {
+        const walker = document.createTreeWalker(target.el, NodeFilter.SHOW_TEXT);
+        let n;
+        while((n = walker.nextNode())){
+          if(n.parentElement && n.parentElement.closest('mark.search-hit')) continue;
+          const text = n.textContent.toLowerCase();
+          let idx = 0;
+          while((idx = text.indexOf(q, idx)) !== -1){
+            matches.push({type:'dom', node: n, start: idx, end: idx + q.length});
+            idx += q.length;
+          }
+        }
+      }
+    });
+    return matches;
+  }
+  function clearSearchHighlights(){
+    document.querySelectorAll('mark.search-hit').forEach(m => {
+      const parent = m.parentNode;
+      if(!parent) return;
+      while(m.firstChild) parent.insertBefore(m.firstChild, m);
+      parent.removeChild(m);
+      parent.normalize();
+    });
+  }
+  function highlightMatches(matches){
+    clearSearchHighlights();
+    const byNode = new Map();
+    matches.forEach((m, i) => {
+      if(m.type !== 'dom') return;
+      if(!byNode.has(m.node)) byNode.set(m.node, []);
+      byNode.get(m.node).push({start: m.start, end: m.end, idx: i});
+    });
+    byNode.forEach((list, node) => {
+      list.sort((a, b) => b.start - a.start);
+      list.forEach(m => {
+        if(!node.parentNode) return;
+        try{
+          const range = document.createRange();
+          range.setStart(node, m.start);
+          range.setEnd(node, m.end);
+          const mark = document.createElement('mark');
+          mark.className = 'search-hit';
+          mark.dataset.matchIdx = m.idx;
+          range.surroundContents(mark);
+        }catch(err){ /* skip malformed range */ }
+      });
+    });
+  }
+  function updateSearchCounter(){
+    const el = document.getElementById('search-count');
+    if(!searchState || !searchState.matches.length){ el.textContent = '0/0'; return; }
+    el.textContent = (searchState.currentIndex + 1) + '/' + searchState.matches.length;
+  }
+  function goToMatch(idx){
+    if(!searchState || !searchState.matches.length) return;
+    const n = searchState.matches.length;
+    searchState.currentIndex = ((idx % n) + n) % n;
+    const m = searchState.matches[searchState.currentIndex];
+    document.querySelectorAll('mark.search-hit.current').forEach(el => el.classList.remove('current'));
+    if(m.type === 'dom'){
+      const markEl = document.querySelector(`mark.search-hit[data-match-idx="${searchState.currentIndex}"]`);
+      if(markEl){ markEl.classList.add('current'); markEl.scrollIntoView({block:'center', behavior:'smooth'}); }
+    } else {
+      m.el.focus();
+      m.el.setSelectionRange(m.start, m.end);
+      m.el.scrollIntoView({block:'center', behavior:'smooth'});
+    }
+    updateSearchCounter();
+  }
+  function runSearch(){
+    const q = document.getElementById('search-input').value;
+    const matches = findAllMatches(q);
+    searchState = {query: q, matches, currentIndex: -1};
+    highlightMatches(matches);
+    if(matches.length) goToMatch(0); else updateSearchCounter();
+  }
+  function replaceCurrentMatch(){
+    if(!searchState || !searchState.matches.length) return;
+    const m = searchState.matches[searchState.currentIndex];
+    const replacement = document.getElementById('replace-input').value;
+    if(m.type === 'textarea'){
+      const elx = m.el;
+      elx.value = elx.value.slice(0, m.start) + replacement + elx.value.slice(m.end);
+      elx.dispatchEvent(new Event('input', {bubbles: true}));
+    } else {
+      const markEl = document.querySelector(`mark.search-hit[data-match-idx="${searchState.currentIndex}"]`);
+      if(markEl){
+        const textNode = document.createTextNode(replacement);
+        const hostEditable = markEl.parentElement && markEl.parentElement.closest('.editable');
+        markEl.replaceWith(textNode);
+        if(hostEditable) syncEditable(hostEditable);
+      }
+    }
+    runSearch();
+  }
+  function replaceAllMatches(){
+    if(!searchState || !searchState.query) return;
+    let guard = 0;
+    while(searchState.matches && searchState.matches.length && guard < 3000){
+      searchState.currentIndex = 0;
+      replaceCurrentMatch();
+      guard++;
+    }
+    showToast('Substituído em todos os lugares ✓');
+  }
+  function openSearchPanel(withReplace){
+    const panel = document.getElementById('search-panel');
+    panel.classList.remove('hidden');
+    document.getElementById('replace-row').classList.toggle('hidden', !withReplace);
+    const input = document.getElementById('search-input');
+    input.focus();
+    input.select();
+    if(input.value) runSearch();
+  }
+  function closeSearchPanel(){
+    document.getElementById('search-panel').classList.add('hidden');
+    clearSearchHighlights();
+    searchState = null;
+  }
+  document.getElementById('search-input').addEventListener('input', runSearch);
+  document.getElementById('search-input').addEventListener('keydown', e => {
+    if(e.key === 'Enter'){ e.preventDefault(); goToMatch((searchState ? searchState.currentIndex : -1) + (e.shiftKey ? -1 : 1)); }
+  });
+  document.getElementById('replace-input').addEventListener('keydown', e => {
+    if(e.key === 'Enter'){ e.preventDefault(); replaceCurrentMatch(); }
+  });
+  document.getElementById('search-prev').addEventListener('click', () => goToMatch((searchState ? searchState.currentIndex : 0) - 1));
+  document.getElementById('search-next').addEventListener('click', () => goToMatch((searchState ? searchState.currentIndex : 0) + 1));
+  document.getElementById('search-close').addEventListener('click', closeSearchPanel);
+  document.getElementById('search-toggle-replace').addEventListener('click', () => {
+    document.getElementById('replace-row').classList.toggle('hidden');
+  });
+  document.getElementById('replace-one').addEventListener('click', replaceCurrentMatch);
+  document.getElementById('replace-all').addEventListener('click', replaceAllMatches);
+  document.getElementById('undo-btn').addEventListener('click', performUndo);
+  document.getElementById('reconnect-banner-btn').addEventListener('click', reconnectFile);
+  document.getElementById('redo-btn').addEventListener('click', performRedo);
+
   // ---------- init ----------
   render();
-  (async function initConn(){
+  lastSnapshot = snapshotNow();
+  updateUndoRedoButtons();
+  (async function initPersistenceBackend(){
+    if(typeof window.claude !== 'undefined' && typeof window.claude.use === 'function'){
+      try{ dbNS = await window.claude.use('db'); }catch(e){ dbNS = null; }
+    }
+    if(dbNS){
+      dbNS.doc('app/state').onSnapshot(snap => {
+        if(snap && snap.data && snap.data.pages && snap.data.pages.length){
+          const active = document.activeElement;
+          const isEditing = active && (
+            (active.classList && active.classList.contains('editable')) ||
+            active.tagName === 'TEXTAREA' || active.tagName === 'INPUT'
+          );
+          if(isEditing) return; // don't yank the cursor while the user is actively typing
+          appData = normalize(snap.data);
+          lastSnapshot = snapshotNow();
+          render();
+        } else {
+          // brand-new doc on this artifact — seed it with our current state
+          dbNS.doc('app/state').set(appData);
+        }
+        setConnStatus('db');
+      });
+      return;
+    }
     if(!fileSupport){ setConnStatus(undefined); return; }
     try{
       const h = await idbGet('fileHandle');
       if(h){
         const perm = await h.queryPermission({mode: 'readwrite'});
         fileHandle = h;
-        setConnStatus(perm === 'granted' ? true : 'pending');
+        if(perm === 'granted'){
+          setConnStatus(true);
+          if(loadedFromFallback) saveToFile(); // no click needed — permission was already valid
+        } else {
+          setConnStatus('pending');
+          showReconnectBanner(); // browsers require a real click for this one — can't be automated further
+        }
       } else setConnStatus(undefined);
     }catch(e){ setConnStatus(undefined); }
   })();
