@@ -281,7 +281,9 @@
 (function(){
   "use strict";
 
-  const LS_KEY = 'sala_de_controle_data_v13';
+  // This key is now permanent — it must NEVER change again in future updates, or the
+  // browser-recovery fallback below would silently start looking in the wrong place.
+  const LS_KEY = 'sala_de_controle_data';
   const GRID = 20;
   let fileHandle = null;
   let saveTimer = null;
@@ -396,9 +398,4 @@
     if(dbNS){
       setConnStatus('saving');
       saveTimer = setTimeout(() => {
-        dbNS.doc('app/state').set(appData).then(() => setConnStatus('db')).catch(() => setConnStatus('error'));
-      }, 500);
-      return;
-    }
-    if(fileHandle) setConnStatus('saving');
-    saveTimer = setTimeout(() =
+        dbNS.doc('app/state').set(appData).then(() => 
