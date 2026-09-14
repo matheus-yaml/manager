@@ -339,9 +339,24 @@
       const raw = (tag.textContent || '').trim();
       if(raw){ const d = JSON.parse(raw); if(d && d.pages) return normalize(d); }
     }catch(e){ console.warn('Falha ao ler dados do arquivo:', e); }
+    // Try this exact version's key first...
     try{
       const ls = localStorage.getItem(LS_KEY);
-      if(ls){ const d = JSON.parse(ls); if(d && d.pages){ loadedFromFallback = true; return normalize(d); } }
+      if(ls){ const d = JSON.parse(ls); if(d && d.pages && d.pages.length){ loadedFromFallback = true; return normalize(d); } }
+    }catch(e){}
+    // ...then fall back to ANY other version of this app's storage the browser has saved,
+    // in case the internal version tag changed between when you typed the data and now.
+    try{
+      let best = null;
+      for(let i = 0; i < localStorage.length; i++){
+        const key = localStorage.key(i);
+        if(!key || !key.startsWith('sala_de_controle_data') || key === LS_KEY) continue;
+        try{
+          const d = JSON.parse(localStorage.getItem(key));
+          if(d && d.pages && d.pages.length) best = d;
+        }catch(e){}
+      }
+      if(best){ loadedFromFallback = true; return normalize(best); }
     }catch(e){}
     return normalize(defaultData());
   }
@@ -386,18 +401,4 @@
       return;
     }
     if(fileHandle) setConnStatus('saving');
-    saveTimer = setTimeout(() => { if(fileHandle) saveToFile(); }, 700);
-  }
-
-  // ---------- undo/redo: a lightweight snapshot stack. persist() (structural changes) commits
-  // a checkpoint immediately; plain typing groups into one checkpoint after a short pause,
-  // so Ctrl+Z undoes a "burst" of typing rather than one character at a time. ----------
-  function snapshotNow(){ return JSON.stringify(appData); }
-  function updateUndoRedoButtons(){
-    const u = document.getElementById('undo-btn'), r = document.getElementById('redo-btn');
-    if(u) u.disabled = undoStack.length === 0;
-    if(r) r.disabled = redoStack.length === 0;
-  }
-  function commitUndoCheckpoint(){
-    clearTimeout(undoDebounceTimer);
-    const curr
+    saveTimer = setTimeout(() =
