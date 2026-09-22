@@ -3,7 +3,7 @@
   "SPEED": "http://netuno.live/get.php?username=xxx&password=yyy&type=m3u_plus&output=mpegts",
   "GALAXY": "http://galaxy.blcplay.com/get.php?username=xxx&password=yyy&type=m3u_plus&output=mpegts",
   "LUNAR": "http://lunar.kkrototv.fun/get.php?username=xxx&password=yyy&type=m3u_plus&output=mpegts",
-  "EXPLOSION": "http://vexiocine.site/get.php?username=xxx&password=yyy&type=m3u_plus&output=mpegts",
+  "EXPLOSION": "http://fasttv.sbs/get.php?username=xxx&password=yyy&type=m3u_plus&output=mpegts",
   "ATENA": "http://atena.kkrototv.fun/get.php?username=xxx&password=yyy&type=m3u_plus&output=mpegts",
   "FIRE": "http://fire.kkrototv.fun/get.php?username=xxx&password=yyy&type=m3u_plus&output=mpegts"
 }
