@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>const APP_VERSION = '1.0.11';</script>
+<script>const APP_VERSION = '1.0.12';</script>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -640,11 +640,14 @@ a:focus,
 #player-speed-menu button:hover{background:rgba(255,255,255,.14);}
 #player-speed-menu button.active{background:linear-gradient(135deg,var(--accent),var(--accent-2));}
 #player-seek-track:hover #player-seek-fill::after{opacity:1;}
-#player-overlay.live-mode #player-seek-track,
+/* Os números de tempo (00:00 / duração) não fazem sentido pra ao vivo,
+   então continuam escondidos. Já a barra de progresso e os botões de
+   5s passaram a aparecer também em ao vivo — ver seekBy()/seekTrack no
+   _ensurePlayerControls(): agora eles se movem dentro da janela de
+   buffer disponível (do início bufferizado até a ponta ao vivo), pra dar
+   pra "voltar um pouco" e ver de novo algo que acabou de passar. */
 #player-overlay.live-mode #player-time-current,
-#player-overlay.live-mode #player-time-duration,
-#player-overlay.live-mode #player-seek-back5,
-#player-overlay.live-mode #player-seek-fwd5{display:none;}
+#player-overlay.live-mode #player-time-duration{display:none;}
 
 /* Botão "AO VIVO": só existe fora do live-mode como elemento invisível
    (display:none), porque a barra de controles é a mesma pra filme/série/
@@ -719,7 +722,28 @@ a:focus,
 @media(max-width:640px){
   #player-controls-bottom{
     padding:10px 10px 14px;gap:6px;
-    overflow-x:auto;-webkit-overflow-scrolling:touch;
+    /* Antes tinha overflow-x:auto aqui pra rolar os botões na horizontal
+       em vez de cortar algum fora da tela. Só que overflow-x:auto força o
+       overflow-y a virar "auto" também (regra da própria spec de CSS), o
+       que cortava por cima os menus de velocidade/volume que abrem pra
+       cima (position:absolute + bottom:calc(100% + Npx)) de dentro dessa
+       mesma barra — ficavam "decapitados". Trocado por flex-wrap: se não
+       couber tudo numa linha só, quebra pra segunda linha, sem cortar
+       nada nem precisar de overflow em eixo nenhum. */
+    flex-wrap:wrap;row-gap:8px;
+    /* Empurra os controles pra cima da faixa de gestos/navegação do
+       Android. O max() garante uma folga mínima mesmo se o WebView não
+       relatar env(safe-area-inset-bottom) corretamente (valor 0) — antes
+       essa proteção nem chegava a valer porque o "padding:10px 10px 14px"
+       acima (um shorthand) sobrescrevia silenciosamente o padding-bottom
+       especial definido lá em cima no seletor base, por ter a mesma
+       especificidade e vir depois na cascata. */
+    padding-bottom:max(26px, calc(env(safe-area-inset-bottom, 0px) + 16px));
+  }
+  /* Ao vivo relatado como bem pior colado na barra do sistema — sobe
+     bem mais que filme/série nesse modo específico. */
+  #player-overlay.live-mode #player-controls-bottom{
+    padding-bottom:max(48px, calc(env(safe-area-inset-bottom, 0px) + 38px));
   }
   #player-playpause{width:34px;height:34px;flex-shrink:0;}
   #player-playpause svg{width:15px;height:15px;}
@@ -727,7 +751,10 @@ a:focus,
   .player-ctrl-btn svg{width:14px;height:14px;}
   #player-time-current,#player-time-duration{font-size:11px;min-width:32px;flex-shrink:0;}
   #player-seek-track{min-width:60px;}
-  #player-topbar{padding:12px 14px;gap:8px;}
+  #player-topbar{
+    padding:12px 14px;gap:8px;
+    padding-top:max(12px, calc(env(safe-area-inset-top, 0px) + 8px));
+  }
   #player-back,#player-close{width:32px;height:32px;font-size:17px;flex-shrink:0;}
   #player-next-episode{font-size:11px;padding:6px 10px;white-space:nowrap;}
   #player-title{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:90px;}
@@ -4392,10 +4419,18 @@ const PlayerModule = {
     });
 
     seekTrack.addEventListener('click', (e) => {
-      if(this.currentContent && this.currentContent.tipo === 'live') return;
-      if(!video.duration || isNaN(video.duration)) return;
       const rect = seekTrack.getBoundingClientRect();
       const pct = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+      if(this.currentContent && this.currentContent.tipo === 'live'){
+        const range = this._getLiveWindowRange(video);
+        if(!range) return;
+        const [start, end] = range;
+        video.currentTime = start + pct * (end - start);
+        this._updateSeekUI();
+        this._updateLiveSyncUI();
+        return;
+      }
+      if(!video.duration || isNaN(video.duration)) return;
       video.currentTime = pct * video.duration;
       this._updateSeekUI();
     });
@@ -4446,7 +4481,18 @@ const PlayerModule = {
 
   seekBy(deltaSeconds){
     const video = qs('#video-player');
-    if(this.currentContent && this.currentContent.tipo === 'live') return;
+    if(this.currentContent && this.currentContent.tipo === 'live'){
+      // Ao vivo: anda dentro da janela bufferizada (não pode ir antes do
+      // início disponível nem além da ponta ao vivo).
+      const range = this._getLiveWindowRange(video);
+      if(!range) return;
+      const [start, end] = range;
+      video.currentTime = Math.min(end, Math.max(start, video.currentTime + deltaSeconds));
+      this._updateSeekUI();
+      this._updateLiveSyncUI();
+      this._showSeekFeedback(deltaSeconds);
+      return;
+    }
     if(deltaSeconds > 0 && !video.duration) return;
     video.currentTime = Math.max(0, deltaSeconds > 0 && video.duration ? Math.min(video.duration, video.currentTime + deltaSeconds) : video.currentTime + deltaSeconds);
     this._updateSeekUI();
@@ -4471,14 +4517,27 @@ const PlayerModule = {
    * retorna null (o botão então não marca "em dia").
    */
   _getLiveEdgeTime(video){
+    const range = this._getLiveWindowRange(video);
+    return range ? range[1] : null;
+  },
+
+  /**
+   * Retorna [inicio, fim] da janela de conteúdo ao vivo disponível pra
+   * navegar (voltar um pouco e ver de novo) — "fim" é a ponta ao vivo,
+   * "inicio" é o ponto mais antigo ainda bufferizado. Prefere
+   * video.seekable (mais confiável pra isso quando o stream/hls.js
+   * expõe direito), cai pra video.buffered como alternativa pra streams
+   * (ex: mpegts.js puro) que não populam seekable corretamente.
+   */
+  _getLiveWindowRange(video){
     try{
       if(video.seekable && video.seekable.length > 0){
-        return video.seekable.end(video.seekable.length - 1);
+        return [video.seekable.start(0), video.seekable.end(video.seekable.length - 1)];
       }
     }catch(err){}
     try{
       if(video.buffered && video.buffered.length > 0){
-        return video.buffered.end(video.buffered.length - 1);
+        return [video.buffered.start(0), video.buffered.end(video.buffered.length - 1)];
       }
     }catch(err){}
     return null;
@@ -4635,6 +4694,17 @@ const PlayerModule = {
     const fill = qs('#player-seek-fill');
     const curEl = qs('#player-time-current');
     const durEl = qs('#player-time-duration');
+    if(this.currentContent && this.currentContent.tipo === 'live'){
+      // Em ao vivo a barra representa a janela bufferizada disponível
+      // (início bufferizado até a ponta ao vivo), não 0 até a duração.
+      const range = this._getLiveWindowRange(video);
+      if(range){
+        const [start, end] = range;
+        const span = end - start;
+        fill.style.width = (span > 0 ? Math.min(100, Math.max(0, ((video.currentTime - start) / span) * 100)) : 100) + '%';
+      }
+      return;
+    }
     if(video.duration && !isNaN(video.duration)){
       fill.style.width = Math.min(100, (video.currentTime/video.duration)*100) + '%';
     }
@@ -4645,7 +4715,13 @@ const PlayerModule = {
   _updateBufferedUI(){
     const video = qs('#video-player');
     const bufferedFill = qs('#player-buffered-fill');
-    if(!video.duration || isNaN(video.duration) || video.buffered.length === 0) return;
+    if(video.buffered.length === 0) return;
+    if(this.currentContent && this.currentContent.tipo === 'live'){
+      // A barra inteira representa o trecho já disponível/bufferizado.
+      bufferedFill.style.width = '100%';
+      return;
+    }
+    if(!video.duration || isNaN(video.duration)) return;
     const end = video.buffered.end(video.buffered.length - 1);
     bufferedFill.style.width = Math.min(100, (end / video.duration) * 100) + '%';
   },
