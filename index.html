@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>const APP_VERSION = '1.0.13';</script>
+<script>const APP_VERSION = '1.0.14';</script>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -6064,6 +6064,47 @@ function renderServerItem(s){
   return item;
 }
 
+/**
+ * Antes de reimportar servidor(es) "automático" (veio da URL Raw/JSON
+ * configurada em Configurações), busca aquele JSON de novo e, se o
+ * servidor ainda existir lá com uma URL diferente da que está salva,
+ * atualiza a URL salva ANTES de baixar a playlist — assim "Atualizar"
+ * passa a pegar a URL nova do JSON, em vez de ficar preso pra sempre na
+ * URL que foi salva da primeira vez que aquele servidor foi baixado.
+ * Servidor "manual" (cadastrado direto, sem passar pelo JSON) não tem
+ * de onde ressincronizar, então passa direto sem mudar nada.
+ * Falha ao buscar o JSON (ex: sem internet) não trava a atualização —
+ * só segue com a URL antiga mesmo, como sempre funcionou até aqui.
+ */
+async function resyncAutoServerUrls(servers){
+  const rawJsonCache = new Map(); // rawUrl -> json já buscado (evita rebuscar o mesmo JSON várias vezes)
+  const resynced = [];
+  for(const server of servers){
+    const rawUrl = server.tipoOrigem === 'automatico' && server.rawMeta && server.rawMeta.rawUrl;
+    if(!rawUrl){ resynced.push(server); continue; }
+    try{
+      let json = rawJsonCache.get(rawUrl);
+      if(json === undefined){
+        json = await RawModule.fetchAndParseRaw(rawUrl);
+        rawJsonCache.set(rawUrl, json);
+      }
+      const originalUrlTemplate = json[server.nome];
+      if(typeof originalUrlTemplate === 'string' && originalUrlTemplate){
+        const finalUrl = ServerModule.substituteCredentials(originalUrlTemplate, State.settings.rawUser, State.settings.rawPass);
+        const updated = await ServerModule.upsertAutoServer(server.nome, finalUrl, { rawUrl: rawUrl, originalUrlTemplate: originalUrlTemplate });
+        resynced.push(updated);
+        continue;
+      }
+      // Nome não existe mais nesse JSON (removido da lista lá na fonte) —
+      // mantém a URL antiga, não tem com o que substituir.
+    }catch(err){
+      // JSON fora do ar / erro de rede: segue com a URL antiga salva.
+    }
+    resynced.push(server);
+  }
+  return resynced;
+}
+
 async function updateSingleServer(serverId, btnEl){
   if(serverActionLocks.has(serverId)) return;
   const server = State.servers.get(serverId);
@@ -6071,7 +6112,8 @@ async function updateSingleServer(serverId, btnEl){
   if(State.ui.isImporting){ showToast('Já existe uma importação em andamento.', 'error'); return; }
   serverActionLocks.add(serverId);
   if(btnEl){ btnEl.disabled = true; btnEl.textContent = 'Atualizando...'; }
-  await runImportWithProgressModal([server]);
+  const [freshServer] = await resyncAutoServerUrls([server]);
+  await runImportWithProgressModal([freshServer]);
   serverActionLocks.delete(serverId);
   Router.render();
 }
@@ -6092,7 +6134,8 @@ async function updateAllServers(){
   const allServers = Array.from(State.servers.values());
   if(allServers.length === 0){ showToast('Nenhum servidor cadastrado.', 'error'); return; }
   if(State.ui.isImporting){ showToast('Já existe uma importação em andamento.', 'error'); return; }
-  await runImportWithProgressModal(allServers);
+  const freshServers = await resyncAutoServerUrls(allServers);
+  await runImportWithProgressModal(freshServers);
 }
 
 function openAddServerModal(){
