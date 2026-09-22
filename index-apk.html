@@ -1949,11 +1949,40 @@ function injectMonitorIntoHTML(html){
         createMonitorScript();
 
 
+    /*
+     * IMPORTANTE (ponte do Cordova): document.write() troca o documento
+     * inteiro (document.open/write/close), e isso derruba junto qualquer
+     * script já carregado antes — incluindo o cordova.js e toda a ponte
+     * nativa dele (deviceready, o canal do evento "backbutton", etc).
+     * Como o index.html buscado do GitHub não inclui <script src="cordova.js">
+     * (ele não precisa saber que roda dentro de um app Cordova), sem isso
+     * o botão de voltar físico/gesto do Android nunca chegava a ser
+     * escutado de verdade pelo listener de "backbutton" do app — daí ele
+     * sempre caía no comportamento padrão do Cordova (sair do app).
+     * Por isso a gente injeta o cordova.js de novo aqui, direto no HTML
+     * que vai ser escrito no novo documento, pra ponte nativa ser
+     * reestabelecida nesse novo contexto. Fora do APK (ex: hospedado
+     * direto no GitHub Pages, aberto num navegador comum) esse arquivo
+     * simplesmente não existe nesse caminho e o <script> falha em
+     * silêncio, sem quebrar nada.
+     */
+    const cordovaBridge =
+        '<script src="cordova.js"><\/script>';
+
+    const htmlWithBridge =
+        /<head[^>]*>/i.test(html)
+            ? html.replace(
+                /<head[^>]*>/i,
+                (match) => match + cordovaBridge
+            )
+            : cordovaBridge + html;
+
+
     if(
-        /<\/body\s*>/i.test(html)
+        /<\/body\s*>/i.test(htmlWithBridge)
     ){
 
-        return html.replace(
+        return htmlWithBridge.replace(
             /<\/body\s*>/i,
             monitor +
             "</body>"
@@ -1961,7 +1990,7 @@ function injectMonitorIntoHTML(html){
     }
 
 
-    return html +
+    return htmlWithBridge +
         monitor;
 }
 
