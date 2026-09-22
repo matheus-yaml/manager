@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>const APP_VERSION = '1.0.12';</script>
+<script>const APP_VERSION = '1.0.13';</script>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1872,11 +1872,20 @@ const QueryModule = {
    * 'nextunique' nem sempre pula duplicados de verdade dependendo do
    * navegador) — era o motivo de Filmes/Séries/Ao Vivo demorarem
    * proporcionalmente ao tamanho da biblioteca só pra abrir a tela. */
-  async getCategoriesForType(type){
+  async getCategoriesForType(type, serverId){
     const field = type === 'movie' ? 'movieCategories' : 'liveCategories';
     const set = new Set();
-    for(const server of State.servers.values()){
-      for(const cat of (server[field] || [])) set.add(cat);
+    // Com um servidor específico selecionado, só junta as categorias
+    // DAQUELE servidor — antes ignorava o filtro e sempre juntava as
+    // categorias de todos os servidores, então o dropdown mostrava opções
+    // que nem existiam no servidor escolhido.
+    if(serverId && serverId !== 'all'){
+      const server = State.servers.get(serverId);
+      if(server) for(const cat of (server[field] || [])) set.add(cat);
+    } else {
+      for(const server of State.servers.values()){
+        for(const cat of (server[field] || [])) set.add(cat);
+      }
     }
     return Array.from(set).sort();
   },
@@ -1958,9 +1967,20 @@ const QueryModule = {
     });
   },
 
-  async getCategoriesForSeries(){
-    const values = await IDB.getDistinctIndexValues(STORES.seriesSummary, 'categorias');
-    return values.filter(Boolean).sort();
+  async getCategoriesForSeries(serverId){
+    // Mesmo bug do getCategoriesForType, versão séries: sem filtrar por
+    // servidor, varria o índice 'categorias' da store inteira (todas as
+    // séries de todos os servidores misturadas).
+    if(!serverId || serverId === 'all'){
+      const values = await IDB.getDistinctIndexValues(STORES.seriesSummary, 'categorias');
+      return values.filter(Boolean).sort();
+    }
+    const records = await IDB.getByIndex(STORES.seriesSummary, 'serverId', serverId);
+    const set = new Set();
+    for(const r of records){
+      for(const c of (r.categorias || [])) if(c) set.add(c);
+    }
+    return Array.from(set).sort();
   },
 
   async getServersForSeries(){
@@ -5424,8 +5444,8 @@ async function loadTypePageData(type, filters, pageSize){
   const promise = (async () => {
     const metaPromise = cachedMeta ? Promise.resolve(cachedMeta) : (
       type === 'series'
-        ? Promise.all([QueryModule.getServersForSeries(), QueryModule.getCategoriesForSeries()]).then(([s,c]) => ({ serverIds:s, catOptions:c }))
-        : Promise.all([QueryModule.getServersForType(type), QueryModule.getCategoriesForType(type)]).then(([s,c]) => ({ serverIds:s, catOptions:c }))
+        ? Promise.all([QueryModule.getServersForSeries(), QueryModule.getCategoriesForSeries(filters.server)]).then(([s,c]) => ({ serverIds:s, catOptions:c }))
+        : Promise.all([QueryModule.getServersForType(type), QueryModule.getCategoriesForType(type, filters.server)]).then(([s,c]) => ({ serverIds:s, catOptions:c }))
     );
     const pagePromise = type === 'series'
       ? QueryModule.getSeriesPage(filters, filters.page, pageSize)
@@ -5465,9 +5485,9 @@ async function renderListView(type, titleLabel, container){
 
   if(serverIds.length > 0){
     const chipRow = el('div', { class:'chip-row' });
-    chipRow.appendChild(el('button', { class:'chip' + (filters.server==='all'?' active':''), onclick:()=>{ filters.server='all'; filters.page=1; Router.render(); } }, ['Todos']));
+    chipRow.appendChild(el('button', { class:'chip' + (filters.server==='all'?' active':''), onclick:()=>{ filters.server='all'; filters.category='all'; filters.page=1; Router.render(); } }, ['Todos']));
     for(const sid of serverIds){
-      chipRow.appendChild(el('button', { class:'chip' + (filters.server===sid?' active':''), onclick:((id)=>()=>{ filters.server=id; filters.page=1; Router.render(); })(sid) }, [getServerName(sid)]));
+      chipRow.appendChild(el('button', { class:'chip' + (filters.server===sid?' active':''), onclick:((id)=>()=>{ filters.server=id; filters.category='all'; filters.page=1; Router.render(); })(sid) }, [getServerName(sid)]));
     }
     container.appendChild(chipRow);
   }
@@ -5517,9 +5537,9 @@ async function renderSeriesListView(container){
 
   if(serverIds.length > 0){
     const chipRow = el('div', { class:'chip-row' });
-    chipRow.appendChild(el('button', { class:'chip'+(filters.server==='all'?' active':''), onclick:()=>{ filters.server='all'; filters.page=1; Router.render(); } }, ['Todos']));
+    chipRow.appendChild(el('button', { class:'chip'+(filters.server==='all'?' active':''), onclick:()=>{ filters.server='all'; filters.category='all'; filters.page=1; Router.render(); } }, ['Todos']));
     for(const sid of serverIds){
-      chipRow.appendChild(el('button', { class:'chip'+(filters.server===sid?' active':''), onclick:((id)=>()=>{ filters.server=id; filters.page=1; Router.render(); })(sid) }, [getServerName(sid)]));
+      chipRow.appendChild(el('button', { class:'chip'+(filters.server===sid?' active':''), onclick:((id)=>()=>{ filters.server=id; filters.category='all'; filters.page=1; Router.render(); })(sid) }, [getServerName(sid)]));
     }
     container.appendChild(chipRow);
   }
