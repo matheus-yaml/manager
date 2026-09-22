@@ -2187,4 +2187,4388 @@ function intersectSets(a, b){
 
 /* ======================================================================
    SEARCH MODULE
-   ===========================================
+   ====================================================================== */
+let searchDebounceTimer = null;
+let activeSearchOverlay = null;
+let lastSearchState = null; // { term, results } — evita repetir a mesma busca no banco
+
+function openSearchPopup(term, initialFilters){
+  if(activeSearchOverlay) return activeSearchOverlay; // já tem um aberto, não duplica
+  let currentResults = { movie:[], live:[], series:[] };
+  let activeType = (initialFilters && initialFilters.activeType) || 'all';
+  let activeServer = (initialFilters && initialFilters.activeServer) || 'all';
+  let searchToken = 0;
+  let debounceT = null;
+
+  const overlay = el('div', { class:'modal-overlay' });
+  const box = el('div', { class:'modal-box', style:'max-width:min(92vw, 960px);' });
+
+  function closePopup(preserveInput){
+    overlay.remove();
+    activeSearchOverlay = null;
+    if(!preserveInput){
+      const topbarInput = qs('#global-search');
+      if(topbarInput){ topbarInput.value = ''; }
+      const clearBtn = qs('#global-search-clear');
+      if(clearBtn){ clearBtn.style.display = 'none'; }
+    }
+  }
+
+  const closeBtn = el('span', { class:'modal-close-x' }, ['×']);
+  closeBtn.addEventListener('click', ()=>closePopup(false));
+  box.appendChild(el('h3', {}, ['Buscar', closeBtn]));
+
+  const input = el('input', { type:'text', placeholder:'Buscar filmes, séries, canais...', style:'width:100%;margin-bottom:12px;' });
+  box.appendChild(input);
+
+  const tabsRow = el('div', { class:'chip-row' });
+  const serverRow = el('div', { class:'chip-row', style:'flex-wrap:wrap;' });
+  const body = el('div');
+  box.appendChild(tabsRow);
+  box.appendChild(serverRow);
+  box.appendChild(body);
+
+  overlay.appendChild(box);
+  qs('#modal-root').appendChild(overlay);
+
+  // Clicar fora da caixa (no fundo escurecido) fecha o popup, igual ao X.
+  overlay.addEventListener('mousedown', function(e){ if(e.target === overlay) closePopup(false); });
+
+  function countByServer(items){
+    return activeServer==='all' ? items.length : items.filter(i => i.serverId===activeServer).length;
+  }
+
+  function renderTabs(){
+    tabsRow.innerHTML = '';
+    const counts = {
+      all: countByServer(currentResults.movie) + countByServer(currentResults.live) + countByServer(currentResults.series),
+      series: countByServer(currentResults.series), movie: countByServer(currentResults.movie), live: countByServer(currentResults.live)
+    };
+    const labels = [['all','Tudo'], ['series','Séries'], ['movie','Filmes'], ['live','Ao Vivo']];
+    for(const [key,label] of labels){
+      tabsRow.appendChild(el('button', { class:'chip'+(activeType===key?' active':''), onclick:((k)=>()=>{ activeType=k; renderResults(); })(key) }, [label + ' (' + counts[key] + ')']));
+    }
+  }
+
+  function renderServerChips(){
+    serverRow.innerHTML = '';
+    if(State.servers.size === 0) return;
+    serverRow.appendChild(el('button', { class:'chip'+(activeServer==='all'?' active':''), onclick:()=>{ activeServer='all'; renderServerChips(); renderResults(); } }, ['Todos os servidores']));
+    for(const [id, s] of State.servers){
+      serverRow.appendChild(el('button', { class:'chip'+(activeServer===id?' active':''), onclick:((sid)=>()=>{ activeServer=sid; renderServerChips(); renderResults(); })(id) }, [s.nome]));
+    }
+  }
+
+  function renderResults(){
+    body.innerHTML = '';
+    renderTabs();
+    const groups = [];
+    if(activeType==='all' || activeType==='series') groups.push(['Séries', currentResults.series, renderSeriesCard]);
+    if(activeType==='all' || activeType==='movie') groups.push(['Filmes', currentResults.movie, renderContentCard]);
+    if(activeType==='all' || activeType==='live') groups.push(['Ao Vivo', currentResults.live, renderContentCard]);
+
+    let any = false;
+    for(const [label, items, renderFn] of groups){
+      const filtered = activeServer==='all' ? items : items.filter(i => i.serverId===activeServer);
+      if(filtered.length===0) continue;
+      any = true;
+      body.appendChild(el('div', { class:'server-section-title' }, [label + ' (' + filtered.length + ')']));
+      const grid = el('div', { class:'card-grid' });
+      for(const item of filtered){ grid.appendChild(renderFn(item)); }
+      body.appendChild(grid);
+    }
+    if(!any) body.appendChild(renderEmptyState('🔍', 'Nada encontrado', 'Nenhum resultado com esses filtros.'));
+  }
+
+  function runSearch(val){
+    if(lastSearchState && lastSearchState.term === val){
+      currentResults = lastSearchState.results;
+      activeType = 'all';
+      renderServerChips();
+      renderResults();
+      return;
+    }
+    const myToken = ++searchToken;
+    body.innerHTML = '';
+    body.appendChild(el('div', { class:'loader-inline' }, [el('div',{class:'spinner'}), 'Buscando...']));
+    GlobalSearchModule.search(val).then(function(results){
+      if(myToken !== searchToken) return; // usuário já digitou de novo
+      currentResults = results;
+      lastSearchState = { term: val, results: results };
+      activeType = 'all';
+      renderServerChips(); // usa State.servers, já em memória — instantâneo
+      renderResults();
+    }).catch(function(){
+      if(myToken !== searchToken) return;
+      body.innerHTML = '';
+      body.appendChild(renderEmptyState('⚠️', 'Erro na busca', 'Não foi possível concluir a busca.'));
+    });
+  }
+
+  // Único ponto de debounce (500ms sem digitar): toda entrada de texto
+  // — inclusive o texto inicial vindo da caixa da topbar — passa por aqui.
+  function scheduleSearch(val){
+    clearTimeout(debounceT);
+    if(!val){ searchToken++; body.innerHTML = ''; tabsRow.innerHTML=''; renderServerChips(); return; }
+    debounceT = setTimeout(function(){ runSearch(val); }, 500);
+  }
+
+  input.addEventListener('input', function(e){
+    const val = e.target.value;
+    const topbarInput = qs('#global-search');
+    if(topbarInput) topbarInput.value = val; // mantém sincronizado pra não "perder" o texto ao reabrir
+    scheduleSearch(val.trim());
+  });
+
+  renderServerChips();
+  if(term){
+    input.value = term;
+    input.focus();
+    input.setSelectionRange(term.length, term.length); // cursor no fim, não no início
+    scheduleSearch(term);
+  } else {
+    input.focus();
+  }
+
+  activeSearchOverlay = { overlay, input, close: closePopup, getFilters: () => ({ activeType, activeServer }) };
+  return activeSearchOverlay;
+}
+
+/* ======================================================================
+   PARSER MODULE - M3U/M3U8 parsing & classification
+   ====================================================================== */
+const VIDEO_EXTENSIONS = ['.mp4','.mkv','.avi','.mov','.webm','.m4v','.mpg','.mpeg','.flv','.wmv'];
+const SERIES_PATTERNS = [
+  /s\d{1,2}\s?e\d{1,3}/i,
+  /epis[oó]dio/i,
+  /episode/i,
+  /season/i
+];
+
+// Palavras/frases no group-title que indicam Ao Vivo. Comparação é feita
+// após normalizar (minúsculas, sem acento, sem pontuação/espaços) tanto a
+// categoria quanto estas palavras, então maiúsculas/minúsculas e acentos não importam.
+const LIVE_GROUP_KEYWORDS = [
+  'FILMES','CINE','TELECINE','HBO','SERIES','SÉRIES','24H','ANIME','DESENHO','CANAIS',
+  'ABERTOS','BAND','GLOBO','RECORD','RECORDTV','SBT',
+  'NOTICIAS','ESPORTES','PAY-PER-VIEW','PPV','ESPN','SPORTV','PREMIERE','DAZN','UFC','COMBATE','LUTAS','NBA','CHAMPIONS LEAGUE','JOGOS DO DIA','CAZÉ TV','GOAT','SPORTS','SPORTYNET','PARAMOUNT','DISNEY','MAX','HBO MAX','APPLE TV','YOUTUBE',
+  'RELIGIOSOS','CATOLICOS','ESPIRITA','RADIOS','RADIO',
+  'AGRO','DISCOVERY','DOCUMENTÁRIOS','INFANTIS','MUSICA','VARIEDADES','PUBLICOS','PLUTO TV','PORTUGAL','ARGENTINA','CANADA','U.S.A'
+];
+
+function normalizeForKeywordMatch(str){
+  return normalizeText(str).replace(/[^a-z0-9]/g, '');
+}
+
+const LIVE_GROUP_KEYWORDS_NORMALIZED = LIVE_GROUP_KEYWORDS.map(normalizeForKeywordMatch);
+
+const ParserModule = {
+
+  /**
+   * Parses raw M3U text into array of raw entries: { attrs: {}, name, url }
+   * Ignores invalid entries individually without stopping the whole parse.
+   */
+  parseM3U(text){
+    const entries = [];
+    if(!text) return entries;
+    // Normalize line endings
+    const lines = text.split(/\r\n|\r|\n/);
+    let pendingExtinf = null;
+
+    for(let i=0;i<lines.length;i++){
+      const line = lines[i];
+      if(line === undefined) continue;
+      const trimmed = line.trim();
+      if(!trimmed) continue;
+
+      if(trimmed.charAt(0) === '#'){
+        if(/^#EXTINF/i.test(trimmed)){
+          try{
+            pendingExtinf = ParserModule.parseExtinfLine(trimmed);
+          }catch(err){
+            pendingExtinf = null;
+          }
+        }
+        // ignore other directives (#EXTM3U, #EXTGRP, #EXTVLCOPT, etc.)
+        continue;
+      }
+
+      // This is a URL line (not starting with #)
+      if(pendingExtinf){
+        try{
+          const url = trimmed;
+          if(url){
+            entries.push({
+              url: url,
+              name: pendingExtinf.name || url,
+              tvgId: pendingExtinf.tvgId || '',
+              tvgName: pendingExtinf.tvgName || '',
+              tvgLogo: pendingExtinf.tvgLogo || '',
+              groupTitle: pendingExtinf.groupTitle || 'Sem categoria'
+            });
+          }
+        }catch(err){
+          // ignore invalid entry, continue parsing
+        }
+        pendingExtinf = null;
+      }
+      // If there's a URL line with no preceding EXTINF, skip it individually.
+    }
+    return entries;
+  },
+
+  /**
+   * Parses a single #EXTINF line into attributes + display name.
+   * Supports quotes, unicode, emojis, extra params, different real-world formats.
+   */
+  parseExtinfLine(line){
+    const result = { tvgId:'', tvgName:'', tvgLogo:'', groupTitle:'', name:'' };
+    // Attributes are of the form key="value" (value may contain anything except unescaped quotes)
+    const attrRegex = /([a-zA-Z0-9\-]+)="([^"]*)"/g;
+    let m;
+    while((m = attrRegex.exec(line)) !== null){
+      const key = m[1].toLowerCase();
+      const val = m[2];
+      if(key === 'tvg-id') result.tvgId = val;
+      else if(key === 'tvg-name') result.tvgName = val;
+      else if(key === 'tvg-logo') result.tvgLogo = val;
+      else if(key === 'group-title') result.groupTitle = val;
+    }
+    // The display name is everything after the LAST comma in the line
+    const lastComma = line.lastIndexOf(',');
+    if(lastComma !== -1 && lastComma < line.length - 1){
+      result.name = line.substring(lastComma + 1).trim();
+    } else if(result.tvgName){
+      result.name = result.tvgName;
+    }
+    if(!result.name) result.name = result.tvgName || 'Sem nome';
+    return result;
+  },
+
+  /**
+   * Classification order:
+   *   1. Séries — padrões no nome (SxxExx, "episódio", "episode", "season").
+   *   2. Filmes — URL termina em extensão de vídeo conhecida.
+   *   3. Ao Vivo — URL termina em "/ts", contém "m3u8", ou termina em ".ts".
+   *   4. Ao Vivo — group-title contém alguma palavra-chave de canal ao vivo.
+   *   5. Padrão (o que sobrar de tudo acima): Filme.
+   */
+  classify(name, url, categoria){
+    const lowerName = (name || '').toLowerCase();
+    const rawUrl = url || '';
+    const lowerUrl = rawUrl.toLowerCase();
+
+    // 1. Series check (highest priority)
+    for(const pattern of SERIES_PATTERNS){
+      if(pattern.test(lowerName)){
+        return 'series';
+      }
+    }
+
+    // 2. Movie check via video extension in URL
+    for(const ext of VIDEO_EXTENSIONS){
+      if(lowerUrl.indexOf(ext) !== -1){
+        return 'movie';
+      }
+    }
+
+    // 3. URL shape typical of raw live streams: ends with "/ts", contains
+    // "m3u8" anywhere, or ends with ".ts". Only reads the URL — never
+    // modifies/strips it.
+    if(/\/ts(\?.*)?$/i.test(rawUrl) || lowerUrl.indexOf('m3u8') !== -1 || /\.ts(\?.*)?$/i.test(rawUrl)){
+      return 'live';
+    }
+
+    // 4. group-title contains a known live-channel keyword
+    if(categoria){
+      const normCat = normalizeForKeywordMatch(categoria);
+      for(const kw of LIVE_GROUP_KEYWORDS_NORMALIZED){
+        if(kw && normCat.indexOf(kw) !== -1){
+          return 'live';
+        }
+      }
+    }
+
+    // 5. Default: everything else falls into Filmes
+    return 'movie';
+  },
+
+  /**
+   * Extracts the base series name by removing episode patterns.
+   * Does not mutate the original stored name; used only for grouping/display.
+   */
+  extractSeriesBaseName(name){
+    if(!name) return 'Desconhecida';
+    let base = name;
+    base = base.replace(/s\d{1,2}\s?e\d{1,3}/gi, '');
+    base = base.replace(/\b\d{1,2}x\d{1,3}\b/gi, '');
+    base = base.replace(/temporada\s?\d+/gi, '');
+    base = base.replace(/season\s?\d+/gi, '');
+    base = base.replace(/epis[oó]dio\s?\d*/gi, '');
+    base = base.replace(/episode\s?\d*/gi, '');
+    base = base.replace(/[-_.]+$/g, '');
+    base = base.replace(/\s{2,}/g, ' ').trim();
+    base = base.replace(/[\-\|]+$/,'').trim();
+    if(!base) base = name.trim();
+    return base;
+  },
+
+  /**
+   * Extracts season/episode numbers from a name for sorting/display purposes.
+   */
+  extractSeasonEpisode(name){
+    if(!name) return { season: 1, episode: 0 };
+    const se = ParserModule.extractSeasonEpisodeStrict(name);
+    return se || { season: 1, episode: 0 };
+  },
+
+  /** Igual à de cima, mas retorna null quando não consegue reconhecer
+   * nenhum padrão — usada só pra decidir com segurança se é seguro
+   * compactar o nome do episódio (não dá pra reconstruir se não sabemos
+   * se a extração deu certo). */
+  extractSeasonEpisodeStrict(name){
+    if(!name) return null;
+    let m = name.match(/s(\d{1,2})\s?e(\d{1,3})/i);
+    if(m) return { season: parseInt(m[1],10), episode: parseInt(m[2],10) };
+    m = name.match(/\b(\d{1,2})x(\d{1,3})\b/i);
+    if(m) return { season: parseInt(m[1],10), episode: parseInt(m[2],10) };
+    m = name.match(/temporada\s?(\d+).*?epis[oó]dio\s?(\d+)/i);
+    if(m) return { season: parseInt(m[1],10), episode: parseInt(m[2],10) };
+    return null;
+  },
+
+  /**
+   * Converts a raw parsed entry + serverId into a content object ready for storage.
+   * Returns null if entry is invalid (missing url/name).
+   */
+  buildContent(entry, serverId){
+    try{
+      if(!entry || !entry.url) return null;
+      const name = entry.name || entry.tvgName || '';
+      if(!name) return null;
+      const categoria = entry.groupTitle || 'Sem categoria';
+      const tipo = ParserModule.classify(name, entry.url, categoria);
+      const seriesKey = tipo === 'series' ? (serverId + '::' + normalizeText(ParserModule.extractSeriesBaseName(name))) : null;
+      return {
+        id: uid('c'),
+        serverId: serverId,
+        nome: name,
+        url: entry.url,
+        logo: entry.tvgLogo || '',
+        tipo: tipo,
+        categoria: categoria,
+        seriesKey: seriesKey,
+        favorito: false
+      };
+    }catch(err){
+      return null;
+    }
+  },
+
+  /** Constrói os registros de resumo de série (1 por série) a partir de um lote de conteúdos recém-processados. */
+  buildSeriesSummaries(contents, serverId){
+    const map = new Map();
+    const now = Date.now();
+    for(const c of contents){
+      if(c.tipo !== 'series') continue;
+      let s = map.get(c.seriesKey);
+      if(!s){
+        s = { key: c.seriesKey, serverId: serverId, name: ParserModule.extractSeriesBaseName(c.nome), logo: c.logo || '', categorias: [], episodeCount: 0, updatedAt: now, _seasons: new Set() };
+        map.set(c.seriesKey, s);
+      }
+      s.episodeCount++;
+      if(!s.logo && c.logo) s.logo = c.logo;
+      if(c.categoria && s.categorias.indexOf(c.categoria) === -1) s.categorias.push(c.categoria);
+      const se = ParserModule.extractSeasonEpisode(c.nome);
+      s._seasons.add(se.season);
+    }
+    return Array.from(map.values()).map(s => {
+      s.seasonCount = s._seasons.size;
+      delete s._seasons; // Set não vai pro IndexedDB, só o número interessa
+      return s;
+    });
+  }
+};
+
+/**
+ * Versão focada em velocidade máxima: grava conteúdos + resumo de séries
+ * numa ÚNICA transação do IndexedDB (uma única confirmação/commit no disco,
+ * em vez de duas ou mais). Não faz fatiamento em lotes nem cede a thread
+ * entre gravações — a tela fica "congelada" durante o salvamento (sem
+ * atualizar a barra de progresso item a item), mas isso é bem mais rápido
+ * porque elimina o overhead de abrir/confirmar múltiplas transações e de
+ * ceder controle ao navegador repetidamente. Uso pretendido: apps internos
+ * onde responsividade da UI durante o salvamento não importa, só velocidade.
+ */
+function saveAllInOneTransaction(contents, seriesSummaries, episodeRecords){
+  return new Promise((resolve, reject)=>{
+    try{
+      const tx = IDB.tx([STORES.contents, STORES.seriesSummary, STORES.seriesEpisodes], 'readwrite', { durability: 'relaxed' });
+      const contentStore = tx.objectStore(STORES.contents);
+      for(const v of contents) contentStore.put(v);
+      const seriesStore = tx.objectStore(STORES.seriesSummary);
+      for(const v of (seriesSummaries||[])) seriesStore.put(v);
+      const episodesStore = tx.objectStore(STORES.seriesEpisodes);
+      for(const v of (episodeRecords||[])) episodesStore.put(v);
+      tx.oncomplete = ()=> resolve();
+      tx.onerror = (e)=> reject(e.target.error);
+    }catch(err){ reject(err); }
+  });
+}
+
+function tallyCounts(contents){
+  const counts = { movie:0, series:0, live:0 };
+  for(const c of contents){ if(counts[c.tipo] !== undefined) counts[c.tipo]++; }
+  return counts;
+}
+
+/**
+ * Elimina a repetição maciça de URL entre itens do mesmo servidor. URLs de
+ * IPTV normalmente compartilham o mesmo "caminho base" (host, porta,
+ * usuário, senha, pasta) entre centenas/milhares de itens — só o pedaço
+ * final (o ID/arquivo) muda. Em vez de guardar a URL inteira em cada
+ * registro, guardamos um dicionário pequeno de prefixos (descoberto
+ * automaticamente, sem assumir que existe só 1 padrão por servidor — um
+ * mesmo servidor pode ter caminhos diferentes pra filme/série/ao vivo) e,
+ * em cada item, só a referência ao prefixo + o pedaço que sobra.
+ *
+ * Retorna a lista de prefixos descobertos (pra guardar no registro do
+ * servidor). Muda os objetos de `contents` in-place.
+ */
+/**
+ * Mecanismo genérico de prefixo+sufixo: dado um campo (ex: 'url' ou
+ * 'logo'), descobre automaticamente os padrões repetidos naquele campo
+ * entre os itens (comparando tudo até a última barra) e troca o valor
+ * cheio por uma referência pequena (id do prefixo + o resto). Funciona
+ * mesmo quando os valores não são idênticos, só compartilham o mesmo
+ * "caminho base" — como capas do TMDB, que têm domínio+pasta iguais mas
+ * arquivo final diferente por episódio.
+ */
+function compactField(contents, fieldName, prefixFieldName, suffixFieldName){
+  const prefixToId = new Map();
+  const prefixList = [];
+  for(const c of contents){
+    const value = c[fieldName];
+    if(!value) continue;
+    const slashIdx = value.lastIndexOf('/');
+    // Sem barra útil pra dividir (ou barra bem no final, sem nada depois) —
+    // não dá pra compactar esse item com segurança, mantém o valor inteiro.
+    if(slashIdx === -1 || slashIdx === value.length - 1) continue;
+    const prefix = value.slice(0, slashIdx + 1);
+    const suffix = value.slice(slashIdx + 1);
+    let pid = prefixToId.get(prefix);
+    if(pid === undefined){
+      pid = prefixList.length;
+      prefixList.push(prefix);
+      prefixToId.set(prefix, pid);
+    }
+    c[prefixFieldName] = pid;
+    c[suffixFieldName] = suffix;
+    delete c[fieldName];
+  }
+  return prefixList;
+}
+
+function compactUrls(contents){
+  return compactField(contents, 'url', 'urlPrefixId', 'urlSuffix');
+}
+
+/** Reconstrói a URL completa de um item. Compatível com dados antigos
+ * (importados antes dessa otimização), que ainda têm o campo `url` cheio. */
+function resolveContentUrl(content){
+  if(content.url) return content.url;
+  if(content.urlPrefixId === undefined) return '';
+  const server = State.servers.get(content.serverId);
+  if(!server || !server.urlPrefixes) return '';
+  const prefix = server.urlPrefixes[content.urlPrefixId];
+  return (prefix || '') + (content.urlSuffix || '');
+}
+
+/**
+ * Passo 1 da compactação de capa, específico de série: se a capa do
+ * episódio é IDÊNTICA à da série (caso mais comum), nem guarda nada — usa
+ * a da série direto. O que sobrar (capas diferentes por episódio, ou
+ * capas de filme/canal ao vivo, que nunca têm "capa da série" pra
+ * comparar) segue pro passo 2 (compactCoverLogos), que compacta por
+ * prefixo+sufixo — cobre inclusive o caso de capas diferentes mas do
+ * mesmo domínio/pasta (ex: TMDB com um arquivo por episódio).
+ */
+function omitSeriesLogosIfIdentical(contents, seriesSummaries){
+  const logoBySeriesKey = new Map();
+  for(const s of seriesSummaries) logoBySeriesKey.set(s.key, s.logo);
+  for(const c of contents){
+    if(c.tipo !== 'series' || !c.logo) continue;
+    if(c.logo === logoBySeriesKey.get(c.seriesKey)) delete c.logo;
+  }
+}
+
+/** Passo 2: compacta por prefixo+sufixo a capa de TODOS os itens que
+ * sobraram com capa própria — filme, série (as que não foram omitidas no
+ * passo 1) e ao vivo, todos juntos, reaproveitando o mesmo dicionário de
+ * prefixos (capas do mesmo servidor costumam vir do mesmo CDN/domínio,
+ * então filme e série frequentemente reaproveitam o mesmo prefixo). */
+function compactCoverLogos(contents){
+  return compactField(contents, 'logo', 'logoPrefixId', 'logoSuffix');
+}
+
+/** Reconstrói a capa de um item. Prioridade: capa própria compactada > capa
+ * própria antiga (campo `logo` cheio, dado pré-otimização) > capa da série
+ * (quando foi omitida por ser idêntica) > vazio. */
+function resolveContentLogo(content, seriesLogoFallback){
+  if(content.logo) return content.logo;
+  if(content.logoPrefixId !== undefined){
+    const server = State.servers.get(content.serverId);
+    const prefix = server && server.logoPrefixes ? server.logoPrefixes[content.logoPrefixId] : '';
+    return (prefix || '') + (content.logoSuffix || '');
+  }
+  return seriesLogoFallback || '';
+}
+
+/**
+ * O nome de cada episódio ("Sila Prisioneira do Amor S01E07") repete o
+ * nome da série inteiro, que já é guardado uma vez só no resumo. Quando dá
+ * pra reconhecer com segurança o padrão de temporada/episódio (via
+ * extractSeasonEpisodeStrict), guarda só os dois números — o nome de
+ * exibição é remontado na hora ("nome da série" + "S01E07"). Quando NÃO dá
+ * pra reconhecer o padrão (nomeação irregular), mantém o nome original
+ * inteiro, sem risco de perder informação.
+ */
+function compactEpisodeNames(contents, seriesSummaries){
+  const nameBySeriesKey = new Map();
+  for(const s of seriesSummaries) nameBySeriesKey.set(s.key, s.name);
+  for(const c of contents){
+    if(c.tipo !== 'series' || !c.nome) continue;
+    const se = ParserModule.extractSeasonEpisodeStrict(c.nome);
+    if(!se) continue; // padrão não reconhecido — mantém o nome cheio, sem risco
+    c.season = se.season;
+    c.episode = se.episode;
+    delete c.nome;
+  }
+}
+
+/** Reconstrói o nome de exibição de um item. Filme/ao vivo e séries com
+ * nomeação irregular (extração falhou) sempre têm `nome` cheio. Episódios
+ * compactados reconstroem a partir do nome da série + temporada/episódio. */
+function resolveContentName(content, seriesName){
+  if(content.nome) return content.nome;
+  if(content.season !== undefined && content.episode !== undefined){
+    const s = String(content.season).padStart(2, '0');
+    const e = String(content.episode).padStart(2, '0');
+    return (seriesName || '') + ' S' + s + 'E' + e;
+  }
+  return '';
+}
+
+/* ======================================================================
+   COMPRESSÃO INCREMENTAL — versão "streaming" das compressões acima
+   ------------------------------------------------------------------
+   As funções compactUrls/compactCoverLogos/compactEpisodeNames/
+   buildSeriesSummaries fazem cada uma sua PRÓPRIA passada completa pelo
+   array de conteúdos, depois que TUDO já foi processado — são 4 passadas
+   separadas, e "salvar" só começa depois da última.
+   Aqui é a mesma lógica, mas aplicada ITEM A ITEM, numa passada só,
+   conforme cada item é construído durante o parse. Isso permite: (1) uma
+   única passada em vez de quatro, e (2) já mandar lotes pro Worker salvar
+   ENQUANTO o restante do arquivo ainda está sendo processado — os dois
+   trabalhos acontecem em paralelo (thread principal processa, Worker
+   grava), em vez de um esperar o outro terminar por completo.
+   ====================================================================== */
+function createCompactionState(){
+  return {
+    urlPrefixToId: new Map(), urlPrefixList: [],
+    logoPrefixToId: new Map(), logoPrefixList: [],
+    seriesInfo: new Map(), // seriesKey -> {name, logo, categorias, seasons:Set, episodes:[]}
+    // Categorias de filme/ao vivo vistas durante a importação — guardadas
+    // aqui em vez de escaneadas do banco depois. Escanear "valores
+    // distintos" num índice com centenas de milhares de registros é caro
+    // na prática (o cursor 'nextunique' nem sempre pula duplicados de
+    // verdade dependendo do navegador), então evitamos fazer essa consulta
+    // toda vez que a tela de Filmes/Ao Vivo abre.
+    movieCategories: new Set(),
+    liveCategories: new Set()
+  };
+}
+
+function compactSingleFieldIncremental(c, fieldName, prefixFieldName, suffixFieldName, prefixToId, prefixList){
+  const value = c[fieldName];
+  if(!value) return;
+  const slashIdx = value.lastIndexOf('/');
+  if(slashIdx === -1 || slashIdx === value.length - 1) return; // sem "/" útil — mantém o valor inteiro
+  const prefix = value.slice(0, slashIdx + 1);
+  const suffix = value.slice(slashIdx + 1);
+  let pid = prefixToId.get(prefix);
+  if(pid === undefined){
+    pid = prefixList.length;
+    prefixList.push(prefix);
+    prefixToId.set(prefix, pid);
+  }
+  c[prefixFieldName] = pid;
+  c[suffixFieldName] = suffix;
+  delete c[fieldName];
+}
+
+/**
+ * Comprime UM item (in-place). MUDANÇA IMPORTANTE: episódios de série não
+ * são mais devolvidos pra virar registro solto na store `contents` — eles
+ * são guardados DENTRO do resumo da série (`info.episodes`), em memória,
+ * e só vão pro banco quando a série inteira for salva de uma vez
+ * (finalizeSeriesSummariesFromState). Isso existe porque, na prática real
+ * de uso, episódio de série é a esmagadora maioria dos itens (>90% em
+ * bibliotecas típicas) — cada um pagando 3 índices do IndexedDB era o
+ * verdadeiro gargalo. Uma série com 40 episódios agora é 1 gravação (com
+ * um array dentro), não 40 gravações indexadas separadas.
+ *
+ * Retorna `true` se o item deve ENTRAR no lote normal de salvamento
+ * (filme/ao vivo); `false` se foi guardado dentro do resumo da série (e
+ * portanto não deve ir pro lote).
+ */
+function compactItemIncremental(c, state){
+  if(c.tipo === 'series' && c.seriesKey){
+    let info = state.seriesInfo.get(c.seriesKey);
+    if(!info){
+      info = { name: ParserModule.extractSeriesBaseName(c.nome || ''), logo: c.logo || '', categorias: [], seasons: new Set(), episodes: [], episodeCount: 0 };
+      state.seriesInfo.set(c.seriesKey, info);
+    }
+    if(!info.logo && c.logo) info.logo = c.logo;
+    if(c.categoria && info.categorias.indexOf(c.categoria) === -1) info.categorias.push(c.categoria);
+
+    // Nome: guarda só temporada/episódio quando reconhece o padrão com
+    // segurança; nomeação irregular mantém o texto original intacto.
+    const se = ParserModule.extractSeasonEpisodeStrict(c.nome);
+    if(se){
+      info.seasons.add(se.season);
+      c.season = se.season;
+      c.episode = se.episode;
+      delete c.nome;
+    } else {
+      info.seasons.add(ParserModule.extractSeasonEpisode(c.nome).season);
+    }
+
+    // Capa: se for igual à capa "canônica" da série (a primeira que
+    // encontramos pra essa série), nem guarda — usa a da série.
+    if(c.logo && c.logo === info.logo) delete c.logo;
+    compactSingleFieldIncremental(c, 'logo', 'logoPrefixId', 'logoSuffix', state.logoPrefixToId, state.logoPrefixList);
+    compactSingleFieldIncremental(c, 'url', 'urlPrefixId', 'urlSuffix', state.urlPrefixToId, state.urlPrefixList);
+
+    info.episodes.push(c);
+    // Contador PERSISTENTE — não reseta mesmo se `episodes` for esvaziado
+    // depois (modo economia de memória, ver flushSeriesEpisodesPartial).
+    // A contagem final da série (mostrada na tela) depende dele, não do
+    // tamanho atual do array.
+    info.episodeCount++;
+    state.pendingEpisodesSinceFlush = (state.pendingEpisodesSinceFlush || 0) + 1;
+    return false; // não vai pro lote normal — já foi guardado dentro da série
+  }
+
+  // Filme/ao vivo continuam indo pro lote normal (store `contents`), com a
+  // mesma compressão de capa/URL de sempre.
+  if(c.categoria){
+    if(c.tipo === 'movie') state.movieCategories.add(c.categoria);
+    else if(c.tipo === 'live') state.liveCategories.add(c.categoria);
+  }
+  compactSingleFieldIncremental(c, 'logo', 'logoPrefixId', 'logoSuffix', state.logoPrefixToId, state.logoPrefixList);
+  compactSingleFieldIncremental(c, 'url', 'urlPrefixId', 'urlSuffix', state.urlPrefixToId, state.urlPrefixList);
+  return true;
+}
+
+/**
+ * Descarrega os episódios acumulados até agora pro banco (store própria,
+ * separada do resumo leve), e ESVAZIA o array em memória — só usado no
+ * modo economia de memória, chamado periodicamente durante o parsing (não
+ * só uma vez no final). Isso é o que impede episódios de série de crescer
+ * sem limite na memória em playlists com muita série (90%+ dos itens, em
+ * alguns casos reais).
+ *
+ * Como um MESMO servidor pode ser descarregado várias vezes ao longo de
+ * uma importação, e a mesma série pode reaparecer em descarregamentos
+ * diferentes (se seus episódios estiverem espalhados no arquivo, não
+ * necessariamente todos juntos), cada descarregamento faz um MERGE com o
+ * que já foi salvo antes pra essa série nessa mesma importação — nunca
+ * sobrescreve, sempre soma.
+ */
+async function flushSeriesEpisodesPartial(state){
+  const toFlush = [];
+  for(const [seriesKey, info] of state.seriesInfo){
+    if(info.episodes.length === 0) continue; // nada novo desde o último descarregamento
+    toFlush.push({ key: seriesKey, episodes: info.episodes });
+    info.episodes = []; // libera da memória — o contador (episodeCount) e os metadados continuam intactos
+  }
+  state.pendingEpisodesSinceFlush = 0;
+  if(toFlush.length === 0) return;
+
+  // Faz merge com o que já existe no banco (de um descarregamento anterior
+  // desta MESMA importação) — busca cada um individualmente (são poucas
+  // dezenas/centenas de séries por descarregamento, não milhares).
+  const merged = await Promise.all(toFlush.map(async (rec) => {
+    let existing = null;
+    try{ existing = await IDB.getByKey(STORES.seriesEpisodes, rec.key); }catch(e){}
+    if(existing && existing.episodes){
+      return { key: rec.key, episodes: existing.episodes.concat(rec.episodes) };
+    }
+    return rec;
+  }));
+
+  await IDB.putMany(STORES.seriesEpisodes, merged);
+}
+
+/** Monta os resumos finais de série a partir do estado acumulado — chamado
+ * uma vez só, no final, depois que o arquivo inteiro foi visto (só agora
+ * sabemos a contagem final de episódios/temporadas). Retorna DOIS arrays
+ * separados: `summaries` (leve — nome, capa, contagens; é isso que listar
+ * e buscar séries usa) e `episodeRecords` (pesado — vai pra uma store
+ * própria, só lida quando abre a tela de detalhe de UMA série específica).
+ * Separar os dois evita que listar/buscar precise carregar os episódios
+ * de toda série só pra mostrar nome+capa+contagem.
+ *
+ * `episodeRecords` só inclui séries com episódios AINDA não descarregados
+ * (`episodes.length > 0`) — se o modo economia de memória já descarregou
+ * tudo periodicamente, pode vir vazio, e nesse caso o merge final (feito
+ * pelo chamador) só precisa atualizar os resumos, os episódios já estão
+ * todos no banco.
+ */
+function finalizeSeriesSummariesFromState(state, serverId){
+  const now = Date.now();
+  const summaries = [];
+  const episodeRecords = [];
+  for(const [seriesKey, info] of state.seriesInfo){
+    summaries.push({
+      key: seriesKey, serverId: serverId, name: info.name, logo: info.logo,
+      categorias: info.categorias, episodeCount: info.episodeCount,
+      seasonCount: info.seasons.size, updatedAt: now
+    });
+    if(info.episodes.length > 0){
+      episodeRecords.push({ key: seriesKey, episodes: info.episodes });
+    }
+  }
+  return { summaries, episodeRecords };
+}
+
+
+/* ======================================================================
+   SERVER MODULE
+   ====================================================================== */
+const ServerModule = {
+
+  async loadAllFromDB(){
+    const servers = await IDB.getAll(STORES.servers);
+    State.servers.clear();
+    for(const s of servers){ State.servers.set(s.id, s); }
+    return servers;
+  },
+
+  /**
+   * Loads all contents from IndexedDB and builds in-memory indexes, reading
+   * them in real batches straight from disk via a cursor (see
+   * IDB.getBatchAfter) instead of one giant getAll() covering the whole
+   * store. A single getAll() on a store with millions of records has to
+   * finish reading everything before it resolves at all, which means no
+   * progress can be shown until that huge read completes — exactly the
+   * "stuck at 0, then jumps to the end" behavior. Batched cursor reads give
+   * real, continuous progress from the very first batch, and each batch's
+   * transaction is short-lived so yielding to the browser between batches
+   * (via setTimeout) never gets caught by IndexedDB's transaction-lifetime
+   * rules.
+   */
+  async loadAllContentsFromDB(onProgress){
+    IndexModule.clearAll();
+    const total = await IDB.count(STORES.contents);
+    if(onProgress) onProgress(0, total);
+    const batchSize = 15000;
+    let afterKey = null;
+    let processed = 0;
+
+    while(true){
+      const { records, lastKey, done } = await IDB.getBatchAfter(STORES.contents, afterKey, batchSize);
+      for(const c of records){ IndexModule.addContent(c); }
+      processed += records.length;
+      afterKey = lastKey;
+      if(onProgress) onProgress(processed, total);
+      if(done || records.length === 0) break;
+      // Yield to the browser so scrolling/clicking/rendering stays smooth
+      // even while importing millions of records. Safe here because the
+      // previous batch's transaction has already completed by this point.
+      await fastYield();
+    }
+    return processed;
+  },
+
+  async loadProgressFromDB(){
+    const list = await IDB.getAll(STORES.progress);
+    State.progress.clear();
+    for(const p of list){ State.progress.set(p.contentId, p); }
+  },
+
+  async loadFavoriteSeriesFromDB(){
+    const list = await IDB.getAll(STORES.favorites);
+    State.favoriteSeries.clear();
+    for(const f of list){
+      if(f.type === 'series' && f.favorito) State.favoriteSeries.add(f.key);
+    }
+  },
+
+  async addManualServer(nome, url){
+    const server = {
+      id: uid('srv'),
+      nome: nome,
+      url: url,
+      permanente: true,
+      tipoOrigem: 'manual',
+      dataCadastro: Date.now()
+    };
+    await IDB.put(STORES.servers, server);
+    State.servers.set(server.id, server);
+    return server;
+  },
+
+  async upsertAutoServer(nome, url, rawMeta){
+    // find existing automatic server with same name (to avoid duplicates)
+    let existing = null;
+    for(const [, s] of State.servers){
+      if(s.tipoOrigem === 'automatico' && s.nome === nome){
+        existing = s; break;
+      }
+    }
+    if(existing){
+      existing.url = url;
+      existing.rawMeta = rawMeta;
+      await IDB.put(STORES.servers, existing);
+      return existing;
+    }
+    const server = {
+      id: uid('srv'),
+      nome: nome,
+      url: url,
+      permanente: true,
+      tipoOrigem: 'automatico',
+      dataCadastro: Date.now(),
+      rawMeta: rawMeta
+    };
+    await IDB.put(STORES.servers, server);
+    State.servers.set(server.id, server);
+    return server;
+  },
+
+  async deleteServer(serverId){
+    const idsToRemove = await IDB.deleteAllContentForServer(serverId);
+    const idsWithProgress = idsToRemove.filter(id => State.progress.has(id));
+    for(const id of idsWithProgress){ State.progress.delete(id); }
+    await IDB.deleteMany(STORES.progress, idsWithProgress).catch(()=>{});
+
+    await IDB.delete(STORES.servers, serverId);
+    State.servers.delete(serverId);
+    await IDB.deleteByIndex(STORES.seriesSummary, 'serverId', serverId);
+    State.pageCache.clear(); State.dashboardCache = null; State.favoritesCache = null; State.continueCache = null;
+  },
+
+  substituteCredentials(url, user, pass){
+    if(!url) return url;
+    try{
+      let result = url;
+      const safeUser = encodeURIComponent(user || '');
+      const safePass = encodeURIComponent(pass || '');
+      result = result.replace(/username=xxx/gi, 'username=' + safeUser);
+      result = result.replace(/password=yyy/gi, 'password=' + safePass);
+      return result;
+    }catch(err){
+      return url;
+    }
+  },
+
+  /**
+   * Downloads a playlist with progress reporting. Returns text content.
+   * onProgress(loaded, total|null)
+   */
+  async downloadPlaylist(url, onProgress){
+    const response = await fetch(url);
+    if(!response.ok){
+      const err = new Error('HTTP ' + response.status);
+      err.status = response.status;
+      throw err;
+    }
+    const contentLengthHeader = response.headers.get('Content-Length');
+    const total = contentLengthHeader ? parseInt(contentLengthHeader, 10) : null;
+
+    if(!response.body || !response.body.getReader){
+      // fallback for environments without streaming support
+      const text = await response.text();
+      if(onProgress) onProgress(text.length, total);
+      return text;
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let received = 0;
+    let resultText = '';
+    while(true){
+      const { done, value } = await reader.read();
+      if(done) break;
+      received += value.length;
+      resultText += decoder.decode(value, { stream: true });
+      if(onProgress) onProgress(received, total);
+    }
+    resultText += decoder.decode();
+    return resultText;
+  },
+
+  /**
+   * Versão "streaming" do download — usada só quando o modo economia de
+   * memória está ligado (Configurações → Desempenho). Em vez de acumular
+   * a playlist inteira numa string só (100MB+ ficando em memória do
+   * início ao fim), grava pedaços de ~2MB direto no IndexedDB conforme
+   * vão chegando da rede, e descarta cada pedaço da memória assim que é
+   * salvo. Cada pedaço só é "fechado" numa quebra de linha completa (nunca
+   * corta um item no meio entre dois pedaços). Já conta os itens (#EXTINF)
+   * nessa mesma passada, evitando uma segunda varredura depois.
+   */
+  async downloadPlaylistStreaming(url, serverId, onProgress){
+    const response = await fetch(url);
+    if(!response.ok){
+      const err = new Error('HTTP ' + response.status);
+      err.status = response.status;
+      throw err;
+    }
+    const contentLengthHeader = response.headers.get('Content-Length');
+    const total = contentLengthHeader ? parseInt(contentLengthHeader, 10) : null;
+
+    const CHUNK_TARGET_SIZE = 2 * 1024 * 1024; // ~2MB de texto por pedaço salvo
+    let buffer = '';
+    let chunkIndex = 0;
+    let totalItems = 0;
+    let received = 0;
+
+    function countExtinf(str){
+      let pos = 0;
+      const len = str.length;
+      while(pos < len){
+        let end = str.indexOf('\n', pos);
+        if(end === -1) end = len;
+        if(str.charCodeAt(pos) === 35 && str.slice(pos, pos+7).toUpperCase() === '#EXTINF'){
+          totalItems++;
+        }
+        pos = end + 1;
+      }
+    }
+
+    async function flushBuffer(force){
+      if(!force && buffer.length < CHUNK_TARGET_SIZE) return;
+      let toSave;
+      if(force){
+        // Última descarga: salva TUDO que sobrou, mesmo que a última
+        // linha do arquivo não termine com quebra de linha (comum —
+        // arquivos raramente terminam com \n depois da última linha).
+        toSave = buffer;
+        buffer = '';
+      } else {
+        const cutPoint = buffer.lastIndexOf('\n');
+        if(cutPoint === -1) return; // ainda sem quebra de linha completa — espera mais dados chegarem
+        toSave = buffer.slice(0, cutPoint + 1);
+        buffer = buffer.slice(cutPoint + 1);
+      }
+      if(!toSave) return;
+      countExtinf(toSave);
+      await IDB.put(STORES.downloadChunks, { key: serverId + '::' + chunkIndex, text: toSave });
+      chunkIndex++;
+    }
+
+    if(!response.body || !response.body.getReader){
+      // Fallback (sem suporte a streaming de rede): baixa tudo de uma vez
+      // mesmo, mas ainda grava em pedaços no IndexedDB pra manter o
+      // restante do fluxo (processamento) consistente.
+      const text = await response.text();
+      buffer = text;
+      if(onProgress) onProgress(text.length, total);
+      await flushBuffer(true);
+      return { chunkCount: chunkIndex, totalItems };
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    while(true){
+      const { done, value } = await reader.read();
+      if(done) break;
+      received += value.length;
+      buffer += decoder.decode(value, { stream: true });
+      if(onProgress) onProgress(received, total);
+      await flushBuffer(false);
+    }
+    buffer += decoder.decode();
+    await flushBuffer(true);
+
+    return { chunkCount: chunkIndex, totalItems };
+  },
+
+  /**
+   * Processes raw M3U text into content objects for a server, in batches,
+   * reporting progress. Returns array of content objects.
+   *
+   * Parsing and content-building are merged into a single batched pass over
+   * the raw lines (instead of first parsing the whole file into an `entries`
+   * array in one synchronous call, then batching over that array). For very
+   * large playlists, that upfront full-file parse was itself a long
+   * synchronous block with no progress feedback — exactly the "freezes,
+   * then the bar jumps near the end" symptom.
+   */
+  /**
+   * Processa a playlist E já vai salvando em paralelo, em vez de montar um
+   * array gigante primeiro e só depois salvar tudo de uma vez. Cada item é
+   * comprimido (URL/capa/nome) na hora em que é construído — uma única
+   * passada, não quatro separadas — e acumulado num lote; quando o lote
+   * atinge SAVE_CHUNK_SIZE, é disparado pro Worker salvar SEM esperar
+   * (`PersistenceWorker.save(...)` sem `await` aqui dentro) — a thread
+   * principal segue processando o resto do arquivo enquanto o Worker grava
+   * aquele lote em paralelo, numa thread separada. No final, todos os
+   * lotes disparados são aguardados juntos (Promise.all).
+   */
+  /**
+   * Núcleo compartilhado do parser — usado tanto pelo caminho padrão
+   * (texto inteiro já em memória) quanto pelo modo streaming (lendo
+   * pedaço por pedaço do IndexedDB, sem nunca montar o texto inteiro).
+   * `feedText` pode ser chamada uma vez só (com o texto inteiro) ou várias
+   * vezes seguidas (um pedaço de cada vez) — o resultado final é idêntico
+   * nos dois casos, porque qualquer linha cortada ao meio entre dois
+   * pedaços é "colada" automaticamente (guardada em `carry` até a próxima
+   * chamada completar ela).
+   */
+  createPlaylistParsingSession(serverId, total, onProgress, onSaveProgress){
+    const SAVE_CHUNK_SIZE = (State.settings.performance && State.settings.performance.saveChunkSize) || DEFAULT_SETTINGS.performance.saveChunkSize;
+    const state = createCompactionState();
+    const LINES_PER_BATCH = 4000; // a cada N linhas, cede a thread (yield) pra manter a UI viva
+    // No modo economia de memória, episódios de série também são
+    // descarregados periodicamente (não só filme/ao vivo) — sem isso,
+    // playlists com muita série (90%+ dos itens, em casos reais) ainda
+    // acumulavam sem limite na memória mesmo com o resto já corrigido.
+    const memorySavingMode = !!(State.settings.performance && State.settings.performance.streamDownload);
+    const EPISODE_FLUSH_THRESHOLD = 20000;
+    let pendingExtinf = null;
+    let counts = { movie:0, series:0, live:0 };
+    let processed = 0;
+    let totalCount = 0;
+    let pendingSaveBatch = [];
+    const saveTasks = [];
+    let chunksDispatched = 0;
+    let chunksCompleted = 0;
+    let estimatedTotalChunks = Math.max(1, Math.ceil((total||0) / SAVE_CHUNK_SIZE));
+    let writtenSeriesKeys = [];
+    let carry = ''; // pedacinho de linha incompleta entre chamadas de feedText
+    let linesSinceYield = 0;
+
+    function reportSaveProgress(){
+      if(onSaveProgress) onSaveProgress(chunksCompleted, estimatedTotalChunks);
+    }
+
+    function dispatchChunk(items, isFinal){
+      if(items.length === 0 && !isFinal) return;
+      chunksDispatched++;
+      const finalized = isFinal ? finalizeSeriesSummariesFromState(state, serverId) : { summaries: [], episodeRecords: [] };
+      if(isFinal) writtenSeriesKeys = finalized.summaries.map(s => s.key);
+      const task = PersistenceWorker.save(items, finalized.summaries, undefined, finalized.episodeRecords).then(() => {
+        chunksCompleted++;
+        reportSaveProgress();
+      });
+      saveTasks.push(task);
+    }
+
+    function processLine(line){
+      // Remove um \r final, caso a playlist use quebra de linha CRLF.
+      if(line.length > 0 && line.charCodeAt(line.length - 1) === 13){
+        line = line.slice(0, -1);
+      }
+      if(!line) return;
+      const trimmed = line.trim();
+      if(!trimmed) return;
+
+      if(trimmed.charAt(0) === '#'){
+        if(/^#EXTINF/i.test(trimmed)){
+          try{ pendingExtinf = ParserModule.parseExtinfLine(trimmed); }
+          catch(err){ pendingExtinf = null; }
+        }
+        return;
+      }
+      if(pendingExtinf){
+        const url = trimmed;
+        if(url){
+          try{
+            const entry = {
+              url: url,
+              name: pendingExtinf.name || url,
+              tvgId: pendingExtinf.tvgId || '',
+              tvgName: pendingExtinf.tvgName || '',
+              tvgLogo: pendingExtinf.tvgLogo || '',
+              groupTitle: pendingExtinf.groupTitle || 'Sem categoria'
+            };
+            const content = ParserModule.buildContent(entry, serverId);
+            if(content){
+              const goesToNormalBatch = compactItemIncremental(content, state);
+              counts[content.tipo]++;
+              totalCount++;
+              if(goesToNormalBatch){
+                pendingSaveBatch.push(content);
+                if(pendingSaveBatch.length >= SAVE_CHUNK_SIZE){
+                  dispatchChunk(pendingSaveBatch, false);
+                  pendingSaveBatch = [];
+                }
+              }
+              // Série não entra no lote normal — já foi guardada dentro
+              // do resumo da série (state.seriesInfo). No modo normal, só
+              // vai pro banco no final; no modo economia de memória, é
+              // descarregada periodicamente também (ver feedText abaixo).
+            }
+            processed++;
+          }catch(err){
+            // ignore invalid entry individually, keep parsing the rest
+          }
+        }
+        pendingExtinf = null;
+      }
+    }
+
+    return {
+      async feedText(textChunk){
+        const combined = carry + (textChunk || '');
+        let pos = 0;
+        while(true){
+          let nl = combined.indexOf('\n', pos);
+          if(nl === -1) break;
+          processLine(combined.slice(pos, nl));
+          pos = nl + 1;
+          linesSinceYield++;
+          if(memorySavingMode && (state.pendingEpisodesSinceFlush || 0) >= EPISODE_FLUSH_THRESHOLD){
+            await flushSeriesEpisodesPartial(state);
+          }
+          if(linesSinceYield >= LINES_PER_BATCH){
+            linesSinceYield = 0;
+            if(onProgress) onProgress(processed, total, counts);
+            await fastYield();
+          }
+        }
+        carry = combined.slice(pos);
+      },
+      async finish(){
+        if(carry){ processLine(carry); carry = ''; }
+        if(onProgress) onProgress(processed, total, counts);
+
+        // Último lote (o que sobrou) + os resumos finais de série, já com
+        // a contagem completa de episódios/temporadas de cada uma. No
+        // modo economia de memória, boa parte dos episódios já foi
+        // descarregada durante o processamento — aqui só sobra o
+        // "restinho" desde o último descarregamento (finalizeSeriesSummariesFromState
+        // já cuida de só incluir quem ainda tem algo pendente).
+        dispatchChunk(pendingSaveBatch, true);
+        estimatedTotalChunks = chunksDispatched;
+        reportSaveProgress();
+
+        await Promise.all(saveTasks);
+
+        return {
+          total: totalCount,
+          counts: counts,
+          urlPrefixes: state.urlPrefixList,
+          logoPrefixes: state.logoPrefixList,
+          movieCategories: Array.from(state.movieCategories),
+          liveCategories: Array.from(state.liveCategories),
+          seriesKeys: writtenSeriesKeys
+        };
+      }
+    };
+  },
+
+  async processPlaylistText(text, serverId, onProgress, onSaveProgress){
+    text = text || '';
+    const textLen = text.length;
+
+    // Fast upfront pass just to get an accurate total item count for the
+    // progress bar — escaneia a string DIRETO (sem criar um array com
+    // todas as linhas antes), pra não duplicar o texto inteiro em memória
+    // só pra contar. Isso importa de verdade em playlists grandes
+    // (100MB+): um único .split() criaria uma segunda cópia quase do
+    // mesmo tamanho, só pra virar um array — em aparelhos com pouca RAM
+    // (TVs/projetores Android), essa duplicação sozinha já pode ser o
+    // suficiente pra estourar a memória disponível.
+    let total = 0;
+    {
+      let pos = 0;
+      while(pos < textLen){
+        let end = text.indexOf('\n', pos);
+        if(end === -1) end = textLen;
+        if(text.charCodeAt(pos) === 35 /* '#' */ && text.slice(pos, pos+7).toUpperCase() === '#EXTINF'){
+          total++;
+        }
+        pos = end + 1;
+      }
+    }
+
+    const session = ServerModule.createPlaylistParsingSession(serverId, total, onProgress, onSaveProgress);
+    await session.feedText(text);
+    return await session.finish();
+  },
+
+  /**
+   * Igual ao processPlaylistText, só que lendo pedaço por pedaço do
+   * IndexedDB (gravados por downloadPlaylistStreaming) em vez de um texto
+   * inteiro já em memória. Cada pedaço é apagado do banco assim que é
+   * processado — nunca ficam sobrando.
+   */
+  async processPlaylistFromChunks(serverId, chunkCount, totalItems, onProgress, onSaveProgress){
+    const session = ServerModule.createPlaylistParsingSession(serverId, totalItems, onProgress, onSaveProgress);
+    for(let i=0; i<chunkCount; i++){
+      const key = serverId + '::' + i;
+      let record = null;
+      try{ record = await IDB.getByKey(STORES.downloadChunks, key); }catch(e){}
+      if(record && record.text) await session.feedText(record.text);
+      try{ await IDB.delete(STORES.downloadChunks, key); }catch(e){}
+    }
+    return await session.finish();
+  },
+
+  /**
+   * Full pipeline for one server: download -> process -> save -> update indexes.
+   * statusCallback receives status updates for UI progress rendering.
+   */
+  async importServerContent(server, statusCallback){
+    const report = (patch) => { if(statusCallback) statusCallback(patch); };
+    const useStreaming = !!(State.settings.performance && State.settings.performance.streamDownload);
+    try{
+      report({ phase:'download', status:'processing', downloaded:0, total:null, speed:0 });
+      const startTime = Date.now();
+      let lastLoaded = 0;
+      let lastTime = startTime;
+      const onDownloadProgress = (loaded, total)=>{
+        const now = Date.now();
+        const dt = (now - lastTime) / 1000;
+        let speed = 0;
+        if(dt > 0.2){
+          speed = (loaded - lastLoaded) / dt;
+          lastLoaded = loaded;
+          lastTime = now;
+        }
+        report({ phase:'download', status:'processing', downloaded: loaded, total: total, speed: speed });
+      };
+
+      let result;
+      let downloadedSize;
+
+      if(useStreaming){
+        // Modo economia de memória: baixa e processa em pedaços, sem
+        // nunca montar a playlist inteira (texto ou linhas) em memória.
+        const { chunkCount, totalItems } = await ServerModule.downloadPlaylistStreaming(server.url, server.id, onDownloadProgress);
+        downloadedSize = lastLoaded;
+        report({ phase:'download', status:'done', downloaded: downloadedSize, total: downloadedSize });
+        report({ phase:'cleanup', status:'processing' });
+
+        const oldContentKeys = await IDB.getContentKeysForServer(server.id);
+        const oldSeriesKeys = await IDB.getSeriesKeysForServer(server.id);
+
+        report({ phase:'process', status:'processing', processed:0, total:0, counts:{movie:0,series:0,live:0} });
+        let latestCounts = { movie:0, series:0, live:0 };
+        result = await ServerModule.processPlaylistFromChunks(
+          server.id, chunkCount, totalItems,
+          (processed, total, counts) => {
+            latestCounts = counts;
+            report({ phase:'process', status:'processing', processed, total, counts });
+          },
+          (chunksDone, chunksTotal) => {
+            report({ phase:'save', status:'processing', processed: chunksDone, total: chunksTotal, counts: latestCounts, chunkMode: true });
+          }
+        );
+        result._oldContentKeys = oldContentKeys;
+        result._oldSeriesKeys = oldSeriesKeys;
+      } else {
+        const text = await ServerModule.downloadPlaylist(server.url, onDownloadProgress);
+        downloadedSize = text.length;
+        report({ phase:'download', status:'done', downloaded: text.length, total: text.length });
+        report({ phase:'cleanup', status:'processing' });
+
+        // Só CAPTURA quais chaves são do conteúdo antigo (leitura, não
+        // apaga nada ainda) — a remoção de verdade acontece DEPOIS que o
+        // conteúdo novo já estiver salvo, em segundo plano, sem travar o
+        // "concluído" esperando apagar tudo antes de poder escrever o novo.
+        const oldContentKeys = await IDB.getContentKeysForServer(server.id);
+        const oldSeriesKeys = await IDB.getSeriesKeysForServer(server.id);
+
+        report({ phase:'process', status:'processing', processed:0, total:0, counts:{movie:0,series:0,live:0} });
+        let latestCounts = { movie:0, series:0, live:0 };
+        result = await ServerModule.processPlaylistText(
+          text, server.id,
+          (processed, total, counts) => {
+            latestCounts = counts;
+            report({ phase:'process', status:'processing', processed, total, counts });
+          },
+          (chunksDone, chunksTotal) => {
+            report({ phase:'save', status:'processing', processed: chunksDone, total: chunksTotal, counts: latestCounts, chunkMode: true });
+          }
+        );
+        result._oldContentKeys = oldContentKeys;
+        result._oldSeriesKeys = oldSeriesKeys;
+      }
+
+      const oldContentKeys = result._oldContentKeys;
+      const oldSeriesKeys = result._oldSeriesKeys;
+
+      report({ phase:'process', status:'done', processed: result.total, total: result.total, counts: result.counts });
+
+      server.urlPrefixes = result.urlPrefixes;
+      server.logoPrefixes = result.logoPrefixes;
+      server.movieCategories = result.movieCategories;
+      server.liveCategories = result.liveCategories;
+      server.counts = result.counts;
+      server.lastStatus = 'ok';
+      server.lastError = null;
+      try{ await IDB.put(STORES.servers, server); }catch(e){}
+
+      // Limpeza do conteúdo antigo roda em segundo plano — NÃO travamos o
+      // retorno da função esperando isso terminar. O conteúdo novo já está
+      // salvo e utilizável; por alguns instantes pode haver duplicação
+      // (antigo + novo) até essa limpeza terminar, mas isso é bem mais
+      // rápido que esperar apagar tudo antes de começar a escrever.
+      //
+      // IMPORTANTE: seriesKey é determinístico (servidor+nome da série),
+      // então reimportar o MESMO servidor gera as MESMAS chaves de série
+      // de antes — diferente do id de filme/ao vivo (sempre novo/aleatório
+      // a cada import). Sem filtrar isso, a limpeza em segundo plano
+      // apagava séries que tinham acabado de ser regravadas com a mesma
+      // chave, fazendo elas "sumirem" mesmo tendo sido salvas corretamente.
+      const newSeriesKeySet = new Set(result.seriesKeys);
+      const seriesKeysSafeToDelete = oldSeriesKeys.filter(k => !newSeriesKeySet.has(k));
+      (async () => {
+        try{
+          await IDB.deleteContentByKeys(oldContentKeys);
+          await IDB.deleteSeriesByKeys(seriesKeysSafeToDelete);
+          const oldIdsWithProgress = oldContentKeys.filter(id => State.progress.has(id));
+          for(const id of oldIdsWithProgress){ State.progress.delete(id); }
+          await IDB.deleteMany(STORES.progress, oldIdsWithProgress).catch(()=>{});
+          State.pageCache.clear();
+          State.dashboardCache = null;
+          State.favoritesCache = null;
+          State.continueCache = null;
+        }catch(e){}
+      })();
+
+      return { ok:true, count: result.total };
+    }catch(err){
+      const message = err && err.status ? ('Erro ' + err.status) : (err && err.message ? err.message : 'Erro desconhecido');
+      report({ phase: 'error', status:'error', message: message });
+
+      server.lastStatus = 'error';
+      server.lastError = message;
+      try{ await IDB.put(STORES.servers, server); }catch(e){}
+
+      return { ok:false, error: err };
+    }
+  },
+
+  /**
+   * Runs importServerContent for multiple servers with a concurrency limit.
+   */
+  async importManyServers(servers, concurrency, onServerUpdate, onOverallUpdate){
+    let idx = 0;
+    let completed = 0;
+    const total = servers.length;
+    const results = [];
+
+    function updateOverall(){
+      if(onOverallUpdate) onOverallUpdate({ completed, total });
+    }
+    updateOverall();
+
+    async function worker(){
+      while(idx < servers.length){
+        const myIndex = idx++;
+        const server = servers[myIndex];
+        const result = await ServerModule.importServerContent(server, (patch)=>{
+          if(onServerUpdate) onServerUpdate(server, patch);
+        });
+        results[myIndex] = result;
+        completed++;
+        updateOverall();
+      }
+    }
+
+    const workerCount = Math.min(concurrency, servers.length) || 1;
+    const workers = [];
+    for(let i=0;i<workerCount;i++) workers.push(worker());
+    await Promise.all(workers);
+    return results;
+  },
+
+  /**
+   * Pipelined import: ALL downloads start simultaneously (no limit).
+   * As soon as each download finishes successfully, it enters a processing
+   * queue with a limited concurrency (processConcurrency). Servers whose
+   * download fails (404, network error, etc.) are marked as error and are
+   * simply skipped in the processing phase — the next successfully
+   * downloaded playlist takes its place in the queue.
+   *
+   * onFirstSuccess is called exactly once, the first time any server
+   * finishes processing successfully.
+   */
+  async importManyServersPipelined(servers, processConcurrency, onServerUpdate, onOverallUpdate, onFirstSuccess){
+    const total = servers.length;
+    let completed = 0;
+    let firstSuccessFired = false;
+    const results = new Array(total);
+
+    function updateOverall(){
+      if(onOverallUpdate) onOverallUpdate({ completed, total });
+    }
+    updateOverall();
+
+    // Modo TOTALMENTE sequencial: quando "downloads simultâneos" e
+    // "servidores processando ao mesmo tempo" estão os dois configurados
+    // pra 1 (normalmente pra poupar RAM num aparelho fraco), baixa e
+    // processa CADA servidor por completo antes de sequer começar a
+    // baixar o próximo — nunca dois servidores com dados na memória ao
+    // mesmo tempo. No modo normal (fila), um download do próximo servidor
+    // já começa enquanto o anterior ainda está sendo processado — ótimo
+    // pra velocidade, mas mantém dois textos de playlist + objetos
+    // processados na memória simultaneamente, o que pode ser demais em
+    // playlists grandes (100MB+) num aparelho com pouca RAM.
+    const configuredMaxDownloads = (State.settings.performance && State.settings.performance.maxConcurrentDownloads !== undefined)
+      ? State.settings.performance.maxConcurrentDownloads
+      : DEFAULT_SETTINGS.performance.maxConcurrentDownloads;
+    const strictSequential = configuredMaxDownloads === 1 && processConcurrency === 1;
+
+    if(strictSequential){
+      for(let idx=0; idx<servers.length; idx++){
+        const server = servers[idx];
+        const report = function(patch){ if(onServerUpdate) onServerUpdate(server, patch); };
+        const result = await ServerModule.importServerContent(server, report);
+        results[idx] = result;
+        completed++;
+        updateOverall();
+        if(result.ok && !firstSuccessFired){
+          firstSuccessFired = true;
+          if(onFirstSuccess) onFirstSuccess();
+        }
+      }
+      return results;
+    }
+
+    // Simple async queue: producers (downloads) push items, consumers (processing workers) pop them.
+    const queue = [];
+    const waiters = [];
+    let remainingDownloads = total;
+    let queueClosed = false;
+
+    function pushQueue(item){
+      if(waiters.length > 0){
+        const resolve = waiters.shift();
+        resolve(item);
+      } else {
+        queue.push(item);
+      }
+    }
+    function popQueue(){
+      if(queue.length > 0){
+        return Promise.resolve(queue.shift());
+      }
+      if(queueClosed){
+        return Promise.resolve(null);
+      }
+      return new Promise(resolve => waiters.push(resolve));
+    }
+    function markDownloadSettled(){
+      remainingDownloads--;
+      if(remainingDownloads <= 0){
+        queueClosed = true;
+        while(waiters.length > 0){
+          const resolve = waiters.shift();
+          resolve(null);
+        }
+      }
+    }
+
+    // Downloads agora respeitam um limite de concorrência (MAX_CONCURRENT_DOWNLOADS)
+    // em vez de disparar todos ao mesmo tempo. Baixar várias playlists
+    // grandes simultaneamente pode estourar a RAM de aparelhos mais fracos
+    // (TVs/projetores Android) — cada download mantém o texto inteiro da
+    // playlist em memória até terminar, e vários ao mesmo tempo somam
+    // rápido. Um pool de workers, igual ao já usado pro processamento,
+    // resolve isso sem perder a velocidade em aparelhos que aguentam mais.
+    let downloadQueueIndex = 0;
+
+    async function downloadWorker(){
+      while(downloadQueueIndex < servers.length){
+        const idx = downloadQueueIndex++;
+        const server = servers[idx];
+        const report = function(patch){ if(onServerUpdate) onServerUpdate(server, patch); };
+        report({ phase:'download', status:'processing', downloaded:0, total:null, speed:0 });
+        let lastLoaded = 0;
+        let lastTime = Date.now();
+
+        try{
+          const text = await ServerModule.downloadPlaylist(server.url, function(loaded, tot){
+            const now = Date.now();
+            const dt = (now - lastTime) / 1000;
+            let speed = 0;
+            if(dt > 0.2){
+              speed = (loaded - lastLoaded) / dt;
+              lastLoaded = loaded;
+              lastTime = now;
+            }
+            report({ phase:'download', status:'processing', downloaded: loaded, total: tot, speed: speed });
+          });
+          report({ phase:'download', status:'done', downloaded: text.length, total: text.length });
+          pushQueue({ server: server, idx: idx, text: text });
+        }catch(err){
+          const message = err && err.status ? ('Erro ' + err.status) : (err && err.message ? err.message : 'Erro desconhecido');
+          report({ phase:'error', status:'error', message: message });
+          results[idx] = { ok:false, error: err };
+          server.lastStatus = 'error';
+          server.lastError = message;
+          IDB.put(STORES.servers, server).catch(function(){});
+          completed++;
+          updateOverall();
+        }
+        markDownloadSettled();
+      }
+    }
+
+    // 0 = sem limite — baixa todos os servidores ao mesmo tempo, era o
+    // comportamento padrão de sempre (bom pra computadores normais).
+    const downloadWorkerCount = configuredMaxDownloads > 0 ? Math.min(configuredMaxDownloads, total) : total;
+    const downloadWorkers = [];
+    for(let i=0;i<downloadWorkerCount;i++) downloadWorkers.push(downloadWorker());
+
+    // Processing workers with limited concurrency, pulling from the queue as downloads complete.
+    async function processingWorker(){
+      while(true){
+        const item = await popQueue();
+        if(item === null) break; // queue closed and drained: nothing left to process
+        const server = item.server;
+        const idx = item.idx;
+        const text = item.text;
+        const report = function(patch){ if(onServerUpdate) onServerUpdate(server, patch); };
+
+        try{
+          report({ phase:'cleanup', status:'processing' });
+
+          // Só CAPTURA as chaves antigas (não apaga ainda) — a remoção de
+          // verdade acontece DEPOIS, em segundo plano, sem travar o
+          // "concluído" desse servidor esperando apagar tudo antes.
+          const oldContentKeys = await IDB.getContentKeysForServer(server.id);
+          const oldSeriesKeys = await IDB.getSeriesKeysForServer(server.id);
+
+          report({ phase:'process', status:'processing', processed:0, total:0, counts:{movie:0,series:0,live:0} });
+
+          var latestCounts = { movie:0, series:0, live:0 };
+          const result = await ServerModule.processPlaylistText(
+            text, server.id,
+            function(processed, tot, counts){
+              latestCounts = counts;
+              report({ phase:'process', status:'processing', processed: processed, total: tot, counts: counts });
+            },
+            function(chunksDone, chunksTotal){
+              report({ phase:'save', status:'processing', processed: chunksDone, total: chunksTotal, counts: latestCounts, chunkMode: true });
+            }
+          );
+
+          report({ phase:'process', status:'done', processed: result.total, total: result.total, counts: result.counts });
+          results[idx] = { ok:true, count: result.total };
+          server.urlPrefixes = result.urlPrefixes;
+          server.logoPrefixes = result.logoPrefixes;
+          server.movieCategories = result.movieCategories;
+          server.liveCategories = result.liveCategories;
+          server.counts = result.counts;
+          server.lastStatus = 'ok';
+          server.lastError = null;
+          IDB.put(STORES.servers, server).catch(function(){});
+
+          // Limpa o cache assim que ESSE servidor termina — não espera
+          // todos os outros acabarem. Sem isso, navegar (mesmo minimizado)
+          // enquanto outros servidores ainda importam mostrava o cache
+          // antigo (vazio, de antes da importação começar), mesmo com os
+          // dados deste servidor já salvos e prontos no banco.
+          State.pageCache.clear();
+          State.dashboardCache = null;
+          State.favoritesCache = null;
+          State.continueCache = null;
+
+          // Apaga o conteúdo antigo em segundo plano — NÃO trava aqui
+          // esperando terminar. Pode haver duplicação (antigo+novo) por
+          // um instante curto até isso terminar.
+          //
+          // IMPORTANTE: filtra as chaves de série que acabaram de ser
+          // regravadas com o MESMO seriesKey (determinístico, servidor+
+          // nome) — sem isso, reimportar o mesmo servidor apagava as
+          // séries que tinham acabado de ser salvas de novo.
+          var newSeriesKeySet = new Set(result.seriesKeys);
+          var seriesKeysSafeToDelete = oldSeriesKeys.filter(function(k){ return !newSeriesKeySet.has(k); });
+          (function(){
+            (async function(){
+              try{
+                await IDB.deleteContentByKeys(oldContentKeys);
+                await IDB.deleteSeriesByKeys(seriesKeysSafeToDelete);
+                const oldIdsWithProgress = oldContentKeys.filter(function(id){ return State.progress.has(id); });
+                for(const id of oldIdsWithProgress){ State.progress.delete(id); }
+                await IDB.deleteMany(STORES.progress, oldIdsWithProgress).catch(function(){});
+                State.pageCache.clear();
+                State.dashboardCache = null;
+                State.favoritesCache = null;
+                State.continueCache = null;
+              }catch(e){}
+            })();
+          })();
+
+          if(!firstSuccessFired){
+            firstSuccessFired = true;
+            if(onFirstSuccess) onFirstSuccess();
+          }
+        }catch(err){
+          const message = err && err.message ? err.message : 'Erro ao processar playlist';
+          report({ phase:'error', status:'error', message: message });
+          results[idx] = { ok:false, error: err };
+          server.lastStatus = 'error';
+          server.lastError = message;
+          IDB.put(STORES.servers, server).catch(function(){});
+        }
+
+        completed++;
+        updateOverall();
+      }
+    }
+
+    const workerCount = Math.min(processConcurrency, total) || 1;
+    const workers = [];
+    for(let i=0;i<workerCount;i++) workers.push(processingWorker());
+    await Promise.all([...downloadWorkers, ...workers]);
+    return results;
+  }
+};
+
+/* ======================================================================
+   RAW JSON MODULE (automatic servers)
+   ====================================================================== */
+const RawModule = {
+  async fetchAndParseRaw(rawUrl){
+    const response = await fetch(rawUrl);
+    if(!response.ok){
+      throw new Error('Falha ao baixar JSON Raw (HTTP ' + response.status + ')');
+    }
+    const text = await response.text();
+    let json;
+    try{
+      json = JSON.parse(text);
+    }catch(err){
+      throw new Error('JSON Raw inválido');
+    }
+    if(typeof json !== 'object' || json === null || Array.isArray(json)){
+      throw new Error('Formato de JSON Raw inesperado (esperado objeto chave->url)');
+    }
+    return json;
+  },
+
+  /**
+   * Given the raw json { NAME: url, ... }, user, pass -> creates/updates
+   * automatic server records (permanent) and returns array of server objects.
+   */
+  async buildServersFromRaw(json, user, pass, rawUrl){
+    const serverObjs = [];
+    for(const key in json){
+      if(!Object.prototype.hasOwnProperty.call(json, key)) continue;
+      const originalUrl = json[key];
+      if(typeof originalUrl !== 'string' || !originalUrl) continue;
+      const finalUrl = ServerModule.substituteCredentials(originalUrl, user, pass);
+      const server = await ServerModule.upsertAutoServer(key, finalUrl, {
+        rawUrl: rawUrl,
+        originalUrlTemplate: originalUrl
+      });
+      serverObjs.push(server);
+    }
+    return serverObjs;
+  }
+};
+
+/* ======================================================================
+   PROGRESS MODULE
+   ====================================================================== */
+const ProgressModule = {
+  async saveProgress(contentId, currentTime, duration, seriesKey){
+    if(!contentId) return;
+    const pct = duration > 0 ? Math.min(100, (currentTime/duration)*100) : 0;
+    const concluded = pct >= 95;
+    const progress = {
+      contentId: contentId,
+      currentTime: currentTime,
+      duration: duration,
+      porcentagem: pct,
+      dataUltimaReproducao: Date.now(),
+      concluido: concluded,
+      seriesKey: seriesKey || undefined // presente só quando é episódio de série
+    };
+    State.progress.set(contentId, progress);
+    State.dashboardCache = null;
+    State.continueCache = null;
+    try{ await IDB.put(STORES.progress, progress); }catch(err){}
+  },
+  getProgress(contentId){
+    return State.progress.get(contentId) || null;
+  },
+  /** Remove o progresso de um item, deixando-o como "não iniciado" — some
+   * do Continuar Assistindo. */
+  async resetProgress(contentId){
+    State.progress.delete(contentId);
+    State.dashboardCache = null;
+    State.continueCache = null;
+    try{ await IDB.delete(STORES.progress, contentId); }catch(e){}
+  },
+  getContinueWatchingCount(){
+    let count = 0;
+    for(const [, prog] of State.progress){ if(!prog.concluido && prog.porcentagem > 0) count++; }
+    return count;
+  },
+  async getContinueWatchingList(limit){
+    const entries = [];
+    for(const [contentId, prog] of State.progress){
+      if(prog.concluido) continue;
+      if(prog.porcentagem <= 0) continue;
+      entries.push({ contentId, prog });
+    }
+    entries.sort((a,b)=> b.prog.dataUltimaReproducao - a.prog.dataUltimaReproducao);
+    const limited = limit ? entries.slice(0, limit) : entries;
+    const results = [];
+    for(const { contentId, prog } of limited){
+      let content = null;
+      if(prog.seriesKey){
+        // Episódio de série: vive na store própria seriesEpisodes agora,
+        // separada do resumo leve. Fallback pra dados salvos numa versão
+        // anterior (episódios ainda embutidos no resumo).
+        const record = await IDB.getByKey(STORES.seriesEpisodes, prog.seriesKey).catch(()=>null);
+        if(record && record.episodes){
+          content = record.episodes.find(ep => ep.id === contentId);
+        } else {
+          const summary = await IDB.getByKey(STORES.seriesSummary, prog.seriesKey).catch(()=>null);
+          content = summary && summary.episodes ? summary.episodes.find(ep => ep.id === contentId) : null;
+        }
+      } else {
+        content = await IDB.getByKey(STORES.contents, contentId).catch(()=>null);
+      }
+      if(!content || content.tipo === 'live') continue;
+      results.push({ content, progress: prog });
+    }
+    return results;
+  }
+};
+
+/* ======================================================================
+   SERIES NAVIGATION HELPERS (próximo episódio)
+   ====================================================================== */
+async function getNextEpisode(content){
+  if(!content || content.tipo !== 'series' || !content.seriesKey) return null;
+  const episodes = await QueryModule.getEpisodesForSeries(content.seriesKey);
+  const withSE = episodes.map(c => {
+    // Prioriza season/episode já salvos (compactEpisodeNames) — evita
+    // reprocessar regex à toa; cai pra extração do nome só quando não tem
+    // (dado antigo ou nomeação que não foi reconhecida).
+    const se = (c.season !== undefined && c.episode !== undefined)
+      ? { season: c.season, episode: c.episode }
+      : ParserModule.extractSeasonEpisode(c.nome);
+    return { content: c, season: se.season, episode: se.episode };
+  });
+  withSE.sort((a,b) => a.season - b.season || a.episode - b.episode);
+  const idx = withSE.findIndex(x => x.content.id === content.id);
+  if(idx === -1 || idx + 1 >= withSE.length) return null;
+  return withSE[idx + 1].content;
+}
+
+/* ======================================================================
+   PLAYER MODULE
+   ====================================================================== */
+const PlayerModule = {
+  hls: null,
+  mpegtsPlayer: null,
+  currentContent: null,
+  saveInterval: null,
+  retryCount: 0,
+  maxRetries: 3,
+  retryTimer: null,
+  playToken: 0, // guards against stale async callbacks after close()/reopen()
+  _videoListenersReady: false,
+  isUserPaused: false,
+  nextEpisodeContent: null,
+  _nextEpBtnReady: false,
+  _skipNativeAttempt: false,
+
+  open(content){
+    this.currentContent = content;
+    this.retryCount = 0;
+    this.isUserPaused = false;
+    this._skipNativeAttempt = false;
+    this.playToken++;
+    const overlay = qs('#player-overlay');
+    const title = qs('#player-title');
+    title.textContent = resolveContentName(content);
+    if(!content.nome && content.tipo === 'series' && content.seriesKey){
+      // Episódio sem nome próprio salvo (compactado) — busca o nome da
+      // série pra montar o título completo. Ata "sua" abertura pelo id do
+      // conteúdo, pra não sobrescrever o título se o usuário já trocou de
+      // vídeo antes dessa busca terminar.
+      const openedContentId = content.id;
+      IDB.getByKey(STORES.seriesSummary, content.seriesKey).then(summary => {
+        if(summary && this.currentContent && this.currentContent.id === openedContentId){
+          title.textContent = resolveContentName(content, summary.name);
+        }
+      }).catch(()=>{});
+    }
+    overlay.style.display = 'flex';
+    overlay.classList.toggle('live-mode', content.tipo === 'live');
+
+    this._ensureVideoListeners();
+    this._ensureNextEpisodeButton();
+    this._ensurePlayerControls();
+    this.cleanup();
+    this.hideFallbackBar();
+    this._startPlayback(content, this.playToken);
+    this._updateNextEpisodeButton(content);
+    const video0 = qs('#video-player');
+    const speedBtn0 = qs('#player-speed');
+    const volumeBtn0 = qs('#player-volume');
+    if(speedBtn0) speedBtn0.textContent = (video0.playbackRate || 1) + 'x';
+    if(volumeBtn0) volumeBtn0.innerHTML = video0.muted ? this.ICONS.volumeOff : this.ICONS.volumeOn;
+    const volumeSlider0 = qs('#player-volume-slider');
+    if(volumeSlider0) volumeSlider0.value = video0.muted ? 0 : video0.volume;
+    this._showControls();
+  },
+
+  _ensureNextEpisodeButton(){
+    if(this._nextEpBtnReady) return;
+    const btn = qs('#player-next-episode');
+    btn.addEventListener('click', ()=>{
+      if(!this.nextEpisodeContent) return;
+      // Marca o episódio que está sendo pulado como assistido, mesmo que
+      // o usuário não tenha chegado ao fim dele — ele escolheu avançar.
+      if(this.currentContent){
+        ProgressModule.saveProgress(this.currentContent.id, 1, 1, this.currentContent.seriesKey);
+      }
+      this.open(this.nextEpisodeContent);
+    });
+    this._nextEpBtnReady = true;
+  },
+
+  async _updateNextEpisodeButton(content){
+    const btn = qs('#player-next-episode');
+    if(content && content.tipo === 'series'){
+      const token = this.playToken;
+      const next = await getNextEpisode(content);
+      if(token !== this.playToken) return; // usuário já trocou de vídeo
+      this.nextEpisodeContent = next;
+      btn.style.display = next ? 'inline-flex' : 'none';
+    } else {
+      this.nextEpisodeContent = null;
+      btn.style.display = 'none';
+    }
+  },
+
+  _controlsReady: false,
+  _hideControlsTimer: null,
+  _isSeeking: false,
+
+  // Ícones desenhados em SVG (inspirados nos controles nativos do
+  // navegador) em vez de emoji — rendem igual em qualquer sistema e ficam
+  // mais "limpos"/consistentes com o resto da interface.
+  ICONS: {
+    play: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>',
+    pause: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>',
+    seekBack5: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-9.36L1 10"/></svg><span>5</span>',
+    seekFwd5: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.49-9.36L23 10"/></svg><span>5</span>',
+    volumeOn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="10.5 4.5 5.5 8.5 2 8.5 2 15.5 5.5 15.5 10.5 19.5 10.5 4.5" fill="currentColor" stroke="none"/><path d="M15.3 8.3a5 5 0 0 1 0 7.4"/><path d="M18.6 5a9.5 9.5 0 0 1 0 14"/></svg>',
+    volumeOff: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="10.5 4.5 5.5 8.5 2 8.5 2 15.5 5.5 15.5 10.5 19.5 10.5 4.5" fill="currentColor" stroke="none"/><line x1="22.5" y1="8.5" x2="16.5" y2="14.5"/><line x1="16.5" y1="8.5" x2="22.5" y2="14.5"/></svg>',
+    // "Entrar" em tela cheia: 4 cantos abrindo pra fora.
+    fullscreenEnter: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>',
+    // "Sair" da tela cheia: o MESMO desenho, só que invertido (cantos
+    // fechando pra dentro) — pedido explícito, em vez de um X genérico.
+    fullscreenExit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/></svg>',
+    pip: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><rect x="12" y="12" width="8" height="6" rx="1" fill="currentColor" stroke="none"/></svg>'
+  },
+
+  /**
+   * Controles customizados (play/pause, barra de progresso, mostrar/esconder
+   * por atividade, atalhos de teclado). Tudo isso substitui os controles
+   * nativos do <video> (removidos do HTML) porque o navegador não expõe
+   * como customizar seu comportamento de auto-esconder, e os atalhos de
+   * teclado nativos só funcionam depois de um clique inicial no vídeo — o
+   * usuário pediu que funcionassem sempre, sem esse clique prévio.
+   */
+  _ensurePlayerControls(){
+    if(this._controlsReady) return;
+    const overlay = qs('#player-overlay');
+    const video = qs('#video-player');
+    const playPauseBtn = qs('#player-playpause');
+    const seekTrack = qs('#player-seek-track');
+    const seekBack5Btn = qs('#player-seek-back5');
+    const seekFwd5Btn = qs('#player-seek-fwd5');
+    const speedBtn = qs('#player-speed');
+    const speedMenu = qs('#player-speed-menu');
+    const volumeBtn = qs('#player-volume');
+    const fullscreenBtn = qs('#player-fullscreen');
+    const pipBtn = qs('#player-pip');
+
+    seekBack5Btn.innerHTML = this.ICONS.seekBack5;
+    seekFwd5Btn.innerHTML = this.ICONS.seekFwd5;
+    fullscreenBtn.innerHTML = this.ICONS.fullscreenEnter;
+    pipBtn.innerHTML = this.ICONS.pip;
+    volumeBtn.innerHTML = this.ICONS.volumeOn;
+
+    const speeds = [0.5, 0.75, 1, 1.25, 1.5, 2];
+    speeds.forEach((s) => {
+      const opt = el('button', {}, [s + 'x']);
+      opt.addEventListener('click', (e) => {
+        e.stopPropagation();
+        video.playbackRate = s;
+        speedBtn.textContent = s + 'x';
+        speedMenu.classList.remove('open');
+        qsa('#player-speed-menu button').forEach(b => b.classList.toggle('active', b.textContent === s + 'x'));
+      });
+      speedMenu.appendChild(opt);
+    });
+
+    const showAndSchedule = () => { this._showControls(); this._scheduleHideControls(); };
+
+    // Mover o mouse (ou navegar com o teclado/controle) sempre reaparece os
+    // controles com um efeito de esmaecer, e NUNCA alterna play/pause —
+    // isso é feito só pelo clique (ver _handlePlayerClick). Importante:
+    // NÃO usamos 'mousedown'/'touchstart' aqui, porque eles disparam ANTES
+    // do 'click' — se revelássemos os controles nesse momento, o clique
+    // seguinte leria o estado errado (acharia que já estavam visíveis).
+    overlay.addEventListener('mousemove', showAndSchedule);
+    overlay.addEventListener('keydown', showAndSchedule);
+
+    // Clique no vídeo: comportamento depende de 4 estados (pausado/tocando
+    // × controles visíveis/escondidos) — ver _handlePlayerClick. DUPLO
+    // clique entra/sai da tela cheia.
+    video.addEventListener('click', (e) => { this._handlePlayerClick(e); });
+    video.addEventListener('dblclick', () => { this.toggleFullscreen(); });
+
+    playPauseBtn.addEventListener('click', (e) => { e.stopPropagation(); this.togglePlayPause(); });
+
+    seekBack5Btn.addEventListener('click', (e) => { e.stopPropagation(); this.seekBy(-5); });
+    seekFwd5Btn.addEventListener('click', (e) => { e.stopPropagation(); this.seekBy(5); });
+
+    // Clicar no botão de velocidade agora ABRE UM MENU com as opções, em
+    // vez de ciclar sozinho sem mostrar quais opções existem.
+    speedBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      speedMenu.classList.toggle('open');
+      if(speedMenu.classList.contains('open')){
+        qsa('#player-speed-menu button').forEach(b => b.classList.toggle('active', b.textContent === video.playbackRate + 'x'));
+      }
+    });
+    document.addEventListener('click', () => { speedMenu.classList.remove('open'); });
+
+    volumeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      video.muted = !video.muted;
+      volumeBtn.innerHTML = video.muted ? this.ICONS.volumeOff : this.ICONS.volumeOn;
+    });
+
+    const volumeSlider = qs('#player-volume-slider');
+    volumeSlider.value = video.volume;
+    volumeSlider.addEventListener('input', (e) => {
+      const v = parseFloat(e.target.value);
+      video.volume = v;
+      video.muted = v === 0;
+      volumeBtn.innerHTML = (v === 0 || video.muted) ? this.ICONS.volumeOff : this.ICONS.volumeOn;
+    });
+    volumeSlider.addEventListener('click', (e) => e.stopPropagation());
+
+    // Barra de buffer: mostra quanto do vídeo já foi baixado à frente da
+    // reprodução (o navegador já faz esse buffer progressivo sozinho pra
+    // <video src>; aqui só deixamos isso visível).
+    video.addEventListener('progress', () => this._updateBufferedUI());
+
+    fullscreenBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggleFullscreen();
+    });
+    document.addEventListener('fullscreenchange', () => {
+      fullscreenBtn.innerHTML = document.fullscreenElement ? this.ICONS.fullscreenExit : this.ICONS.fullscreenEnter;
+    });
+
+    pipBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      try{
+        if(document.pictureInPictureElement){
+          await document.exitPictureInPicture();
+        } else if(video.requestPictureInPicture){
+          await video.requestPictureInPicture();
+        } else {
+          showToast('Picture-in-Picture não é suportado neste navegador.', 'error');
+        }
+      }catch(err){
+        showToast('Não foi possível ativar o Picture-in-Picture.', 'error');
+      }
+    });
+
+    // Ao entrar no PiP, esconde o player em tela cheia — a tela por trás
+    // (série/filmes/etc.) fica visível e navegável enquanto o vídeo continua
+    // tocando na janela flutuante do sistema operacional.
+    video.addEventListener('enterpictureinpicture', () => {
+      if(document.fullscreenElement) document.exitFullscreen().catch(()=>{});
+      qs('#player-overlay').style.display = 'none';
+    });
+    // Ao sair do PiP (fechar a janelinha ou clicar "voltar à aba"), volta a
+    // mostrar o player normalmente, sem reiniciar a reprodução.
+    video.addEventListener('leavepictureinpicture', () => {
+      if(this.currentContent){
+        qs('#player-overlay').style.display = 'flex';
+      }
+    });
+
+    seekTrack.addEventListener('click', (e) => {
+      if(this.currentContent && this.currentContent.tipo === 'live') return;
+      if(!video.duration || isNaN(video.duration)) return;
+      const rect = seekTrack.getBoundingClientRect();
+      const pct = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+      video.currentTime = pct * video.duration;
+      this._updateSeekUI();
+    });
+
+    // Atalhos de teclado SEMPRE ativos enquanto o player está aberto — sem
+    // precisar clicar no vídeo primeiro. Guardado por overlay visível pra
+    // não interferir em nenhum outro lugar do app (ex: campos de texto).
+    document.addEventListener('keydown', (e) => {
+      if(overlay.style.display !== 'flex') return;
+      if(e.key === 'Escape'){
+        e.preventDefault();
+        this.goBack();
+      } else if(e.key === ' ' || e.code === 'Space'){
+        e.preventDefault(); // evita rolar a página
+        this.togglePlayPause();
+        showAndSchedule();
+      } else if(e.key === 'ArrowRight'){
+        this.seekBy(10);
+        showAndSchedule();
+      } else if(e.key === 'ArrowLeft'){
+        this.seekBy(-10);
+        showAndSchedule();
+      }
+    });
+
+    this._controlsReady = true;
+  },
+
+  /**
+   * Mostra por um instante um indicador central (ícone + "±Ns") confirmando
+   * visualmente que o avanço/retrocesso aconteceu — sem isso, nada deixava
+   * claro que o seek tinha de fato ocorrido.
+   */
+  _showSeekFeedback(deltaSeconds){
+    const indicator = qs('#player-seek-feedback');
+    const icon = deltaSeconds >= 0 ? this.ICONS.seekFwd5 : this.ICONS.seekBack5;
+    indicator.innerHTML = icon.replace('<span>5</span>', '') + '<span>' + (deltaSeconds >= 0 ? '+' : '') + deltaSeconds + 's</span>';
+    indicator.classList.remove('show');
+    void indicator.offsetWidth; // força reflow pra reiniciar a animação em cliques seguidos
+    indicator.classList.add('show');
+    clearTimeout(this._seekFeedbackTimer);
+    this._seekFeedbackTimer = setTimeout(() => indicator.classList.remove('show'), 600);
+  },
+
+  seekBy(deltaSeconds){
+    const video = qs('#video-player');
+    if(this.currentContent && this.currentContent.tipo === 'live') return;
+    if(deltaSeconds > 0 && !video.duration) return;
+    video.currentTime = Math.max(0, deltaSeconds > 0 && video.duration ? Math.min(video.duration, video.currentTime + deltaSeconds) : video.currentTime + deltaSeconds);
+    this._updateSeekUI();
+    this._showSeekFeedback(deltaSeconds);
+  },
+
+  toggleFullscreen(){
+    const overlay = qs('#player-overlay');
+    if(document.fullscreenElement){
+      document.exitFullscreen().catch(()=>{});
+    } else if(overlay.requestFullscreen){
+      overlay.requestFullscreen().catch(()=>{});
+    }
+  },
+
+  togglePlayPause(){
+    const video = qs('#video-player');
+    const willPlay = video.paused;
+    if(willPlay) video.play().catch(()=>{});
+    else video.pause();
+    this._showPlayPauseFeedback(willPlay);
+  },
+
+  /**
+   * Define se um clique caiu na "área central" do vídeo (zona de toque
+   * grande, pensada pra controle remoto/dedo, em vez de um ícone minúsculo).
+   * Área central ~= 56% da largura × ~64% da altura, centralizada.
+   */
+  _isCenterZone(e){
+    const video = qs('#video-player');
+    const rect = video.getBoundingClientRect();
+    if(!rect.width || !rect.height) return true;
+    const relX = (e.clientX - rect.left) / rect.width;
+    const relY = (e.clientY - rect.top) / rect.height;
+    const marginX = 0.22;
+    const marginY = 0.18;
+    return relX >= marginX && relX <= (1 - marginX) && relY >= marginY && relY <= (1 - marginY);
+  },
+
+  /**
+   * Clique no vídeo — comportamento com 4 estados (pausado/tocando ×
+   * controles visíveis/escondidos), conforme especificado:
+   *
+   * Tocando + controles escondidos: qualquer clique só revela os
+   *   controles (nunca pausa nesse clique).
+   * Tocando + controles visíveis: clique no centro pausa (e o ícone de
+   *   pause aparece no centro, sem sumir — quem cuida disso é o listener
+   *   de 'pause' do <video>, que não reagenda o auto-esconder); clique
+   *   nas laterais esconde os controles na hora.
+   * Pausado + controles escondidos: clique na área central grande
+   *   despausa E revela os controles; clique nas laterais só revela.
+   * Pausado + controles visíveis: clique no centro (no ícone) despausa;
+   *   clique nas laterais esconde os controles (o ícone de pause some
+   *   junto, por fazer parte do mesmo grupo de visibilidade).
+   */
+  _handlePlayerClick(e){
+    const overlay = qs('#player-overlay');
+    const video = qs('#video-player');
+    const controlsVisible = !overlay.classList.contains('controls-hidden');
+    const isPaused = video.paused;
+    const inCenter = this._isCenterZone(e);
+
+    if(controlsVisible){
+      if(inCenter){
+        // Os listeners de 'play'/'pause' do <video> já cuidam de manter
+        // (se pausou) ou reagendar (se despausou) a visibilidade.
+        this.togglePlayPause();
+      } else {
+        clearTimeout(this._hideControlsTimer);
+        overlay.classList.add('controls-hidden');
+      }
+      return;
+    }
+
+    // Controles escondidos.
+    if(isPaused && inCenter){
+      this.togglePlayPause();
+      // O listener de 'play' não revela os controles sozinho, então
+      // garantimos isso aqui explicitamente.
+      this._showControls();
+      this._scheduleHideControls();
+    } else {
+      this._showControls();
+      this._scheduleHideControls();
+    }
+  },
+
+  /** Ícone grande que pisca no centro da tela ao dar play/pause (feedback
+   * visual claro do que acabou de acontecer). */
+  _showPlayPauseFeedback(isPlaying){
+    const indicator = qs('#player-playpause-feedback');
+    indicator.innerHTML = isPlaying ? this.ICONS.play : this.ICONS.pause;
+    indicator.classList.remove('show');
+    void indicator.offsetWidth;
+    indicator.classList.add('show');
+    clearTimeout(this._playPauseFeedbackTimer);
+    this._playPauseFeedbackTimer = setTimeout(() => indicator.classList.remove('show'), 500);
+  },
+
+  _updatePlayPauseIcon(){
+    const video = qs('#video-player');
+    const btn = qs('#player-playpause');
+    btn.innerHTML = video.paused ? this.ICONS.play : this.ICONS.pause;
+  },
+
+  _formatTime(seconds){
+    if(!isFinite(seconds) || seconds < 0) return '00:00';
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    const mm = String(m).padStart(2,'0');
+    const ss = String(s).padStart(2,'0');
+    return h > 0 ? h + ':' + mm + ':' + ss : mm + ':' + ss;
+  },
+
+  _updateSeekUI(){
+    const video = qs('#video-player');
+    const fill = qs('#player-seek-fill');
+    const curEl = qs('#player-time-current');
+    const durEl = qs('#player-time-duration');
+    if(video.duration && !isNaN(video.duration)){
+      fill.style.width = Math.min(100, (video.currentTime/video.duration)*100) + '%';
+    }
+    curEl.textContent = this._formatTime(video.currentTime);
+    durEl.textContent = this._formatTime(video.duration);
+  },
+
+  _updateBufferedUI(){
+    const video = qs('#video-player');
+    const bufferedFill = qs('#player-buffered-fill');
+    if(!video.duration || isNaN(video.duration) || video.buffered.length === 0) return;
+    const end = video.buffered.end(video.buffered.length - 1);
+    bufferedFill.style.width = Math.min(100, (end / video.duration) * 100) + '%';
+  },
+
+  _showControls(){
+    qs('#player-overlay').classList.remove('controls-hidden');
+    this._updatePlayPauseIcon();
+  },
+
+  _scheduleHideControls(){
+    clearTimeout(this._hideControlsTimer);
+    this._hideControlsTimer = setTimeout(() => {
+      qs('#player-overlay').classList.add('controls-hidden');
+    }, 3000);
+  },
+
+  /**
+   * Ação compartilhada entre o botão "←" e a tecla ESC: pra série, volta
+   * pra tela de detalhes daquela série (evita o "limbo" de quem assistiu
+   * pelo Continuar Assistindo); pra filme/ao vivo, fecha o player e — se
+   * o conteúdo tinha sido aberto a partir da busca global — reabre a
+   * busca com o mesmo termo/filtros, em vez de só cair na lista padrão.
+   */
+  goBack(){
+    const content = this.currentContent;
+    if(content && content.tipo === 'series' && content.seriesKey){
+      State.ui.activeSeriesKey = content.seriesKey;
+      State.ui.currentView = 'series-detail';
+      this.close();
+      return;
+    }
+    const returnTo = State.ui.returnTo;
+    State.ui.returnTo = null;
+    this.close();
+    if(returnTo && returnTo.type === 'search'){
+      openSearchPopup(returnTo.term, { activeType: returnTo.activeType, activeServer: returnTo.activeServer });
+    }
+  },
+
+  _ensureVideoListeners(){
+    if(this._videoListenersReady) return;
+    const video = qs('#video-player');
+    video.addEventListener('playing', ()=> this.hideBuffering());
+    video.addEventListener('waiting', ()=> this.showBuffering());
+    video.addEventListener('timeupdate', ()=>{
+      this.lastTimeUpdateAt = Date.now();
+      this._updateSeekUI();
+    });
+    // The stall watchdog only makes sense while the video is actually
+    // supposed to be playing. Without this, pausing a live channel for more
+    // than ~12s made the watchdog think playback had frozen and it would
+    // force a reconnect — which auto-resumed playback ("despausa sozinho").
+    video.addEventListener('pause', ()=>{
+      this.isUserPaused = true;
+      this._updatePlayPauseIcon();
+      this._showControls();
+      // Pausar não é "travado esperando rede" — sem isso, se o usuário
+      // pausasse enquanto o vídeo ainda estava no meio do buffer inicial
+      // (evento 'waiting' já disparado), a mensagem "Carregando stream..."
+      // ficava presa na tela mesmo já tendo carregado uma parte e estando
+      // simplesmente pausado de propósito.
+      this.hideBuffering();
+    });
+    video.addEventListener('play', ()=>{ this.isUserPaused = false; this.lastTimeUpdateAt = Date.now(); this._updatePlayPauseIcon(); this._scheduleHideControls(); });
+
+    // 'loadedmetadata' and 'ended' are attached ONCE here (not per open()/
+    // _startPlayback call) and always read this.currentContent/this.playToken
+    // at fire-time. Attaching them fresh on every open() without ever
+    // removing the previous ones would accumulate duplicate listeners on
+    // the same persistent <video> element across sessions (e.g. duplicated
+    // "próximo episódio" toasts, duplicated progress saves).
+    video.addEventListener('loadedmetadata', ()=>{
+      const content = this.currentContent;
+      this._updateSeekUI();
+      if(!content || content.tipo === 'live') return;
+      const prog = ProgressModule.getProgress(content.id);
+      if(prog && prog.currentTime && video.duration && prog.currentTime < video.duration - 5){
+        video.currentTime = prog.currentTime;
+      }
+    });
+
+    video.addEventListener('ended', ()=>{
+      const content = this.currentContent;
+      if(!content || content.tipo === 'live') return;
+      if(video.duration && !isNaN(video.duration)){
+        ProgressModule.saveProgress(content.id, video.duration, video.duration, content.seriesKey);
+      }
+      if(content.tipo === 'series' && this.nextEpisodeContent){
+        const nextContent = this.nextEpisodeContent;
+        const myToken = this.playToken;
+        showToast('Reproduzindo próximo episódio...', 'success');
+        setTimeout(()=>{
+          if(myToken === this.playToken) this.open(nextContent);
+        }, 1200);
+      }
+    });
+
+    this._videoListenersReady = true;
+  },
+
+  _startPlayback(content, token){
+    if(token !== this.playToken) return; // a newer open()/close() happened meanwhile
+    const video = qs('#video-player');
+    this.showBuffering();
+
+    const url = resolveContentUrl(content);
+    const isLive = content.tipo === 'live';
+    const looksHls = /\.m3u8(\?|$)/i.test(url);
+
+    if(looksHls && window.Hls && Hls.isSupported()){
+      this.hls = new Hls();
+      this.hls.loadSource(url);
+      this.hls.attachMedia(video);
+      this.hls.on(Hls.Events.MANIFEST_PARSED, ()=>{
+        video.play().catch(()=>{});
+      });
+      this.hls.on(Hls.Events.ERROR, (event, data)=>{
+        if(!data || !data.fatal) return;
+        if(data.type === Hls.ErrorTypes.NETWORK_ERROR){
+          this._retryOrFallback(content, token, 'Falha de rede ao carregar o stream HLS.');
+        } else if(data.type === Hls.ErrorTypes.MEDIA_ERROR){
+          try{ this.hls.recoverMediaError(); }catch(e){ this._retryOrFallback(content, token, 'Erro de mídia no stream HLS.'); }
+        } else {
+          this._retryOrFallback(content, token, 'Erro ao reproduzir stream HLS.');
+        }
+      });
+    } else if(looksHls && video.canPlayType('application/vnd.apple.mpegurl')){
+      // Safari native HLS support
+      video.src = url;
+      video.addEventListener('error', ()=> this._retryOrFallback(content, token, 'Erro ao reproduzir HLS neste navegador.'), { once:true });
+      video.play().catch(()=>{});
+    } else if(isLive){
+      // Ambiguous case: a "live" item with no .m3u8 manifest. Two very
+      // different realities hide behind this in practice:
+      //  1) a genuine continuous raw MPEG-TS channel (needs mpegts.js), or
+      //  2) an IPTV "movie" URL with no visible extension that actually
+      //     redirects to a real, finite MP4/MKV file (common with Xtream
+      //     Codes panels) — this plays fine as a normal <video src>.
+      // We try native playback first: it's cheap, fails fast on a genuine
+      // raw TS stream, and — importantly — native <video> playback does
+      // NOT require CORS headers from the server (only JS-based libraries
+      // like mpegts.js/hls.js do, since they fetch() the bytes manually to
+      // demux them). So trying native first also sidesteps CORS entirely
+      // for anything the browser can already play on its own.
+      if(this._skipNativeAttempt){
+        this._startMpegts(content, token, video, url);
+      } else {
+        this._tryNativeThenMpegts(content, token, video, url);
+      }
+    } else {
+      // Movies/episodes with a recognized container (mp4/webm/etc.)
+      video.src = url;
+      video.addEventListener('error', ()=> this._retryOrFallback(content, token, 'Erro ao carregar o arquivo de vídeo.'), { once:true });
+      video.play().catch(()=>{});
+    }
+
+    if(!isLive){
+      this.saveInterval = setInterval(()=>{
+        if(video.duration && !isNaN(video.duration)){
+          ProgressModule.saveProgress(content.id, video.currentTime, video.duration, content.seriesKey);
+        }
+      }, 4000);
+    }
+  },
+
+  _tryNativeThenMpegts(content, token, video, url){
+    const onNativeError = ()=>{
+      video.removeEventListener('error', onNativeError);
+      if(token !== this.playToken) return;
+      this._skipNativeAttempt = true; // já sabemos que falha; não tentar de novo nos retries
+      video.removeAttribute('src');
+      try{ video.load(); }catch(e){}
+      this._startMpegts(content, token, video, url);
+    };
+    video.addEventListener('error', onNativeError, { once:true });
+    video.src = url;
+    video.play().catch(()=>{});
+  },
+
+  _startMpegts(content, token, video, url){
+    // Raw MPEG-TS stream (no .m3u8 manifest, and native playback didn't
+    // work) — typical of Xtream Codes "output=ts" live channels. Browsers
+    // cannot play raw TS via <video src>, so we use mpegts.js which remuxes
+    // MPEG-TS into fragmented MP4 via MediaSource Extensions.
+    if(window.mpegts && mpegts.isSupported()){
+      try{
+        this.mpegtsPlayer = mpegts.createPlayer({
+          type: 'mpegts',
+          isLive: true,
+          url: url
+        }, {
+          enableWorker: true,
+          // Prioriza estabilidade sobre latência mínima: "chasing" agressivo da borda
+          // ao vivo faz o player forçar saltos/avanços constantes em conexões
+          // instáveis, o que aparece como travamentos frequentes.
+          liveBufferLatencyChasing: false,
+          liveBufferLatencyMaxLatency: 6,
+          liveBufferLatencyMinRemain: 2,
+          // Buffer inicial maior = mais cushion antes de começar a tocar,
+          // reduzindo engasgos por pequenas variações de rede.
+          enableStashBuffer: true,
+          stashInitialSize: 512 * 1024,
+          // Sem isso, o SourceBuffer de um stream ao vivo cresce indefinidamente
+          // em memória, deixando o navegador cada vez mais lento/travado quanto
+          // mais tempo o canal fica aberto. Isso é a causa mais comum de
+          // "trava depois de um tempo assistindo".
+          autoCleanupSourceBuffer: true,
+          autoCleanupMaxBackwardDuration: 30,
+          autoCleanupMinBackwardDuration: 15
+        });
+        this.mpegtsPlayer.attachMediaElement(video);
+        this.mpegtsPlayer.on(mpegts.Events.ERROR, (errType, errDetail, errInfo)=>{
+          const msg = this._diagnoseStreamError(errType, errDetail, errInfo);
+          this._retryOrFallback(content, token, msg);
+        });
+        this.mpegtsPlayer.load();
+        this.mpegtsPlayer.play().catch(()=>{});
+
+        // Watchdog: alguns travamentos de stream ao vivo não disparam evento de
+        // erro nenhum — o vídeo simplesmente para de avançar. Aqui checamos
+        // periodicamente se o tempo do vídeo está evoluindo; se ficar parado
+        // por muito tempo (e o usuário NÃO tiver pausado manualmente),
+        // forçamos uma reconexão automática.
+        this.lastTimeUpdateAt = Date.now();
+        this.stallWatchdog = setInterval(()=>{
+          if(token !== this.playToken){ clearInterval(this.stallWatchdog); return; }
+          if(this.isUserPaused) return; // pausa manual não é travamento
+          const stalledFor = Date.now() - (this.lastTimeUpdateAt || Date.now());
+          if(stalledFor > 12000){
+            clearInterval(this.stallWatchdog);
+            this.stallWatchdog = null;
+            this._retryOrFallback(content, token, 'O stream travou e não retomou sozinho.');
+          }
+        }, 4000);
+      }catch(err){
+        this._retryOrFallback(content, token, 'Não foi possível iniciar o player para este canal.');
+      }
+    } else {
+      this.hideBuffering();
+      showToast('Seu navegador não suporta reprodução deste formato (MPEG-TS via MSE).', 'error');
+      this.showFallbackBar(url, 'Seu navegador não suporta este formato. Copie o link e use um player externo (ex: VLC).');
+    }
+  },
+
+  /**
+   * Tries to distinguish a CORS/network problem (which no client-side library
+   * can bypass — it's a browser security restriction controlled by the
+   * remote server) from a codec/decoding problem, to give the user an
+   * accurate diagnosis instead of a generic error.
+   */
+  _diagnoseStreamError(errType, errDetail, errInfo){
+    const detail = String(errDetail || '').toLowerCase();
+    const info = errInfo && errInfo.msg ? String(errInfo.msg).toLowerCase() : '';
+    if(detail.indexOf('network') !== -1 || info.indexOf('fetch') !== -1 || info.indexOf('cors') !== -1 || info.indexOf('failed to fetch') !== -1){
+      return 'Não foi possível acessar o stream (rede ou CORS). Muitos servidores IPTV não permitem acesso direto do navegador — isso não é um erro do app, é uma restrição do servidor de origem.';
+    }
+    if(detail.indexOf('codec') !== -1 || detail.indexOf('demux') !== -1 || detail.indexOf('format') !== -1){
+      return 'O formato/codec deste canal não é compatível com reprodução no navegador.';
+    }
+    return 'Não foi possível reproduzir este canal no navegador.';
+  },
+
+  _retryOrFallback(content, token, message){
+    if(token !== this.playToken) return;
+    if(this.retryCount < this.maxRetries){
+      this.retryCount++;
+      showToast('Tentando reconectar ao stream... (' + this.retryCount + '/' + this.maxRetries + ')', 'error');
+      this.cleanup();
+      this.retryTimer = setTimeout(()=>{
+        if(token !== this.playToken) return;
+        this._startPlayback(content, token);
+      }, 1500 * this.retryCount);
+    } else {
+      this.hideBuffering();
+      showToast(message, 'error');
+      this.showFallbackBar(resolveContentUrl(content), message + ' Copie o link e abra em um player externo (ex: VLC).');
+    }
+  },
+
+  showBuffering(){
+    const b = qs('#player-buffering');
+    if(b) b.style.display = 'flex';
+  },
+  hideBuffering(){
+    const b = qs('#player-buffering');
+    if(b) b.style.display = 'none';
+  },
+
+  showFallbackBar(url, message){
+    this.hideBuffering();
+    let bar = qs('#player-fallback-bar');
+    if(!bar){
+      bar = el('div', {
+        id: 'player-fallback-bar',
+        style: 'position:absolute;bottom:0;left:0;right:0;padding:14px 20px;background:linear-gradient(0deg,rgba(0,0,0,.85),transparent);display:flex;align-items:center;gap:12px;z-index:2;flex-wrap:wrap;'
+      });
+      qs('#player-overlay').appendChild(bar);
+    }
+    bar.innerHTML = '';
+    bar.appendChild(el('span', { style:'color:#fff;font-size:13px;max-width:520px;' }, [message || 'Não foi possível reproduzir no navegador. Copie o link e abra em um player externo (ex: VLC).']));
+    const copyBtn = el('button', { class:'btn primary small' }, ['Copiar link']);
+    copyBtn.addEventListener('click', function(){
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(url).then(function(){
+          showToast('Link copiado.', 'success');
+        }).catch(function(){
+          showToast('Não foi possível copiar automaticamente. URL: ' + url, 'error');
+        });
+      } else {
+        showToast('URL: ' + url, 'error');
+      }
+    });
+    bar.appendChild(copyBtn);
+    const retryBtn = el('button', { class:'btn small' }, ['Tentar novamente'] );
+    retryBtn.addEventListener('click', ()=>{
+      if(!this.currentContent) return;
+      this.retryCount = 0;
+      this.hideFallbackBar();
+      this.playToken++;
+      this.cleanup();
+      this._startPlayback(this.currentContent, this.playToken);
+    });
+    bar.appendChild(retryBtn);
+    bar.style.display = 'flex';
+  },
+
+  hideFallbackBar(){
+    const bar = qs('#player-fallback-bar');
+    if(bar) bar.style.display = 'none';
+  },
+
+  cleanup(){
+    if(this.retryTimer){ clearTimeout(this.retryTimer); this.retryTimer = null; }
+    if(this.stallWatchdog){ clearInterval(this.stallWatchdog); this.stallWatchdog = null; }
+    if(this._hideControlsTimer){ clearTimeout(this._hideControlsTimer); this._hideControlsTimer = null; }
+    const video = qs('#video-player');
+    if(this.hls){ try{ this.hls.destroy(); }catch(e){} this.hls = null; }
+    if(this.mpegtsPlayer){
+      try{ this.mpegtsPlayer.pause(); }catch(e){}
+      try{ this.mpegtsPlayer.unload(); }catch(e){}
+      try{ this.mpegtsPlayer.detachMediaElement(); }catch(e){}
+      try{ this.mpegtsPlayer.destroy(); }catch(e){}
+      this.mpegtsPlayer = null;
+    }
+    if(this.saveInterval){ clearInterval(this.saveInterval); this.saveInterval = null; }
+    try{ video.pause(); }catch(e){}
+    video.removeAttribute('src');
+    try{ video.load(); }catch(e){}
+    this.hideBuffering();
+  },
+
+  close(){
+    this.playToken++; // invalidate any pending retries/callbacks
+    if(document.fullscreenElement) document.exitFullscreen().catch(()=>{});
+    const video = qs('#video-player');
+    if(this.currentContent && this.currentContent.tipo !== 'live' && video.duration && !isNaN(video.duration)){
+      ProgressModule.saveProgress(this.currentContent.id, video.currentTime, video.duration, this.currentContent.seriesKey);
+    }
+    this.cleanup();
+    this.hideFallbackBar();
+    this.nextEpisodeContent = null;
+    const nextBtn = qs('#player-next-episode');
+    if(nextBtn) nextBtn.style.display = 'none';
+    qs('#player-overlay').style.display = 'none';
+    this.currentContent = null;
+    Router.render();
+  }
+};
+
+/* ======================================================================
+   RENDER HELPERS: cards, pagination, filters
+   ====================================================================== */
+function getServerName(serverId){
+  const s = State.servers.get(serverId);
+  return s ? s.nome : 'Desconhecido';
+}
+
+let categorySearchDebounceTimer = null;
+
+/**
+ * Renders a subcategory <select> together with a small text input above it
+ * to filter the option list by name — useful when a server has dozens or
+ * hundreds of group-titles. The text field only filters which options are
+ * shown; it never touches the actual applied filter (filters.category),
+ * which only changes when the user picks an option from the select.
+ */
+function renderCategorySelectWithFilter(viewKey, filters, allCategories){
+  const wrap = el('div', { style:'display:flex;flex-direction:column;gap:6px;min-width:200px;' });
+  const searchText = State.ui.categoryFilterText[viewKey] || '';
+
+  const searchInput = el('input', {
+    type:'text',
+    placeholder:'Filtrar categorias...',
+    value: searchText,
+    'data-cat-search': viewKey,
+    style:'font-size:12.5px;padding:7px 10px;'
+  });
+  searchInput.addEventListener('input', function(e){
+    const val = e.target.value;
+    const cursorPos = e.target.selectionStart;
+    clearTimeout(categorySearchDebounceTimer);
+    categorySearchDebounceTimer = setTimeout(function(){
+      State.ui.categoryFilterText[viewKey] = val;
+      Router.render();
+      // Router.render() rebuilds #content-area from scratch, which destroys
+      // and recreates this input — without this, the field loses focus on
+      // every keystroke and you'd have to click back into it each time.
+      const newInput = document.querySelector('[data-cat-search="'+viewKey+'"]');
+      if(newInput){
+        newInput.focus();
+        if(newInput.setSelectionRange){
+          try{ newInput.setSelectionRange(cursorPos, cursorPos); }catch(err){}
+        }
+      }
+    }, 150);
+  });
+  wrap.appendChild(searchInput);
+
+  const normSearch = normalizeText(searchText);
+  let visibleCats = allCategories;
+  if(normSearch){
+    visibleCats = allCategories.filter(c => normalizeText(c).indexOf(normSearch) !== -1);
+    // Always keep the currently-selected category in the list even if it
+    // doesn't match the current search text, so the select never silently
+    // "loses" the active selection from view.
+    if(filters.category !== 'all' && visibleCats.indexOf(filters.category) === -1 && allCategories.indexOf(filters.category) !== -1){
+      visibleCats = [filters.category].concat(visibleCats);
+    }
+  }
+
+  const catSelect = el('select', { onchange:function(e){ filters.category = e.target.value; filters.page=1; Router.render(); } });
+  catSelect.appendChild(el('option', { value:'all' }, ['Todas as categorias']));
+  for(const c of visibleCats){
+    const opt = el('option', { value:c }, [c]);
+    if(filters.category === c) opt.setAttribute('selected','true');
+    catSelect.appendChild(opt);
+  }
+  if(filters.category === 'all') catSelect.value = 'all';
+  wrap.appendChild(catSelect);
+
+  if(normSearch && visibleCats.length === 0){
+    wrap.appendChild(el('div', { style:'font-size:11px;color:var(--text-2);' }, ['Nenhuma categoria encontrada']));
+  }
+
+  return wrap;
+}
+
+function buildCategoryOptions(type){
+  const cats = new Set();
+  for(const [key] of State.indexes.contentsByCategory){
+    const parts = key.split('::');
+    if(parts[0] === type) cats.add(parts.slice(1).join('::'));
+  }
+  return Array.from(cats).sort();
+}
+
+function buildServerOptionsForType(type){
+  const serverIds = new Set();
+  for(const [key] of State.indexes.contentsByTypeServer){
+    const parts = key.split('::');
+    if(parts[0] === type) serverIds.add(parts[1]);
+  }
+  return Array.from(serverIds).map(id => ({ id, nome: getServerName(id) })).sort((a,b)=>a.nome.localeCompare(b.nome));
+}
+
+function renderContentCard(content, options){
+  options = options || {};
+  const card = el('div', { class:'content-card', tabindex:'0' });
+  const thumb = el('div', { class:'thumb' });
+  const ownLogo = resolveContentLogo(content); // cobre capa plana (antiga) ou compactada (prefixo+sufixo)
+  const nameEl = el('div', { class:'name' }, [resolveContentName(content)]);
+  const needsSeriesFallback = content.tipo === 'series' && content.seriesKey && (!ownLogo || !content.nome);
+  if(ownLogo){
+    const img = el('img', { loading:'lazy' });
+    img.src = ownLogo;
+    img.onerror = function(){ img.remove(); thumb.appendChild(el('div',{class:'ph'},['🎬'])); };
+    thumb.appendChild(img);
+  } else if(needsSeriesFallback){
+    thumb.appendChild(el('div',{class:'ph'},['🎬']));
+  } else {
+    thumb.appendChild(el('div',{class:'ph'},['🎬']));
+  }
+  if(needsSeriesFallback){
+    // Falta capa e/ou nome próprio (foram compactados/omitidos) e este
+    // card está FORA da tela da série (ex: Continuar Assistindo), onde não
+    // temos o resumo da série já em mãos. Uma única busca pontual e leve
+    // (1 registro pequeno) resolve os dois de uma vez.
+    const placeholder = thumb.querySelector('.ph');
+    IDB.getByKey(STORES.seriesSummary, content.seriesKey).then(summary => {
+      if(!summary) return;
+      if(!ownLogo && summary.logo && placeholder && thumb.contains(placeholder)){
+        const img = el('img', { loading:'lazy' });
+        img.src = summary.logo;
+        img.onerror = function(){ img.remove(); };
+        placeholder.remove();
+        thumb.insertBefore(img, thumb.firstChild);
+      }
+      if(!content.nome){
+        nameEl.textContent = resolveContentName(content, summary.name);
+      }
+    }).catch(()=>{});
+  }
+  if(content.tipo === 'live'){
+    thumb.appendChild(el('div', { class:'live-badge' }, ['AO VIVO']));
+  }
+
+  const topRightWrap = el('div', { style:'position:absolute;top:8px;right:8px;display:flex;gap:6px;z-index:2;' });
+
+  // Download só faz sentido pra arquivo finito (filme ou episódio de série)
+  // — ao vivo é um stream contínuo, não um arquivo pra baixar. Fica à
+  // esquerda do favorito. No Dashboard fica oculto (options.hideDownload).
+  if((content.tipo === 'movie' || content.tipo === 'series') && !options.hideDownload){
+    const dlBtn = el('button', { class:'fav-btn', style:'position:static;', title:'Baixar' }, ['⬇']);
+    dlBtn.addEventListener('click', function(e){
+      e.stopPropagation();
+      downloadContentUrl(resolveContentUrl(content), nameEl.textContent);
+    });
+    topRightWrap.appendChild(dlBtn);
+  }
+
+  const favBtn = el('button', { class:'fav-btn' + (content.favorito ? ' active':''), style:'position:static;', onclick: async function(e){
+    e.stopPropagation();
+    await IndexModule.toggleFavoriteContent(content);
+    favBtn.className = 'fav-btn' + (content.favorito ? ' active' : '');
+    favBtn.textContent = content.favorito ? '★' : '☆';
+    updateSidebarCounts();
+    const filteringByFav = (content.tipo === 'movie' && State.ui.currentView === 'movies' && State.ui.filters.movie.favoritesOnly)
+      || (content.tipo === 'live' && State.ui.currentView === 'live' && State.ui.filters.live.favoritesOnly)
+      || State.ui.currentView === 'favorites';
+    if(!content.favorito && filteringByFav) card.remove();
+  }}, [content.favorito ? '★' : '☆']);
+  topRightWrap.appendChild(favBtn);
+  thumb.appendChild(topRightWrap);
+
+  if(options.showRemoveFromContinue){
+    const rmBtn = el('button', {
+      style:'position:absolute;top:8px;left:8px;width:29px;height:29px;border-radius:50%;background:rgba(10,11,18,.55);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);border:1px solid rgba(255,255,255,.12);display:flex;align-items:center;justify-content:center;font-size:13px;color:#fff;z-index:2;',
+      title:'Remover de Continuar Assistindo'
+    }, ['✕']);
+    rmBtn.addEventListener('click', async function(e){
+      e.stopPropagation();
+      await ProgressModule.resetProgress(content.id);
+      card.remove();
+      updateSidebarCounts();
+      if(typeof options.onRemoved === 'function') options.onRemoved();
+    });
+    thumb.appendChild(rmBtn);
+  }
+
+  if(content.tipo !== 'live'){
+    const prog = ProgressModule.getProgress(content.id);
+    if(prog && prog.porcentagem > 0){
+      const pbar = el('div', { class:'progress-bar-mini' }, [el('div',{class:'fill', style:'width:'+Math.min(100,prog.porcentagem)+'%'})]);
+      thumb.appendChild(pbar);
+    }
+  }
+
+  card.appendChild(thumb);
+  const info = el('div', { class:'info' });
+  info.appendChild(nameEl);
+  const meta = el('div', { class:'meta' });
+  meta.appendChild(el('span', { class:'server-tag', title: getServerName(content.serverId) }, [getServerName(content.serverId)]));
+  info.appendChild(meta);
+  card.appendChild(info);
+
+  const activateCard = function(){
+    if(activeSearchOverlay){
+      const f = activeSearchOverlay.getFilters();
+      State.ui.returnTo = { type:'search', term: activeSearchOverlay.input.value, activeType: f.activeType, activeServer: f.activeServer };
+      activeSearchOverlay.close(true);
+    } else {
+      State.ui.returnTo = null;
+    }
+    PlayerModule.open(content);
+  };
+  card.addEventListener('click', activateCard);
+  card.addEventListener('keydown', function(e){
+    if(e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar'){
+      e.preventDefault();
+      activateCard();
+    }
+  });
+
+  return card;
+}
+
+function renderSeriesCard(entry){
+  const card = el('div', { class:'content-card', tabindex:'0' });
+  const thumb = el('div', { class:'thumb' });
+  if(entry.logo){
+    const img = el('img', { loading:'lazy' });
+    img.src = entry.logo;
+    img.onerror = function(){ img.remove(); thumb.appendChild(el('div',{class:'ph'},['🎬'])); };
+    thumb.appendChild(img);
+  } else {
+    thumb.appendChild(el('div',{class:'ph'},['🎬']));
+  }
+  const isFav = !!entry.favorito;
+  const favBtn = el('button', { class:'fav-btn' + (isFav ? ' active':''), onclick: async function(e){
+    e.stopPropagation();
+    await IndexModule.toggleFavoriteSeries(entry.key);
+    entry.favorito = !isFav;
+    favBtn.className = 'fav-btn' + (entry.favorito ? ' active' : '');
+    favBtn.textContent = entry.favorito ? '★' : '☆';
+    updateSidebarCounts();
+    const filteringByFav = (State.ui.currentView === 'series' && State.ui.filters.series.favoritesOnly) || State.ui.currentView === 'favorites';
+    if(!entry.favorito && filteringByFav) card.remove();
+  }}, [isFav ? '★' : '☆']);
+  thumb.appendChild(favBtn);
+  card.appendChild(thumb);
+
+  const info = el('div', { class:'info' });
+  info.appendChild(el('div', { class:'name' }, [entry.name]));
+  const meta = el('div', { class:'meta' });
+  meta.appendChild(el('span', { class:'server-tag', title:getServerName(entry.serverId) }, [getServerName(entry.serverId)]));
+  const epTempText = entry.seasonCount ? (entry.episodeCount||0) + ' ep. • ' + entry.seasonCount + ' temp.' : (entry.episodeCount||0) + ' ep.';
+  meta.appendChild(el('span', { class:'cat-tag' }, [epTempText]));
+  info.appendChild(meta);
+  card.appendChild(info);
+
+  const activateSeriesCard = function(){
+    if(activeSearchOverlay){
+      const f = activeSearchOverlay.getFilters();
+      State.ui.returnTo = { type:'search', term: activeSearchOverlay.input.value, activeType: f.activeType, activeServer: f.activeServer };
+      activeSearchOverlay.close(true);
+    } else {
+      State.ui.returnTo = null;
+    }
+    State.ui.activeSeriesKey = entry.key;
+    State.ui.currentView = 'series-detail';
+    Router.render();
+  };
+  card.addEventListener('click', activateSeriesCard);
+  card.addEventListener('keydown', function(e){
+    if(e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar'){
+      e.preventDefault();
+      activateSeriesCard();
+    }
+  });
+
+  return card;
+}
+
+function renderPagination(currentPage, totalPages, onChange){
+  const wrap = el('div', { class:'pagination' });
+  if(totalPages <= 1) return wrap;
+  const maxButtons = 7;
+  let start = Math.max(1, currentPage - 3);
+  let end = Math.min(totalPages, start + maxButtons - 1);
+  start = Math.max(1, end - maxButtons + 1);
+
+  wrap.appendChild(el('button', { disabled: currentPage===1 ? 'true':null, onclick:()=>onChange(1) }, ['«']));
+  wrap.appendChild(el('button', { disabled: currentPage===1 ? 'true':null, onclick:()=>onChange(Math.max(1,currentPage-1)) }, ['‹']));
+  for(let p=start; p<=end; p++){
+    const b = el('button', { class: p===currentPage?'active':'', onclick:((pp)=>()=>onChange(pp))(p) }, [String(p)]);
+    wrap.appendChild(b);
+  }
+  wrap.appendChild(el('button', { disabled: currentPage===totalPages ? 'true':null, onclick:()=>onChange(Math.min(totalPages,currentPage+1)) }, ['›']));
+  wrap.appendChild(el('button', { disabled: currentPage===totalPages ? 'true':null, onclick:()=>onChange(totalPages) }, ['»']));
+  return wrap;
+}
+
+function renderEmptyState(icon, title, msg){
+  return el('div', { class:'empty-state' }, [
+    el('div', { class:'big-ic' }, [icon]),
+    el('h3', {}, [title]),
+    el('p', {}, [msg])
+  ]);
+}
+
+/* ======================================================================
+   VIEW: LIST (movies / live) with filters + pagination
+   ====================================================================== */
+/**
+ * Busca servidores+categorias (metadados, cacheados sem depender da
+ * página) + a página de itens em si, pro tipo pedido ('movie'|'live'|
+ * 'series'). Usada tanto pelo pré-carregamento inicial quanto pela
+ * navegação normal — é o MESMO caminho, então se você clicar numa aba
+ * enquanto o pré-carregamento dela ainda está em andamento, reaproveita a
+ * busca já em curso (via `pageFetchesInFlight`) em vez de disparar outra
+ * do zero.
+ */
+async function loadTypePageData(type, filters, pageSize){
+  const metaKey = filterMetaCacheKey(type, filters);
+  const pageKey = pageCacheKey(type, filters);
+
+  const cachedMeta = State.pageCache.get(metaKey);
+  const cachedPage = State.pageCache.get(pageKey);
+  if(cachedMeta && cachedPage){
+    return { serverIds: cachedMeta.serverIds, catOptions: cachedMeta.catOptions, pageResult: cachedPage };
+  }
+
+  if(State.pageFetchesInFlight.has(pageKey)){
+    return State.pageFetchesInFlight.get(pageKey);
+  }
+
+  const promise = (async () => {
+    const metaPromise = cachedMeta ? Promise.resolve(cachedMeta) : (
+      type === 'series'
+        ? Promise.all([QueryModule.getServersForSeries(), QueryModule.getCategoriesForSeries()]).then(([s,c]) => ({ serverIds:s, catOptions:c }))
+        : Promise.all([QueryModule.getServersForType(type), QueryModule.getCategoriesForType(type)]).then(([s,c]) => ({ serverIds:s, catOptions:c }))
+    );
+    const pagePromise = type === 'series'
+      ? QueryModule.getSeriesPage(filters, filters.page, pageSize)
+      : QueryModule.getContentPage(type, filters, filters.page, pageSize);
+    const [meta, pageResult] = await Promise.all([metaPromise, pagePromise]);
+    State.pageCache.set(metaKey, meta);
+    State.pageCache.set(pageKey, pageResult);
+    return { serverIds: meta.serverIds, catOptions: meta.catOptions, pageResult };
+  })();
+
+  State.pageFetchesInFlight.set(pageKey, promise);
+  try{
+    return await promise;
+  } finally {
+    State.pageFetchesInFlight.delete(pageKey);
+  }
+}
+
+async function renderListView(type, titleLabel, container){
+  const filters = State.ui.filters[type];
+  container.appendChild(el('div', { class:'section-header' }, [ el('h2', {}, [titleLabel]) ]));
+
+  const pageKey = pageCacheKey(type, filters);
+  const alreadyCached = State.pageCache.has(filterMetaCacheKey(type, filters)) && State.pageCache.has(pageKey);
+  const alreadyInFlight = State.pageFetchesInFlight.has(pageKey);
+  let loading = null;
+  if(!alreadyCached && !alreadyInFlight){
+    loading = el('div', { class:'loader-inline' }, [el('div',{class:'spinner'}), 'Carregando...']);
+    container.appendChild(loading);
+  }
+  // Mesma função usada pelo pré-carregamento inicial — se ele já estiver
+  // buscando exatamente isso, reaproveita a mesma busca em vez de disparar
+  // outra do zero.
+  const { serverIds, catOptions, pageResult } = await loadTypePageData(type, filters, State.settings.pageSize || PAGE_SIZE_DEFAULT);
+  if(State.ui.currentView !== (type === 'movie' ? 'movies' : 'live')) return; // usuário já navegou pra outro lugar
+  if(loading) loading.remove();
+
+  if(serverIds.length > 0){
+    const chipRow = el('div', { class:'chip-row' });
+    chipRow.appendChild(el('button', { class:'chip' + (filters.server==='all'?' active':''), onclick:()=>{ filters.server='all'; filters.page=1; Router.render(); } }, ['Todos']));
+    for(const sid of serverIds){
+      chipRow.appendChild(el('button', { class:'chip' + (filters.server===sid?' active':''), onclick:((id)=>()=>{ filters.server=id; filters.page=1; Router.render(); })(sid) }, [getServerName(sid)]));
+    }
+    container.appendChild(chipRow);
+  }
+
+  const filterRow = el('div', { class:'filter-row' });
+  filterRow.appendChild(renderCategorySelectWithFilter(type, filters, catOptions));
+  filterRow.appendChild(el('button', { class:'chip' + (filters.favoritesOnly?' active':''), onclick:()=>{ filters.favoritesOnly = !filters.favoritesOnly; filters.page=1; Router.render(); } }, ['★ Favoritos']));
+  container.appendChild(filterRow);
+
+  const pageSize = State.settings.pageSize || PAGE_SIZE_DEFAULT;
+  const totalPages = Math.max(1, Math.ceil(pageResult.total / pageSize));
+  if(filters.page > totalPages && totalPages >= 1){ filters.page = totalPages; Router.render(); return; }
+
+  const counterEl0 = qs(type === 'movie' ? '#cnt-movies' : '#cnt-live');
+  if(counterEl0) counterEl0.textContent = pageResult.total;
+
+  if(pageResult.total === 0){
+    container.appendChild(renderEmptyState('📭', 'Nenhum conteúdo encontrado', 'Nenhum conteúdo importado ainda com esses filtros.'));
+    return;
+  }
+
+  const grid = el('div', { class:'card-grid' });
+  for(const content of pageResult.items){ grid.appendChild(renderContentCard(content)); }
+  container.appendChild(grid);
+  container.appendChild(renderPagination(filters.page, totalPages, (p)=>{ filters.page = p; Router.render(); window.scrollTo(0,0); }));
+
+}
+
+/* ======================================================================
+   VIEW: SERIES LIST
+   ====================================================================== */
+async function renderSeriesListView(container){
+  const filters = State.ui.filters.series;
+  container.appendChild(el('div', { class:'section-header' }, [ el('h2', {}, ['Séries']) ]));
+
+  const pageKey = pageCacheKey('series', filters);
+  const alreadyCached = State.pageCache.has(filterMetaCacheKey('series', filters)) && State.pageCache.has(pageKey);
+  const alreadyInFlight = State.pageFetchesInFlight.has(pageKey);
+  let loading = null;
+  if(!alreadyCached && !alreadyInFlight){
+    loading = el('div', { class:'loader-inline' }, [el('div',{class:'spinner'}), 'Carregando...']);
+    container.appendChild(loading);
+  }
+  const { serverIds, catOptions, pageResult } = await loadTypePageData('series', filters, State.settings.pageSize || PAGE_SIZE_DEFAULT);
+  if(State.ui.currentView !== 'series') return;
+  if(loading) loading.remove();
+
+  if(serverIds.length > 0){
+    const chipRow = el('div', { class:'chip-row' });
+    chipRow.appendChild(el('button', { class:'chip'+(filters.server==='all'?' active':''), onclick:()=>{ filters.server='all'; filters.page=1; Router.render(); } }, ['Todos']));
+    for(const sid of serverIds){
+      chipRow.appendChild(el('button', { class:'chip'+(filters.server===sid?' active':''), onclick:((id)=>()=>{ filters.server=id; filters.page=1; Router.render(); })(sid) }, [getServerName(sid)]));
+    }
+    container.appendChild(chipRow);
+  }
+
+  const filterRow = el('div', { class:'filter-row' });
+  filterRow.appendChild(renderCategorySelectWithFilter('series', filters, catOptions));
+  filterRow.appendChild(el('button', { class:'chip'+(filters.favoritesOnly?' active':''), onclick:()=>{ filters.favoritesOnly=!filters.favoritesOnly; filters.page=1; Router.render(); } }, ['★ Favoritos']));
+  container.appendChild(filterRow);
+
+  const pageSize = State.settings.pageSize || PAGE_SIZE_DEFAULT;
+  const totalPages = Math.max(1, Math.ceil(pageResult.total / pageSize));
+  if(filters.page > totalPages && totalPages >= 1){ filters.page = totalPages; Router.render(); return; }
+
+  const seriesCounterEl = qs('#cnt-series');
+  if(seriesCounterEl) seriesCounterEl.textContent = pageResult.total;
+
+  if(pageResult.total === 0){
+    container.appendChild(renderEmptyState('📺', 'Nenhuma série encontrada', 'Nenhuma série importada ainda com esses filtros.'));
+    return;
+  }
+
+  const grid = el('div', { class:'card-grid' });
+  for(const entry of pageResult.items){ grid.appendChild(renderSeriesCard(entry)); }
+  container.appendChild(grid);
+  container.appendChild(renderPagination(filters.page, totalPages, (p)=>{ filters.page=p; Router.render(); window.scrollTo(0,0); }));
+}
+
+/* ======================================================================
+   VIEW: SERIES DETAIL
+   ====================================================================== */
+/**
+ * Ação do botão "← Voltar" da tela de detalhes da série. Se a série foi
+ * aberta a partir da busca global, reabre a busca com o mesmo termo e
+ * filtros em vez de cair na lista padrão de Séries (senão o usuário
+ * "perdia" a pesquisa que tinha feito).
+ */
+function goBackFromSeriesDetail(){
+  const returnTo = State.ui.returnTo;
+  State.ui.returnTo = null;
+  State.ui.currentView = 'series';
+  Router.render();
+  if(returnTo && returnTo.type === 'search'){
+    openSearchPopup(returnTo.term, { activeType: returnTo.activeType, activeServer: returnTo.activeServer });
+  }
+}
+
+async function renderSeriesDetailView(container){
+  const key = State.ui.activeSeriesKey;
+  const loading = el('div', { class:'loader-inline' }, [el('div',{class:'spinner'}), 'Carregando...']);
+  container.appendChild(loading);
+
+  let entry, episodes, favList;
+  try{
+    [entry, episodes, favList] = await Promise.all([
+      IDB.getByKey(STORES.seriesSummary, key),
+      QueryModule.getEpisodesForSeries(key),
+      IDB.getAll(STORES.favorites)
+    ]);
+  }catch(err){
+    // Antes, um erro aqui deixava a tela travada no spinner "Carregando..."
+    // sem nenhuma pista visível do que aconteceu (foi assim que o bug de
+    // "série não abre" no APK passou despercebido). Agora mostra o erro na
+    // tela e permite tentar de novo, em vez de falhar silenciosamente.
+    if(State.ui.currentView !== 'series-detail') return;
+    loading.remove();
+    container.appendChild(el('button', { class:'btn', onclick: goBackFromSeriesDetail }, ['← Voltar']));
+    container.appendChild(renderEmptyState('⚠️', 'Erro ao carregar a série', String((err && err.message) || err)));
+    container.appendChild(el('button', { class:'btn primary', style:'margin-top:10px;', onclick: ()=>Router.render() }, ['Tentar novamente']));
+    return;
+  }
+  if(State.ui.currentView !== 'series-detail') return;
+  loading.remove();
+
+  if(!entry){
+    container.appendChild(el('button', { class:'btn', onclick: goBackFromSeriesDetail }, ['← Voltar']));
+    container.appendChild(renderEmptyState('❓','Série não encontrada','Esta série pode ter sido removida.'));
+    return;
+  }
+
+  container.appendChild(el('button', { class:'btn', style:'margin-bottom:16px;', onclick: goBackFromSeriesDetail }, ['← Voltar para Séries']));
+
+  try{
+  const header = el('div', { class:'series-header' });
+  const cover = el('div', { class:'cover' });
+  if(entry.logo){
+    const img = el('img'); img.src = entry.logo; img.onerror=()=>{img.remove();};
+    cover.appendChild(img);
+  }
+  header.appendChild(cover);
+
+  const info2 = el('div', { class:'sinfo2' });
+  info2.appendChild(el('h2', {}, [entry.name]));
+  info2.appendChild(el('div', { style:'color:var(--text-2);font-size:13px;margin-bottom:10px;' }, ['Servidor: ' + getServerName(entry.serverId)]));
+  const isFav = favList.some(f => f.type==='series' && f.id===entry.key);
+  const favDetailBtn = el('button', { class:'btn' + (isFav?' primary':'') }, [(isFav?'★':'☆') + ' Favorito']);
+  let favState = isFav;
+  favDetailBtn.addEventListener('click', async function(){
+    await IndexModule.toggleFavoriteSeries(entry.key);
+    favState = !favState;
+    favDetailBtn.className = 'btn' + (favState?' primary':'');
+    favDetailBtn.textContent = (favState?'★':'☆') + ' Favorito';
+    updateSidebarCounts();
+  });
+  info2.appendChild(favDetailBtn);
+  header.appendChild(info2);
+  container.appendChild(header);
+
+  const seasons = new Map();
+  for(const content of episodes){
+    const se = (content.season !== undefined && content.episode !== undefined)
+      ? { season: content.season, episode: content.episode }
+      : ParserModule.extractSeasonEpisode(content.nome);
+    if(!seasons.has(se.season)) seasons.set(se.season, []);
+    seasons.get(se.season).push({ content, ep: se.episode });
+  }
+  const sortedSeasons = Array.from(seasons.keys()).sort((a,b)=>a-b);
+
+  if(sortedSeasons.length === 0){
+    // Antes, se os episódios vinham vazios (ex: um bug de gravação, ou
+    // uma série realmente sem episódios), a tela ficava só com o
+    // cabeçalho e nada mais — parecia que "não abria". Agora deixa claro
+    // o que aconteceu, e se o resumo da série dizia ter episódios mas
+    // nenhum foi carregado, avisa que pode ser preciso reimportar.
+    const expectedCount = entry.episodeCount || 0;
+    const msg = expectedCount > 0
+      ? ('Essa série deveria ter ' + expectedCount + ' episódio(s), mas nenhum foi encontrado. Tente reimportar o servidor "' + getServerName(entry.serverId) + '" em Servidores.')
+      : 'Nenhum episódio encontrado para esta série.';
+    container.appendChild(renderEmptyState('📺', 'Sem episódios', msg));
+    return;
+  }
+
+  const seasonsWrap = el('div');
+  container.appendChild(seasonsWrap);
+  // Se houver mais de uma temporada, começa tudo recolhido (o usuário
+  // escolhe o que expandir). Com uma única temporada, já abre ela.
+  let openSeasonNum = sortedSeasons.length === 1 ? sortedSeasons[0] : null;
+
+  function renderEpisodeRow(content){
+    const prog = ProgressModule.getProgress(content.id);
+    const row = el('div', { class:'episode-row', onclick:()=>PlayerModule.open(content) });
+    const eth = el('div', { class:'eth' });
+    // Se o episódio não tem capa própria salva (foi deduplicada por ser
+    // igual à da série, ver dedupeSeriesLogos), cai pra capa da série.
+    const episodeLogo = resolveContentLogo(content, entry.logo);
+    if(episodeLogo){
+      const img = el('img'); img.src = episodeLogo; img.onerror=()=>img.remove();
+      eth.appendChild(img);
+    }
+    row.appendChild(eth);
+    const episodeName = resolveContentName(content, entry.name);
+    row.appendChild(el('div', { class:'ename' }, [episodeName]));
+    let statusText = 'Não iniciado';
+    let statusClass = '';
+    if(prog){
+      if(prog.concluido){ statusText = 'Assistido ✓'; statusClass='done'; }
+      else if(prog.porcentagem > 0){ statusText = Math.round(prog.porcentagem) + '%'; }
+    }
+    row.appendChild(el('div', { class:'estatus'+(statusClass?' '+statusClass:'') }, [statusText]));
+    row.appendChild(el('div', { class:'eprog' }, [el('div',{class:'f', style:'width:'+(prog?Math.min(100,prog.porcentagem):0)+'%'})]));
+    const dlBtn = el('button', {
+      style:'width:28px;height:28px;border-radius:50%;background:var(--bg-3);display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0;margin-left:4px;',
+      title:'Baixar episódio'
+    }, ['⬇']);
+    dlBtn.addEventListener('click', function(e){
+      e.stopPropagation();
+      downloadContentUrl(resolveContentUrl(content), episodeName);
+    });
+    row.appendChild(dlBtn);
+    return row;
+  }
+
+  function renderSeasonsAccordion(){
+    seasonsWrap.innerHTML = '';
+    for(const seasonNum of sortedSeasons){
+      const isOpen = openSeasonNum === seasonNum;
+      const seasonBlock = el('div', {
+        class:'season-block',
+        style:'margin-bottom:10px;background:var(--bg-1);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;'
+      });
+      const seasonHeader = el('div', {
+        style:'display:flex;align-items:center;justify-content:space-between;cursor:pointer;padding:12px 16px;'
+      }, [
+        el('h4', { style:'margin:0;' }, ['Temporada ' + seasonNum]),
+        el('span', { style:'display:flex;align-items:center;gap:10px;color:var(--text-2);font-size:13px;' }, [
+          seasons.get(seasonNum).length + ' ep.',
+          el('span', { style:'display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:var(--bg-3);color:var(--text-0);font-size:16px;font-weight:700;line-height:1;' }, [isOpen ? '−' : '+'])
+        ])
+      ]);
+      seasonHeader.addEventListener('click', function(){
+        openSeasonNum = isOpen ? null : seasonNum; // clicar na mesma fecha; clicar em outra troca
+        renderSeasonsAccordion();
+      });
+      seasonBlock.appendChild(seasonHeader);
+
+      if(isOpen){
+        // Indentação + borda à esquerda pra deixar claro que os episódios
+        // estão "dentro" da temporada, não soltos na página.
+        const epsWrap = el('div', { style:'padding:4px 14px 14px 20px;border-left:3px solid var(--accent);margin:0 14px 14px;' });
+        const eps = seasons.get(seasonNum).sort((a,b)=>a.ep-b.ep);
+        for(const { content } of eps){ epsWrap.appendChild(renderEpisodeRow(content)); }
+        seasonBlock.appendChild(epsWrap);
+      }
+      seasonsWrap.appendChild(seasonBlock);
+    }
+  }
+
+  renderSeasonsAccordion();
+  }catch(err){
+    // Qualquer exceção inesperada ao montar a tela (ex: um dado antigo em
+    // formato imprevisto) aparece aqui em vez de deixar a tela em branco
+    // sem nenhuma pista — foi exatamente esse silêncio que dificultou
+    // diagnosticar o bug de "série não abre" no APK.
+    container.innerHTML = '';
+    container.appendChild(el('button', { class:'btn', onclick: goBackFromSeriesDetail }, ['← Voltar']));
+    container.appendChild(renderEmptyState('⚠️', 'Erro ao exibir a série', String((err && err.message) || err)));
+  }
+}
+
+/* ======================================================================
+   VIEW: DASHBOARD
+   ====================================================================== */
+/** Busca os dados do Dashboard (Continuar Assistindo + Adicionados
+ * Recentemente), com dedup de buscas em andamento. */
+async function loadDashboardData(){
+  if(State.dashboardCache) return State.dashboardCache;
+  const inFlightKey = 'dashboard';
+  if(State.pageFetchesInFlight.has(inFlightKey)) return State.pageFetchesInFlight.get(inFlightKey);
+
+  const promise = (async () => {
+    const continueList = await ProgressModule.getContinueWatchingList(12);
+    const recentGroups = await getRecentlyAddedGroupedForDashboard(6, 8);
+    const result = { continueList, recentGroups };
+    State.dashboardCache = result;
+    return result;
+  })();
+
+  State.pageFetchesInFlight.set(inFlightKey, promise);
+  try{
+    return await promise;
+  } finally {
+    State.pageFetchesInFlight.delete(inFlightKey);
+  }
+}
+
+async function renderDashboardView(container){
+  if(State.servers.size === 0){
+    container.appendChild(el('div', { class:'section-header' }, [el('h2',{},['Dashboard'])]));
+    container.appendChild(renderEmptyState('🚀', 'Vamos começar!', 'Adicione um servidor manual ou configure uma URL Raw em Configurações para importar suas listas M3U/M3U8.'));
+    return;
+  }
+
+  const alreadyCached = !!State.dashboardCache;
+  const alreadyInFlight = State.pageFetchesInFlight.has('dashboard');
+  let loading = null;
+  if(!alreadyCached && !alreadyInFlight){
+    loading = el('div', { class:'loader-inline' }, [el('div',{class:'spinner'}), 'Carregando...']);
+    container.appendChild(loading);
+  }
+  const { continueList, recentGroups } = await loadDashboardData();
+  if(State.ui.currentView !== 'dashboard') return;
+  if(loading) loading.remove();
+
+  if(continueList.length > 0){
+    container.appendChild(el('div', { class:'section-header' }, [
+      el('h2', { style:'font-size:15px;' }, ['Continuar Assistindo']),
+      el('button', { class:'btn small', onclick:()=>Router.goTo('continue') }, ['Ver tudo'])
+    ]));
+    const grid2 = el('div', { class:'card-grid' });
+    for(const { content } of continueList){ grid2.appendChild(renderContentCard(content, { showRemoveFromContinue:true, hideDownload:true })); }
+    container.appendChild(grid2);
+  }
+
+  if(recentGroups.length > 0){
+    container.appendChild(el('div', { class:'section-header', style: continueList.length > 0 ? 'margin-top:8px;' : '' }, [
+      el('h2', { style:'font-size:15px;' }, ['Adicionados Recentemente'])
+    ]));
+    for(const group of recentGroups){
+      container.appendChild(el('div', { style:'font-size:12.5px;font-weight:700;color:var(--text-2);margin:10px 0 8px;' }, [group.serverName]));
+      const g = el('div', { class:'card-grid' });
+      for(const item of group.items){
+        if(item.kind === 'series') g.appendChild(renderSeriesCard(item.data));
+        else g.appendChild(renderContentCard(item.data, { hideDownload:true }));
+      }
+      container.appendChild(g);
+    }
+  }
+
+  if(continueList.length === 0 && recentGroups.length === 0){
+    container.appendChild(renderEmptyState('📭', 'Nada por aqui ainda', 'Assista a algo ou importe conteúdo para ver novidades no Dashboard.'));
+  }
+}
+
+async function getRecentlyAddedGroupedForDashboard(maxServers, perServerLimit){
+  const servers = Array.from(State.servers.values()).slice(0, maxServers);
+  const groups = [];
+  for(const server of servers){
+    const [movies, live, series] = await Promise.all([
+      QueryModule.getRecentForServer('movie', server.id, perServerLimit),
+      QueryModule.getRecentForServer('live', server.id, perServerLimit),
+      QueryModule.getRecentSeriesForServer(server.id, perServerLimit)
+    ]);
+    const items = [];
+    for(const c of movies) items.push({ kind:'content', data:c });
+    for(const c of live) items.push({ kind:'content', data:c });
+    for(const s of series) items.push({ kind:'series', data:s });
+    if(items.length > 0){
+      groups.push({ serverId: server.id, serverName: server.nome, items: items.slice(0, perServerLimit) });
+    }
+  }
+  return groups;
+}
+
+/* ======================================================================
+   VIEW: FAVORITES
+   ====================================================================== */
+/** Busca os favoritos (filme/ao vivo/série), com dedup de buscas em
+ * andamento — mesmo padrão usado pra Filmes/Séries/Ao Vivo (loadTypePageData). */
+async function loadFavoritesData(){
+  if(State.favoritesCache) return State.favoritesCache;
+  const inFlightKey = 'favorites';
+  if(State.pageFetchesInFlight.has(inFlightKey)) return State.pageFetchesInFlight.get(inFlightKey);
+
+  const promise = (async () => {
+    const favs = await IDB.getAll(STORES.favorites);
+    const favContentEntries = favs.filter(f => f.type !== 'series');
+    const favSeriesEntries = favs.filter(f => f.type === 'series');
+
+    const [contents, seriesList] = await Promise.all([
+      Promise.all(favContentEntries.map(f => IDB.getByKey(STORES.contents, f.id).catch(()=>null))),
+      Promise.all(favSeriesEntries.map(f => IDB.getByKey(STORES.seriesSummary, f.id).catch(()=>null)))
+    ]);
+
+    const favMovies = contents.filter(c => c && c.tipo === 'movie');
+    const favLive = contents.filter(c => c && c.tipo === 'live');
+    const favSeries = seriesList.filter(Boolean).map(s => { s.favorito = true; return s; });
+    const result = { favMovies, favLive, favSeries };
+    State.favoritesCache = result;
+    return result;
+  })();
+
+  State.pageFetchesInFlight.set(inFlightKey, promise);
+  try{
+    return await promise;
+  } finally {
+    State.pageFetchesInFlight.delete(inFlightKey);
+  }
+}
+
+async function renderFavoritesView(container){
+  container.appendChild(el('div', { class:'section-header' }, [el('h2',{},['Favoritos'])]));
+
+  const alreadyCached = !!State.favoritesCache;
+  const alreadyInFlight = State.pageFetchesInFlight.has('favorites');
+  let loading = null;
+  if(!alreadyCached && !alreadyInFlight){
+    loading = el('div', { class:'loader-inline' }, [el('div',{class:'spinner'}), 'Carregando...']);
+    container.appendChild(loading);
+  }
+  const { favMovies, favLive, favSeries } = await loadFavoritesData();
+  if(State.ui.currentView !== 'favorites') return;
+  if(loading) loading.remove();
+
+  if(favMovies.length===0 && favLive.length===0 && favSeries.length===0){
+    container.appendChild(renderEmptyState('★','Nenhum favorito ainda','Marque filmes, séries ou canais como favoritos para vê-los aqui.'));
+    return;
+  }
+
+  if(favSeries.length){
+    container.appendChild(el('div', { class:'server-section-title' }, ['Séries']));
+    const grid = el('div', { class:'card-grid' });
+    for(const e of favSeries) grid.appendChild(renderSeriesCard(e));
+    container.appendChild(grid);
+  }
+  if(favMovies.length){
+    container.appendChild(el('div', { class:'server-section-title' }, ['Filmes']));
+    const grid = el('div', { class:'card-grid' });
+    for(const c of favMovies) grid.appendChild(renderContentCard(c));
+    container.appendChild(grid);
+  }
+  if(favLive.length){
+    container.appendChild(el('div', { class:'server-section-title' }, ['Ao Vivo']));
+    const grid = el('div', { class:'card-grid' });
+    for(const c of favLive) grid.appendChild(renderContentCard(c));
+    container.appendChild(grid);
+  }
+}
+
+/* ======================================================================
+   VIEW: CONTINUE WATCHING
+   ====================================================================== */
+/** Busca a lista COMPLETA de Continuar Assistindo (diferente da prévia do
+ * Dashboard, que é limitada a 12), com dedup de buscas em andamento. */
+async function loadContinueWatchingFullList(){
+  if(State.continueCache) return State.continueCache;
+  const inFlightKey = 'continue-full';
+  if(State.pageFetchesInFlight.has(inFlightKey)) return State.pageFetchesInFlight.get(inFlightKey);
+
+  const promise = (async () => {
+    const list = await ProgressModule.getContinueWatchingList();
+    State.continueCache = list;
+    return list;
+  })();
+
+  State.pageFetchesInFlight.set(inFlightKey, promise);
+  try{
+    return await promise;
+  } finally {
+    State.pageFetchesInFlight.delete(inFlightKey);
+  }
+}
+
+async function renderContinueView(container){
+  container.appendChild(el('div', { class:'section-header' }, [el('h2',{},['Continuar Assistindo'])]));
+
+  const alreadyCached = !!State.continueCache;
+  const alreadyInFlight = State.pageFetchesInFlight.has('continue-full');
+  let loading = null;
+  if(!alreadyCached && !alreadyInFlight){
+    loading = el('div', { class:'loader-inline' }, [el('div',{class:'spinner'}), 'Carregando...']);
+    container.appendChild(loading);
+  }
+  const list = await loadContinueWatchingFullList();
+  if(State.ui.currentView !== 'continue') return;
+  if(loading) loading.remove();
+
+  if(list.length===0){
+    container.appendChild(renderEmptyState('⏱️','Nada por aqui ainda','Assista a filmes ou episódios para retomá-los depois.'));
+    return;
+  }
+  const grid = el('div', { class:'card-grid' });
+  for(const { content } of list){
+    grid.appendChild(renderContentCard(content, { showRemoveFromContinue:true, onRemoved: ()=>{
+      if(grid.children.length === 0){
+        grid.remove();
+        container.appendChild(renderEmptyState('⏱️','Nada por aqui ainda','Assista a filmes ou episódios para retomá-los depois.'));
+      }
+    }}));
+  }
+  container.appendChild(grid);
+}
+
+/* ======================================================================
+   VIEW: SERVERS
+   ====================================================================== */
+let serverActionLocks = new Set();
+
+function renderServersView(){
+  const container = el('div');
+  container.appendChild(el('div', { class:'section-header' }, [
+    el('h2',{},['Servidores']),
+    el('button', { class:'btn primary', onclick: ()=>openAddServerModal() }, ['+ Adicionar Servidor']),
+    el('button', { class:'btn', onclick: ()=>updateAllServers() }, ['⟳ Atualizar Todos'])
+  ]));
+
+  const manual = [];
+  const auto = [];
+  for(const [,s] of State.servers){
+    if(s.tipoOrigem === 'manual') manual.push(s); else auto.push(s);
+  }
+  manual.sort((a,b)=>a.nome.localeCompare(b.nome));
+  auto.sort((a,b)=>a.nome.localeCompare(b.nome));
+
+  container.appendChild(el('div', { class:'server-section-title' }, ['Servidores Manuais']));
+  if(manual.length===0){
+    container.appendChild(renderEmptyState('🖥️','Nenhum servidor manual','Adicione um servidor manualmente pelo botão acima.'));
+  } else {
+    const list = el('div', { class:'server-list' });
+    for(const s of manual) list.appendChild(renderServerItem(s));
+    container.appendChild(list);
+  }
+
+  container.appendChild(el('div', { class:'server-section-title' }, ['Servidores Automáticos']));
+  if(auto.length===0){
+    container.appendChild(renderEmptyState('⚡','Nenhum servidor automático','Configure a URL Raw em Configurações e clique em "Baixar e Processar".'));
+  } else {
+    const list = el('div', { class:'server-list' });
+    for(const s of auto) list.appendChild(renderServerItem(s));
+    container.appendChild(list);
+  }
+
+  return container;
+}
+
+function renderServerItem(s){
+  const item = el('div', { class:'server-item' });
+  const sinfo = el('div', { class:'sinfo' });
+
+  const isError = s.lastStatus === 'error';
+  const isUpdating = State.ui.serversUpdating.has(s.id);
+  const dotClass = 'status-dot' + (isError ? ' error' : '') + (isUpdating ? ' updating' : '');
+  const dotTitle = isUpdating ? 'Atualizando...' : (isError ? ('Erro na última atualização: ' + (s.lastError || 'desconhecido')) : 'Última atualização OK');
+
+  sinfo.appendChild(el('div', { class:'sname' }, [
+    el('span', { class:dotClass, title:dotTitle }),
+    s.nome
+  ]));
+  // URL não é mostrada aqui de propósito (contém usuário/senha na querystring).
+  const statsChildren = [
+    el('span', {}, ['Cadastrado em ' + new Date(s.dataCadastro).toLocaleDateString()])
+  ];
+  if(isError){
+    statsChildren.push(el('span', { style:'color:var(--danger);' }, ['Erro: ' + (s.lastError || 'falha na última atualização')]));
+  }
+  sinfo.appendChild(el('div', { class:'sstats' }, statsChildren));
+  item.appendChild(sinfo);
+
+  const actions = el('div', { class:'sactions' });
+  const updateBtn = el('button', { class:'btn small', onclick: (e)=>updateSingleServer(s.id, e.target) }, ['Atualizar']);
+  const deleteBtn = el('button', { class:'btn small danger', onclick: ()=>confirmDeleteServer(s.id) }, ['Excluir']);
+  actions.appendChild(updateBtn);
+  actions.appendChild(deleteBtn);
+  item.appendChild(actions);
+
+  return item;
+}
+
+async function updateSingleServer(serverId, btnEl){
+  if(serverActionLocks.has(serverId)) return;
+  const server = State.servers.get(serverId);
+  if(!server) return;
+  if(State.ui.isImporting){ showToast('Já existe uma importação em andamento.', 'error'); return; }
+  serverActionLocks.add(serverId);
+  if(btnEl){ btnEl.disabled = true; btnEl.textContent = 'Atualizando...'; }
+  await runImportWithProgressModal([server]);
+  serverActionLocks.delete(serverId);
+  Router.render();
+}
+
+function confirmDeleteServer(serverId){
+  const server = State.servers.get(serverId);
+  if(!server) return;
+  if(!confirm('Excluir o servidor "' + server.nome + '"? Todos os conteúdos relacionados serão removidos permanentemente.')) return;
+  ServerModule.deleteServer(serverId).then(()=>{
+    showToast('Servidor excluído.', 'success');
+    Router.render();
+  }).catch(()=>{
+    showToast('Erro ao excluir servidor.', 'error');
+  });
+}
+
+async function updateAllServers(){
+  const allServers = Array.from(State.servers.values());
+  if(allServers.length === 0){ showToast('Nenhum servidor cadastrado.', 'error'); return; }
+  if(State.ui.isImporting){ showToast('Já existe uma importação em andamento.', 'error'); return; }
+  await runImportWithProgressModal(allServers);
+}
+
+function openAddServerModal(){
+  const overlay = el('div', { class:'modal-overlay' });
+  const box = el('div', { class:'modal-box' });
+  box.appendChild(el('h3', {}, ['Adicionar Servidor Manual', el('span',{class:'modal-close-x', onclick:()=>overlay.remove()},['×'])]));
+
+  const form = el('div');
+  const nameGroup = el('div', { class:'form-group' }, [
+    el('label',{},['Nome do servidor']),
+    (function(){ const i = el('input',{type:'text', placeholder:'Ex: Meu Servidor'}); i.id='new-server-name'; return i; })()
+  ]);
+  const urlGroup = el('div', { class:'form-group' }, [
+    el('label',{},['URL M3U/M3U8']),
+    (function(){ const i = el('input',{type:'text', placeholder:'https://exemplo.com/lista.m3u'}); i.id='new-server-url'; return i; })()
+  ]);
+  form.appendChild(nameGroup);
+  form.appendChild(urlGroup);
+
+  const saveBtn = el('button', { class:'btn primary', style:'margin-top:8px;' }, ['Salvar Servidor']);
+  saveBtn.addEventListener('click', async function(){
+    const name = qs('#new-server-name', box).value.trim();
+    const url = qs('#new-server-url', box).value.trim();
+    if(!name || !url){ showToast('Preencha nome e URL.', 'error'); return; }
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Salvando...';
+    try{
+      const server = await ServerModule.addManualServer(name, url);
+      overlay.remove();
+      Router.render();
+      await runImportWithProgressModal([server]);
+    }catch(err){
+      showToast('Erro ao salvar servidor.', 'error');
+      saveBtn.disabled = false;
+      saveBtn.textContent = 'Salvar Servidor';
+    }
+  });
+  form.appendChild(saveBtn);
+  box.appendChild(form);
+  overlay.appendChild(box);
+  qs('#modal-root').appendChild(overlay);
+}
+
+/* ======================================================================
+   IMPORT PROGRESS MODAL
+   ====================================================================== */
+let minimizedPillEl = null;
+
+function removeMinimizedPill(){
+  if(minimizedPillEl){ minimizedPillEl.remove(); minimizedPillEl = null; }
+}
+
+function showMinimizedPill(overlay, getLabelText){
+  removeMinimizedPill();
+  const pill = el('div', {
+    id: 'import-minimized-pill',
+    style: 'position:fixed;bottom:20px;left:20px;z-index:400;background:var(--bg-2);border:1px solid var(--border);border-radius:24px;padding:10px 18px;display:flex;align-items:center;gap:10px;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.45);font-size:13px;color:var(--text-0);'
+  });
+  // Texto primeiro, ícone (spinner/check) depois — fica à direita do texto.
+  pill.appendChild(el('span', { id:'import-minimized-label' }, [getLabelText()]));
+  pill.appendChild(el('div', { class:'spinner', id:'import-minimized-spinner' }));
+  pill.addEventListener('click', function(){
+    overlay.style.display = 'flex';
+    removeMinimizedPill();
+  });
+  document.body.appendChild(pill);
+  minimizedPillEl = pill;
+  return pill;
+}
+
+/** Troca o spinner por um check verde (parado, sem girar) e o texto por
+ * "Concluído", depois some sozinho depois de 3s — em vez de sumir abrupto
+ * ou ficar preso pra sempre esperando alguém clicar em "Fechar". */
+function showMinimizedPillDoneThenRemove(text){
+  if(!minimizedPillEl) return;
+  const spinner = qs('#import-minimized-spinner', minimizedPillEl);
+  if(spinner){
+    // Precisa tirar a CLASSE 'spinner' (não só o estilo de borda) — ela é
+    // quem carrega a animação de girar infinita; só zerar a borda não
+    // impedia o ícone de continuar girando.
+    spinner.className = '';
+    spinner.style.border = 'none';
+    spinner.style.width = '16px';
+    spinner.style.height = '16px';
+    spinner.style.animation = 'none';
+    spinner.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#34d399" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+  }
+  updateMinimizedPillText(text);
+  setTimeout(removeMinimizedPill, 3000);
+}
+
+function updateMinimizedPillText(text){
+  if(!minimizedPillEl) return;
+  const label = qs('#import-minimized-label', minimizedPillEl);
+  if(label) label.textContent = text;
+}
+
+async function runImportWithProgressModal(servers){
+  if(State.ui.isImporting){ showToast('Já existe uma importação em andamento.', 'error'); return; }
+  State.ui.isImporting = true;
+  pushDebugLog('Importação iniciada: ' + servers.map(s=>s.nome).join(', '));
+
+  const overlay = el('div', { class:'modal-overlay' });
+  const box = el('div', { class:'modal-box' });
+
+  const isSingleServer = servers.length === 1;
+  const minimizeBtn = el('button', { class:'btn small', id:'minimize-import-btn', style: isSingleServer ? 'margin-left:auto;' : 'display:none;margin-left:auto;' }, ['Minimizar']);
+  const titleRow = el('h3', { style:'display:flex;align-items:center;gap:10px;' }, [
+    el('span', {}, ['Processando Servidores']),
+    minimizeBtn
+  ]);
+  box.appendChild(titleRow);
+
+  const overallWrap = el('div', { class:'progress-overall' });
+  const overallLabel = el('div', { class:'plabel' }, [el('span',{},['Progresso geral']), el('span',{id:'overall-count'},['0 / '+servers.length])]);
+  const overallTrack = el('div', { class:'progress-track' }, [el('div',{class:'pfill', id:'overall-fill', style:'width:0%'})]);
+  overallWrap.appendChild(overallLabel);
+  overallWrap.appendChild(overallTrack);
+  box.appendChild(overallWrap);
+
+  const listWrap = el('div', { class:'server-progress-list', id:'sp-list' });
+  const spElements = new Map();
+  for(const s of servers){
+    const item = el('div', { class:'sp-item', id:'sp-'+s.id });
+    item.appendChild(el('div', { class:'sp-top' }, [
+      el('span', { class:'sp-name' }, [el('span',{class:'status-dot processing'}), s.nome]),
+      el('span', { class:'sp-status proc' }, ['Aguardando...'])
+    ]));
+    item.appendChild(el('div', { class:'progress-track' }, [el('div',{class:'pfill', style:'width:0%'})]));
+    item.appendChild(el('div', { class:'sp-detail' }, ['']));
+    listWrap.appendChild(item);
+    spElements.set(s.id, item);
+  }
+  box.appendChild(listWrap);
+
+  const closeBtnWrap = el('div', { style:'margin-top:16px;text-align:right;', id:'import-close-wrap' });
+  box.appendChild(closeBtnWrap);
+
+  overlay.appendChild(box);
+  qs('#modal-root').appendChild(overlay);
+
+  let lastCompleted = 0;
+  let lastTotal = servers.length;
+  let importFullyDone = false;
+
+  minimizeBtn.addEventListener('click', function(){
+    // Se a importação já terminou de vez (usuário demorou pra fechar e
+    // clicou em "Minimizar" por engano/hábito), faz o mesmo efeito de
+    // "Fechar" — sem isso, criava um pill minimizado que nenhum código
+    // nunca mais limpava sozinho (a limpeza automática já tinha rodado
+    // uma vez, antes desse clique).
+    if(importFullyDone){
+      overlay.remove();
+      Router.render();
+      return;
+    }
+    overlay.style.display = 'none';
+    showMinimizedPill(overlay, function(){ return 'Importando servidores... ' + lastCompleted + '/' + lastTotal; });
+  });
+
+  function updateServerUI(server, patch){
+    // Estado global (não é só do modal) — a tela de Servidores lê isso pra
+    // fazer a bolinha piscar, mesmo se você estiver lá enquanto uma
+    // importação roda minimizada em segundo plano.
+    const wasUpdating = State.ui.serversUpdating.has(server.id);
+    const isDone = patch.phase === 'process' && patch.status === 'done';
+    const isError = patch.phase === 'error';
+    if(isDone){
+      pushDebugLog('Servidor "' + server.nome + '" concluído: ' + (patch.total||0) + ' itens.');
+    } else if(isError){
+      pushDebugLog('Servidor "' + server.nome + '" falhou: ' + (patch.message || 'erro desconhecido'), true);
+    }
+    if(isDone || isError){
+      State.ui.serversUpdating.delete(server.id);
+    } else {
+      State.ui.serversUpdating.add(server.id);
+    }
+    if((wasUpdating !== State.ui.serversUpdating.has(server.id)) && State.ui.currentView === 'servers'){
+      Router.render();
+    }
+
+    const item = spElements.get(server.id);
+    if(!item) return;
+    const statusEl = item.querySelector('.sp-status');
+    const dotEl = item.querySelector('.status-dot');
+    const fillEl = item.querySelector('.pfill');
+    const detailEl = item.querySelector('.sp-detail');
+
+    // As fases "process" e "save" são as ativamente em andamento (não só
+    // baixando em paralelo) — mover o item pro topo da lista deixa claro,
+    // de relance, qual servidor está sendo trabalhado agora, sem precisar
+    // rolar pra achar. Só move quando ainda está em progresso (não ao
+    // finalizar), e só se já não estiver lá.
+    const isActivelyWorking = (patch.phase === 'process' || patch.phase === 'save') && patch.status !== 'done';
+    if(isActivelyWorking && listWrap.firstElementChild !== item){
+      listWrap.insertBefore(item, listWrap.firstElementChild);
+    }
+
+    if(patch.phase === 'download'){
+      dotEl.className = 'status-dot processing';
+      statusEl.className = 'sp-status proc';
+      statusEl.textContent = patch.status === 'done' ? 'Download concluído, na fila' : 'Baixando...';
+      let pct = 0;
+      if(patch.total){ pct = Math.min(100, (patch.downloaded/patch.total)*100); }
+      fillEl.style.width = (patch.status==='done' ? 100 : pct) + '%';
+      detailEl.textContent = formatBytes(patch.downloaded) + (patch.total ? ' / ' + formatBytes(patch.total) : '') + (patch.speed ? '  •  ' + formatSpeed(patch.speed) : '');
+    } else if(patch.phase === 'cleanup'){
+      dotEl.className = 'status-dot processing';
+      statusEl.className = 'sp-status proc';
+      statusEl.textContent = 'Removendo conteúdo antigo...';
+      fillEl.style.width = '0%';
+      detailEl.textContent = '';
+    } else if(patch.phase === 'process'){
+      dotEl.className = 'status-dot processing';
+      statusEl.className = 'sp-status proc';
+      if(patch.status === 'done'){
+        statusEl.textContent = 'Processado';
+        statusEl.className = 'sp-status ok';
+        dotEl.className = 'status-dot';
+        fillEl.style.width = '100%';
+      } else {
+        statusEl.textContent = 'Processando...';
+        const pct = patch.total ? Math.min(100,(patch.processed/patch.total)*100) : 0;
+        fillEl.style.width = pct + '%';
+      }
+      const c = patch.counts || {movie:0,series:0,live:0};
+      detailEl.textContent = (patch.processed||0) + '/' + (patch.total||0) + ' itens  •  Filmes: '+c.movie+'  Séries: '+c.series+'  Ao Vivo: '+c.live;
+    } else if(patch.phase === 'save'){
+      // Etapa entre "itens processados" e "Processado": salvando no
+      // IndexedDB e atualizando os índices em memória. Sem isso visível, a
+      // barra parecia travar em 100% depois do processamento terminar.
+      dotEl.className = 'status-dot processing';
+      statusEl.className = 'sp-status proc';
+      const pct = patch.total ? Math.min(100,(patch.processed/patch.total)*100) : 0;
+      fillEl.style.width = pct + '%';
+      const c = patch.counts || {movie:0,series:0,live:0};
+      if(patch.chunkMode){
+        // Processar e salvar acontecem em paralelo agora — vários lotes
+        // podem estar sendo gravados ao mesmo tempo enquanto o resto do
+        // arquivo ainda é processado, então o progresso aqui é por "lotes
+        // concluídos", não mais item a item.
+        statusEl.textContent = 'Salvando (' + (patch.processed||0) + '/' + (patch.total||0) + ' lotes)...';
+        detailEl.textContent = 'Filmes: '+c.movie+'  Séries: '+c.series+'  Ao Vivo: '+c.live;
+      } else {
+        // A confirmação final em disco não tem como reportar progresso
+        // (o navegador não expõe isso) — troca o texto pra deixar claro que
+        // ainda está trabalhando, em vez de parecer travado em "Salvando...".
+        statusEl.textContent = patch.committing ? 'Confirmando gravação...' : 'Salvando...';
+        detailEl.textContent = patch.committing
+          ? 'Finalizando ' + (patch.total||0) + ' itens no disco...'
+          : (patch.processed||0) + '/' + (patch.total||0) + ' salvos  •  Filmes: '+c.movie+'  Séries: '+c.series+'  Ao Vivo: '+c.live;
+      }
+    } else if(patch.phase === 'error'){
+      dotEl.className = 'status-dot error';
+      statusEl.className = 'sp-status err';
+      statusEl.textContent = patch.message || 'Erro';
+      detailEl.textContent = '';
+    }
+  }
+
+  function updateOverallUI({ completed, total }){
+    lastCompleted = completed;
+    lastTotal = total;
+    qs('#overall-count', box).textContent = completed + ' / ' + total;
+    const pct = total > 0 ? (completed/total)*100 : 0;
+    qs('#overall-fill', box).style.width = pct + '%';
+    updateMinimizedPillText('Importando servidores... ' + completed + '/' + total);
+  }
+
+  function onFirstSuccess(){
+    minimizeBtn.style.display = 'inline-flex';
+  }
+
+  try{
+    const configuredMaxProcessing = (State.settings.performance && State.settings.performance.maxConcurrentProcessing) || DEFAULT_SETTINGS.performance.maxConcurrentProcessing;
+    await ServerModule.importManyServersPipelined(servers, configuredMaxProcessing, updateServerUI, updateOverallUI, onFirstSuccess);
+  }catch(err){
+    showToast('Erro durante importação.', 'error');
+  }
+
+  State.ui.isImporting = false;
+  State.pageCache.clear(); State.dashboardCache = null; State.favoritesCache = null; State.continueCache = null;
+  updateSidebarCounts();
+  importFullyDone = true;
+
+  // Roda o pré-carregamento de novo, com os dados frescos que acabaram de
+  // ser importados — sem isso, a PRIMEIRA vez que você clicasse em
+  // Filmes/Séries/Ao Vivo/Dashboard/Favoritos/Continuar Assistindo depois
+  // de importar sempre carregava do zero, mesmo o pré-carregamento inicial
+  // já tendo rodado uma vez (só que aí ainda sem nenhum dado, no início do
+  // app). Não é aguardado aqui — roda em segundo plano, não atrasa o
+  // fechamento do modal.
+  prefetchFirstPages().catch(()=>{});
+
+  if(minimizedPillEl){
+    // Terminou enquanto estava minimizado: mostra um check verde por 3s
+    // em vez de sumir abrupto ou (pior) ficar preso ali pra sempre.
+    showMinimizedPillDoneThenRemove('Importação concluída: ' + lastCompleted + '/' + lastTotal);
+    overlay.remove();
+  } else {
+    closeBtnWrap.appendChild(el('button', { class:'btn primary', onclick:()=>{ overlay.remove(); Router.render(); } }, ['Fechar']));
+  }
+
+  Router.render();
+}
+
+/* ======================================================================
+   VIEW: SETTINGS
+
+   ====================================================================== */
+async function renderSettingsView(container){
+  // Usa State.settings diretamente — já é mantido correto em memória (é
+  // carregado na abertura do app, "esquentado" pelo pré-carregamento, e
+  // toda ação de salvar aqui mesmo já atualiza essa variável junto). Não
+  // busca do banco de novo toda vez: essa era a causa da demora e do
+  // recarregamento constante ao clicar em outro menu e voltar.
+
+  container.appendChild(el('div', { class:'section-header' }, [el('h2',{},['Configurações'])]));
+
+  // Pagination block
+  const pagBlock = el('div', { class:'settings-block' });
+  pagBlock.appendChild(el('h3', {}, ['Paginação']));
+  const pagSelect = el('select', { id:'page-size-select' });
+  for(const n of [10,50,100]){
+    const opt = el('option', { value:String(n) }, [String(n) + ' itens por página']);
+    if(State.settings.pageSize === n) opt.setAttribute('selected','true');
+    pagSelect.appendChild(opt);
+  }
+  pagSelect.addEventListener('change', async function(e){
+    State.settings.pageSize = parseInt(e.target.value, 10);
+    State.ui.filters.movie.page = 1;
+    State.ui.filters.series.page = 1;
+    State.ui.filters.live.page = 1;
+    await IDB.put(STORES.settings, State.settings);
+    showToast('Paginação atualizada.', 'success');
+    Router.render();
+  });
+  pagBlock.appendChild(pagSelect);
+  container.appendChild(pagBlock);
+
+  // Aparência: cores personalizáveis
+  const colorBlock = el('div', { class:'settings-block' });
+  colorBlock.appendChild(el('h3', {}, ['Aparência']));
+  const colorRow = el('div', { class:'form-row' });
+  const currentColors = Object.assign({}, DEFAULT_SETTINGS.colors, State.settings.colors);
+
+  function makeColorPicker(label, key){
+    const swatch = el('input', { type:'color' });
+    swatch.value = currentColors[key];
+    swatch.style.cssText = 'width:44px;height:38px;padding:2px;cursor:pointer;';
+    swatch.addEventListener('input', async function(){
+      currentColors[key] = swatch.value;
+      State.settings.colors = Object.assign({}, currentColors);
+      applyThemeColors(State.settings.colors);
+      await IDB.put(STORES.settings, State.settings);
+    });
+    return el('div', { class:'form-group', style:'min-width:120px;flex:none;' }, [
+      el('label', {}, [label]), swatch
+    ]);
+  }
+
+  colorRow.appendChild(makeColorPicker('Cor principal', 'accent'));
+  colorRow.appendChild(makeColorPicker('Cor secundária', 'accent2'));
+  colorRow.appendChild(makeColorPicker('Cor de favoritos', 'fav'));
+  colorRow.appendChild(makeColorPicker('Cor de fundo', 'bg'));
+  colorBlock.appendChild(colorRow);
+
+  const resetColorsBtn = el('button', { class:'btn', style:'margin-top:12px;' }, ['Restaurar cores padrão']);
+  resetColorsBtn.addEventListener('click', async function(){
+    State.settings.colors = Object.assign({}, DEFAULT_SETTINGS.colors);
+    applyThemeColors(State.settings.colors);
+    await IDB.put(STORES.settings, State.settings);
+    Router.render();
+  });
+  colorBlock.appendChild(resetColorsBtn);
+  container.appendChild(colorBlock);
+
+  // Diagnóstico: painel de troubleshoot, SEMPRE desligado ao abrir o app
+  // (nunca é salvo) — só liga se você marcar aqui, útil pra investigar
+  // algo pontual sem precisar de console/ADB.
+  const debugBlock = el('div', { class:'settings-block' });
+  debugBlock.appendChild(el('h3', {}, ['Diagnóstico']));
+  debugBlock.appendChild(el('p', { style:'font-size:12.5px;color:var(--text-2);margin-bottom:12px;' }, [
+    'Mostra um painel na tela com erros e eventos recentes — útil pra investigar problemas sem precisar de ferramentas externas. Sempre começa desligado ao abrir o app.'
+  ]));
+  const debugToggleRow = el('label', { style:'display:flex;align-items:center;gap:10px;cursor:pointer;font-size:13px;' });
+  const debugCheckbox = el('input', { type:'checkbox', id:'debug-panel-toggle', style:'width:16px;height:16px;' });
+  debugCheckbox.checked = State.ui.debugPanelEnabled;
+  debugCheckbox.addEventListener('change', function(){
+    State.ui.debugPanelEnabled = debugCheckbox.checked;
+    if(State.ui.debugPanelEnabled) renderDebugPanel();
+    else removeDebugPanel();
+  });
+  debugToggleRow.appendChild(debugCheckbox);
+  debugToggleRow.appendChild(el('span', {}, ['Ativar painel de diagnóstico nesta sessão']));
+  debugBlock.appendChild(debugToggleRow);
+  container.appendChild(debugBlock);
+
+  // Desempenho: ajustável por aparelho. Padrão = o que funciona bem num
+  // computador normal; reduza em TVs/projetores Android mais fracos.
+  const perfBlock = el('div', { class:'settings-block' });
+  perfBlock.appendChild(el('h3', {}, ['Desempenho']));
+  perfBlock.appendChild(el('p', { style:'font-size:12.5px;color:var(--text-2);margin-bottom:12px;' }, [
+    'Valores padrão funcionam bem num computador normal. Em TVs/projetores Android com pouca memória, reduza "Downloads simultâneos" (ex: 2 ou 3) pra evitar o app fechar sozinho ao importar vários servidores.'
+  ]));
+  const perf = Object.assign({}, DEFAULT_SETTINGS.performance, State.settings.performance);
+
+  function makePerfField(label, key, hint, min){
+    const group = el('div', { class:'form-group' });
+    group.appendChild(el('label', {}, [label]));
+    const input = el('input', { type:'number', min: String(min !== undefined ? min : 0) });
+    input.value = perf[key];
+    input.addEventListener('change', async function(){
+      let v = parseInt(input.value, 10);
+      if(isNaN(v) || v < (min !== undefined ? min : 0)) v = DEFAULT_SETTINGS.performance[key];
+      input.value = v;
+      State.settings.performance = Object.assign({}, State.settings.performance || DEFAULT_SETTINGS.performance, { [key]: v });
+      await IDB.put(STORES.settings, State.settings);
+      showToast('Configuração salva.', 'success');
+    });
+    group.appendChild(input);
+    if(hint) group.appendChild(el('div', { style:'font-size:11px;color:var(--text-2);margin-top:4px;' }, [hint]));
+    return group;
+  }
+
+  const perfRow = el('div', { class:'form-row' });
+  perfRow.appendChild(makePerfField('Downloads simultâneos', 'maxConcurrentDownloads', '0 = sem limite (baixa todos de uma vez — padrão de sempre)', 0));
+  perfRow.appendChild(makePerfField('Servidores processando ao mesmo tempo', 'maxConcurrentProcessing', 'Mínimo 1', 1));
+  perfRow.appendChild(makePerfField('Itens por lote ao salvar', 'saveChunkSize', 'Menor = mais responsivo durante a importação; maior = salva um pouco mais rápido', 500));
+  perfBlock.appendChild(perfRow);
+
+  const streamToggleRow = el('label', { style:'display:flex;align-items:center;gap:10px;cursor:pointer;font-size:13px;margin-top:14px;' });
+  const streamCheckbox = el('input', { type:'checkbox', style:'width:16px;height:16px;' });
+  streamCheckbox.checked = !!perf.streamDownload;
+  streamCheckbox.addEventListener('change', async function(){
+    State.settings.performance = Object.assign({}, State.settings.performance || DEFAULT_SETTINGS.performance, { streamDownload: streamCheckbox.checked });
+    await IDB.put(STORES.settings, State.settings);
+    showToast('Configuração salva.', 'success');
+  });
+  streamToggleRow.appendChild(streamCheckbox);
+  streamToggleRow.appendChild(el('span', {}, ['Economizar memória ao baixar (mais lento)']));
+  perfBlock.appendChild(streamToggleRow);
+  perfBlock.appendChild(el('div', { style:'font-size:11px;color:var(--text-2);margin-top:4px;margin-left:26px;' }, [
+    'Baixa e processa em pedaços pequenos, sem nunca montar a playlist inteira (nem o texto, nem as linhas) na memória de uma vez. Use JUNTO com "Downloads simultâneos" e "Servidores processando" em 1, pra funcionar de verdade em aparelhos com pouca RAM (TVs/projetores Android).'
+  ]));
+  container.appendChild(perfBlock);
+
+  // Automatic servers block
+  const autoBlock = el('div', { class:'settings-block' });
+  autoBlock.appendChild(el('h3', {}, ['Servidores Automáticos']));
+
+  const row1 = el('div', { class:'form-row' });
+  const rawUrlGroup = el('div', { class:'form-group' }, [
+    el('label',{},['URL do Raw (JSON)']),
+    (function(){ const i = el('input',{type:'text'}); i.id='raw-url-input'; i.value = DEFAULT_SETTINGS.rawUrl || ''; return i; })(),
+    el('div',{class:'hint'},['O JSON deve conter pares chave (nome do servidor) → URL M3U/M3U8.'])
+  ]);
+  row1.appendChild(rawUrlGroup);
+  autoBlock.appendChild(row1);
+
+  const row2 = el('div', { class:'form-row' });
+  const userGroup = el('div', { class:'form-group' }, [
+    el('label',{},['Usuário']),
+    (function(){ const i = el('input',{type:'text'}); i.id='raw-user-input'; i.value = State.settings.rawUser || ''; return i; })()
+  ]);
+  const passInput = el('input',{type:'password'});
+  passInput.id = 'raw-pass-input';
+  passInput.value = State.settings.rawPass || '';
+  const passWrap = el('div', { style:'position:relative;' }, [passInput]);
+  const EYE_OPEN = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>';
+  const EYE_OFF = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a20.4 20.4 0 0 1 5.06-5.94M9.9 4.24A9.5 9.5 0 0 1 12 4c7 0 11 8 11 8a20.3 20.3 0 0 1-3.22 4.44M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
+  const eyeBtn = el('button', { type:'button', style:'position:absolute;right:8px;top:50%;transform:translateY(-50%);padding:2px 6px;display:flex;color:var(--text-2);' });
+  eyeBtn.innerHTML = EYE_OPEN;
+  eyeBtn.addEventListener('click', function(){
+    const show = passInput.type === 'password';
+    passInput.type = show ? 'text' : 'password';
+    eyeBtn.innerHTML = show ? EYE_OFF : EYE_OPEN;
+  });
+  passWrap.appendChild(eyeBtn);
+  const passGroup = el('div', { class:'form-group' }, [ el('label',{},['Senha']), passWrap ]);
+  row2.appendChild(userGroup);
+  row2.appendChild(passGroup);
+  autoBlock.appendChild(row2);
+
+  const downloadBtn = el('button', { class:'btn primary', style:'margin-top:14px;', id:'download-process-btn' }, ['Baixar e Processar']);
+  downloadBtn.addEventListener('click', async function(){
+    if(State.ui.isImporting){ showToast('Já existe uma importação em andamento.', 'error'); return; }
+    const rawUrl = qs('#raw-url-input', autoBlock).value.trim();
+    const user = qs('#raw-user-input', autoBlock).value;
+    const pass = qs('#raw-pass-input', autoBlock).value;
+    const autoSave = true; // sempre salva (é assim que os servidores automáticos funcionam)
+
+    if(!rawUrl){ showToast('Informe a URL do Raw.', 'error'); return; }
+
+    State.settings.rawUrl = rawUrl;
+    State.settings.rawUser = user;
+    State.settings.rawPass = pass;
+    State.settings.autoSaveServers = autoSave;
+    await IDB.put(STORES.settings, State.settings);
+
+    downloadBtn.disabled = true;
+    downloadBtn.textContent = 'Baixando JSON...';
+    try{
+      const json = await RawModule.fetchAndParseRaw(rawUrl);
+      const servers = await RawModule.buildServersFromRaw(json, user, pass, rawUrl);
+      downloadBtn.disabled = false;
+      downloadBtn.textContent = 'Baixar e Processar';
+      updateSidebarCounts();
+      if(servers.length === 0){
+        showToast('Nenhum servidor encontrado no JSON.', 'error');
+        return;
+      }
+      await runImportWithProgressModal(servers);
+    }catch(err){
+      downloadBtn.disabled = false;
+      downloadBtn.textContent = 'Baixar e Processar';
+      showToast(err && err.message ? err.message : 'Erro ao baixar/processar Raw.', 'error');
+    }
+  });
+  autoBlock.appendChild(downloadBtn);
+  container.appendChild(autoBlock);
+}
+
+/* ======================================================================
+   ROUTER
+   ====================================================================== */
+const VIEW_TITLES = {
+  dashboard: 'Dashboard',
+  live: 'Ao Vivo',
+  series: 'Séries',
+  'series-detail': 'Série',
+  movies: 'Filmes',
+  favorites: 'Favoritos',
+  continue: 'Continuar Assistindo',
+  servers: 'Servidores',
+  settings: 'Configurações'
+};
+
+const Router = {
+  render(){
+    const view = State.ui.currentView;
+    const contentArea = qs('#content-area');
+    contentArea.innerHTML = '';
+    const container = el('div');
+    contentArea.appendChild(container);
+
+    qs('#page-title').textContent = VIEW_TITLES[view] || '';
+    qsa('.nav-item').forEach(function(item){
+      const itemView = item.getAttribute('data-view');
+      item.classList.toggle('active', itemView === view || (view === 'series-detail' && itemView === 'series'));
+    });
+
+    switch(view){
+      case 'dashboard': renderDashboardView(container); break;
+      case 'live': renderListView('live', 'Ao Vivo', container); break;
+      case 'series': renderSeriesListView(container); break;
+      case 'series-detail': renderSeriesDetailView(container); break;
+      case 'movies': renderListView('movie', 'Filmes', container); break;
+      case 'favorites': renderFavoritesView(container); break;
+      case 'continue': renderContinueView(container); break;
+      case 'servers': container.appendChild(renderServersView()); break;
+      case 'settings': renderSettingsView(container); break;
+      default: renderDashboardView(container);
+    }
+
+    updateSidebarCounts();
+  },
+
+  goTo(view){
+    State.ui.currentView = view;
+    if(view !== 'series-detail') State.ui.activeSeriesKey = null;
+    // Restaura os contadores globais ao navegar — se a tela pra onde foi
+    // (filme/série/ao vivo) tiver um filtro de servidor ativo, ela mesma
+    // sobrescreve seu próprio contador com o valor filtrado logo depois.
+    updateSidebarCounts();
+    this.render();
+    if(window.innerWidth <= 900){
+      qs('#sidebar').classList.remove('open');
+      qs('#sidebar-overlay').classList.remove('open');
+    }
+  }
+};
+
+async function updateSidebarCounts(){
+  qs('#cnt-servers').textContent = State.servers.size;
+  qs('#cnt-continue').textContent = ProgressModule.getContinueWatchingCount();
+  try{
+    const [movieCount, liveCount, seriesCount, favs] = await Promise.all([
+      IDB.countByIndexRange(STORES.contents, 'tipo_serverId', QueryModule._typeRange('movie')),
+      IDB.countByIndexRange(STORES.contents, 'tipo_serverId', QueryModule._typeRange('live')),
+      IDB.count(STORES.seriesSummary),
+      IDB.getAll(STORES.favorites)
+    ]);
+    qs('#cnt-movies').textContent = movieCount;
+    qs('#cnt-live').textContent = liveCount;
+    qs('#cnt-series').textContent = seriesCount;
+    qs('#cnt-favs').textContent = favs.length;
+  }catch(e){}
+}
+
+/* ======================================================================
+   GLOBAL EVENT LISTENERS
+   ====================================================================== */
+function setupEventListeners(){
+  // Enter em qualquer campo (input/select) pula pro próximo elemento
+  // navegável da tela — útil tanto pra quem usa Tab no teclado quanto,
+  // principalmente, pra quem está preenchendo um campo com um controle
+  // remoto (onde não tem como "clicar" no próximo campo facilmente).
+  document.addEventListener('keydown', function(e){
+    if(e.key !== 'Enter') return;
+    const target = e.target;
+    if(!target) return;
+    const tag = target.tagName;
+    const isTextInput = tag === 'INPUT' && ['checkbox','radio','button','submit'].indexOf(target.type) === -1;
+    const isSelect = tag === 'SELECT';
+    if(!isTextInput && !isSelect) return; // não mexe em botões (Enter já ativa normalmente) nem textarea
+
+    e.preventDefault();
+    const focusable = Array.prototype.slice.call(
+      document.querySelectorAll('button, a[href], input, select, textarea, [tabindex]')
+    ).filter(function(el){
+      return el.offsetParent !== null && !el.disabled; // só o que está visível/habilitado agora na tela
+    });
+    const idx = focusable.indexOf(target);
+    if(idx !== -1 && idx < focusable.length - 1){
+      focusable[idx + 1].focus();
+    } else if(target.blur){
+      target.blur();
+    }
+  });
+
+  qsa('.nav-item').forEach(function(item){
+    item.addEventListener('click', function(){
+      Router.goTo(item.getAttribute('data-view'));
+    });
+    // Suporte a controle remoto/teclado: Enter ou Espaço ativam o item
+    // focado, igual um clique — sem isso, dava pra "ver" o item em foco
+    // (depois da correção visual) mas não dava pra confirmar a seleção.
+    item.addEventListener('keydown', function(e){
+      if(e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar'){
+        e.preventDefault();
+        Router.goTo(item.getAttribute('data-view'));
+      }
+    });
+  });
+
+  qs('#global-search').addEventListener('input', function(e){
+    const val = e.target.value;
+    qs('#global-search-clear').style.display = val ? 'block' : 'none';
+    if(!val) return;
+    openSearchPopup(val); // abre na hora; o próprio popup faz o debounce da busca
+  });
+  qs('#global-search-clear').addEventListener('click', function(){
+    qs('#global-search').value = '';
+    qs('#global-search-clear').style.display = 'none';
+    if(activeSearchOverlay) activeSearchOverlay.close(false);
+  });
+
+  qs('#global-search').addEventListener('focus', function(e){
+    const val = e.target.value.trim();
+    if(val && !activeSearchOverlay) openSearchPopup(val);
+  });
+
+  qs('#menu-toggle').addEventListener('click', function(){
+    qs('#sidebar').classList.toggle('open');
+    qs('#sidebar-overlay').classList.toggle('open');
+  });
+  qs('#sidebar-overlay').addEventListener('click', function(){
+    qs('#sidebar').classList.remove('open');
+    qs('#sidebar-overlay').classList.remove('open');
+  });
+
+  qs('#player-close').addEventListener('click', function(){
+    // O × fecha (sem pular pra tela de detalhes da série, diferente do ←),
+    // mas ainda respeita a origem: se veio da busca global, reabre a busca.
+    const content = PlayerModule.currentContent;
+    const returnTo = State.ui.returnTo;
+    State.ui.returnTo = null;
+    PlayerModule.close();
+    if(!(content && content.tipo === 'series') && returnTo && returnTo.type === 'search'){
+      openSearchPopup(returnTo.term, { activeType: returnTo.activeType, activeServer: returnTo.activeServer });
+    }
+  });
+
+  qs('#player-back').addEventListener('click', function(){
+    PlayerModule.goBack();
+  });
+}
+
+/* ======================================================================
+   APP INITIALIZATION
+   ====================================================================== */
+async function initApp(){
+  try{
+    State.db = await IDB.open();
+  }catch(err){
+    showToast('Erro ao abrir IndexedDB. Verifique as permissões do navegador.', 'error');
+    return;
+  }
+
+  try{
+    const settingsList = await IDB.getAll(STORES.settings);
+    const existing = settingsList.find(s => s.id === 'app');
+    if(existing){
+      State.settings = Object.assign({}, DEFAULT_SETTINGS, existing);
+    } else {
+      State.settings = { ...DEFAULT_SETTINGS };
+      await IDB.put(STORES.settings, State.settings);
+    }
+  }catch(err){
+    State.settings = { ...DEFAULT_SETTINGS };
+  }
+  applyThemeColors(State.settings.colors);
+
+  // Servidores, progresso e favoritos são pequenos — carregam rápido e
+  // eager. O conteúdo (que pode ter milhões de itens) NUNCA é carregado
+  // por inteiro: cada tela busca só a página que precisa, direto do
+  // IndexedDB, então a página abre praticamente instantânea independente
+  // do tamanho da biblioteca.
+  try{ await ServerModule.loadAllFromDB(); }catch(err){ showToast('Erro ao carregar servidores.', 'error'); }
+  try{ await ServerModule.loadProgressFromDB(); }catch(err){}
+
+  setupEventListeners();
+  const versionLabel = qs('#app-version-label');
+  if(versionLabel) versionLabel.textContent = 'v' + APP_VERSION;
+  Router.render();
+
+  // Pré-carrega a página 1 de Filmes/Séries/Ao Vivo em segundo plano (fica
+  // no cache), então ao trocar de aba pela primeira vez já está pronto.
+  prefetchFirstPages();
+}
+
+async function prefetchFirstPages(){
+  const pageSize = State.settings.pageSize || PAGE_SIZE_DEFAULT;
+
+  // Ordem pedida: Ao Vivo e Filmes primeiro (mais leves), Séries por
+  // último (mais pesado — muitos episódios por trás de cada resumo). Usa
+  // a MESMA função que a navegação normal usa (loadTypePageData) — assim,
+  // se o usuário clicar numa dessas abas enquanto o pré-carregamento dela
+  // ainda está rodando, a tela reaproveita essa mesma busca em vez de
+  // disparar outra do zero (dedução automática via pageFetchesInFlight).
+  for(const type of ['live', 'movie']){
+    const filters = State.ui.filters[type];
+    try{
+      await loadTypePageData(type, filters, pageSize);
+      if(['live','movies'].indexOf(State.ui.currentView) !== -1) Router.render();
+    }catch(e){}
+  }
+
+  // Séries é o mais pesado — carrega por último, de propósito, pra não
+  // atrasar o resto.
+  try{
+    await loadTypePageData('series', State.ui.filters.series, pageSize);
+    if(State.ui.currentView === 'series') Router.render();
+  }catch(e){}
+
+  // Favoritos também é pré-carregado — geralmente pequeno (poucas dezenas
+  // de itens), então não atrasa nada relevante.
+  try{
+    await loadFavoritesData();
+    if(State.ui.currentView === 'favorites') Router.render();
+  }catch(e){}
+
+  // Dashboard e Continuar Assistindo também — completa a lista de telas
+  // que devem estar prontas ao clicar, não só Filmes/Séries/Ao
+  // Vivo/Favoritos.
+  try{
+    await loadDashboardData();
+    if(State.ui.currentView === 'dashboard') Router.render();
+  }catch(e){}
+  try{
+    await loadContinueWatchingFullList();
+    if(State.ui.currentView === 'continue') Router.render();
+  }catch(e){}
+
+  // Servidores: já é 100% memória (State.servers, carregado na abertura
+  // do app) — não faz nenhuma consulta ao banco, então já está pronto sem
+  // precisar de nada extra aqui.
+
+  // Configurações: só faz 1 leitura de um registro pequeno, mas
+  // "esquenta" State.settings com antecedência de qualquer jeito, pra
+  // completar 100% do menu pré-carregado.
+  try{
+    const fresh = await IDB.getByKey(STORES.settings, 'app');
+    if(fresh) State.settings = Object.assign({}, DEFAULT_SETTINGS, fresh);
+  }catch(e){}
+}
+
+// Rede de segurança contra "a conexão com o banco caiu" (múltiplas abas do
+// app abertas ao mesmo tempo, ou o navegador derrubando a conexão sob
+// pressão de memória): em vez de deixar como um erro escondido no console,
+// avisa a pessoa com clareza e já tenta reabrir a conexão sozinho em
+// segundo plano, pra próxima ação funcionar de novo sem precisar recarregar
+// a página manualmente na maioria dos casos.
+// Rede de segurança extra: captura QUALQUER erro de script não tratado
+// (diferente da de promessa acima) e mostra na tela. Em dispositivos sem
+// acesso fácil ao console (ex: TV/projetor Android), isso é o único jeito
+// de saber o que realmente quebrou quando algo falha silenciosamente.
+window.addEventListener('error', function(e){
+  const msg = (e && e.message) ? e.message : 'Erro desconhecido';
+  const loc = (e && e.filename) ? (' (linha ' + e.lineno + ')') : '';
+  pushDebugLog('Erro de script: ' + msg + loc, true);
+  showToast('Erro inesperado: ' + msg + loc, 'error');
+});
+
+window.addEventListener('unhandledrejection', function(e){
+  const msg = e && e.reason && e.reason.message ? e.reason.message : String(e && e.reason);
+  const isConnectionClosed = e && e.reason && e.reason.name === 'InvalidStateError'
+    && /closing|closed/i.test(msg);
+  if(!isConnectionClosed){
+    // Mesmo não sendo o erro específico de conexão, registra no
+    // diagnóstico — sem isso, qualquer OUTRA falha "silenciosa" (promessa
+    // sem .catch) nunca aparecia em lugar nenhum visível.
+    pushDebugLog('Promessa não tratada: ' + msg, true);
+    return;
+  }
+  pushDebugLog('Conexão com o banco caiu — reconectando...', true);
+  e.preventDefault(); // não deixa virar erro vermelho não tratado no console
+  if(State.db){ try{ State.db.close(); }catch(err){} }
+  State.db = null;
+  showToast('A conexão com o banco foi interrompida. Tentando reconectar...', 'error');
+  IDB.open().then(function(db){
+    State.db = db;
+    pushDebugLog('Reconectado ao banco com sucesso.');
+    showToast('Reconectado — pode tentar novamente.', 'success');
+  }).catch(function(){
+    pushDebugLog('Falha ao reconectar ao banco.', true);
+    showToast('Não foi possível reconectar. Recarregue a página.', 'error');
+  });
+});
+
+window.addEventListener('DOMContentLoaded', initApp);
+</script>
+
+</body>
+</html>
