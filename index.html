@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>const APP_VERSION = '1.0.10';</script>
+<script>const APP_VERSION = '1.0.11';</script>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -646,6 +646,29 @@ a:focus,
 #player-overlay.live-mode #player-seek-back5,
 #player-overlay.live-mode #player-seek-fwd5{display:none;}
 
+/* Botão "AO VIVO": só existe fora do live-mode como elemento invisível
+   (display:none), porque a barra de controles é a mesma pra filme/série/
+   ao vivo — só aparece de fato dentro de .live-mode. */
+#player-live-sync{display:none;}
+#player-overlay.live-mode #player-live-sync{display:flex;gap:7px;}
+.live-dot{
+  width:8px;height:8px;border-radius:50%;flex-shrink:0;
+  background:#6b7280; /* cinza = desincronizado (pausado ou atrasado da transmissão) */
+  transition:background .2s;
+}
+/* Vermelho + pulsando = em dia com a transmissão. O pulsar é o que faz a
+   bolinha "ler" como uma indicação ativa/ao vivo, não só uma cor estática. */
+#player-live-sync.synced .live-dot{
+  background:#ef4444;
+  box-shadow:0 0 0 0 rgba(239,68,68,.55);
+  animation:live-dot-pulse 1.8s ease-out infinite;
+}
+@keyframes live-dot-pulse{
+  0%{box-shadow:0 0 0 0 rgba(239,68,68,.55);}
+  70%{box-shadow:0 0 0 7px rgba(239,68,68,0);}
+  100%{box-shadow:0 0 0 0 rgba(239,68,68,0);}
+}
+
 /* sidebar-search counters */
 .search-counters{padding:8px 14px;font-size:11.5px;color:var(--text-2);}
 .search-counters .sc-line{display:flex;justify-content:space-between;padding:3px 0;}
@@ -784,6 +807,10 @@ a:focus,
   <div id="player-playpause-feedback"></div>
   <div id="player-controls-bottom">
     <button id="player-playpause" title="Play/Pause"></button>
+    <!-- Só existe/aparece pra Ao Vivo (ver .live-mode no CSS) — mostra se
+         está em dia com a transmissão (bolinha vermelha) ou atrasado/pausado
+         (bolinha cinza), e ao clicar pula pro fim (ponta ao vivo). -->
+    <button id="player-live-sync" class="player-ctrl-btn" title="Ir para o ao vivo"><span class="live-dot"></span>AO VIVO</button>
     <button id="player-seek-back5" class="player-ctrl-btn" title="Retroceder 5s"></button>
     <button id="player-seek-fwd5" class="player-ctrl-btn" title="Avançar 5s"></button>
     <span id="player-time-current">00:00</span>
@@ -4029,8 +4056,9 @@ function consumeNavState(){
 
 window.addEventListener('popstate', function(){
   if(_suppressNextPopstate){ _suppressNextPopstate = false; return; }
-  // Voltar nativo (gesto/botão físico do Android): fecha a camada mais no
-  // topo agora aberta, se houver alguma.
+  // Voltar nativo de um NAVEGADOR comum (gesto/swipe, ou o botão do
+  // Chrome): usa a History API normalmente. Fecha a camada mais no topo
+  // agora aberta, se houver alguma.
   const overlay = qs('#player-overlay');
   if(overlay && overlay.style.display === 'flex'){
     PlayerModule.goBack();
@@ -4041,6 +4069,55 @@ window.addEventListener('popstate', function(){
     return;
   }
 });
+
+/* ======================================================================
+   BOTÃO DE VOLTAR FÍSICO/GESTO DO ANDROID DENTRO DO APK (Cordova)
+   ------------------------------------------------------------------
+   O 'popstate' acima só cobre um NAVEGADOR normal — mas dentro do APK
+   gerado com Cordova, o botão/gesto físico de voltar do Android NÃO passa
+   pela History API do jeito que um navegador faz. O próprio Cordova
+   intercepta o botão antes e dispara o evento 'backbutton' no document; se
+   nada "segurar" esse evento (chamando preventDefault), o padrão dele é
+   sair do app na hora — foi exatamente isso que estava acontecendo.
+   Esse listener replica a MESMA lógica do 'popstate' (fecha o player, a
+   busca ou a tela de detalhes da série, nessa ordem) e só deixa sair do
+   app de verdade se o usuário apertar voltar DUAS vezes em ~2s já na tela
+   raiz (sem nada pra fechar) — padrão comum de app Android, com um aviso
+   na tela avisando a segunda tentativa.
+   Em qualquer navegador comum esse evento simplesmente nunca dispara (só
+   existe com o cordova.js carregado dentro do APK), então esse código
+   fica inofensivo fora dele — não precisa de nenhuma checagem extra.
+   ====================================================================== */
+let _lastRootBackPressAt = 0;
+document.addEventListener('backbutton', function(e){
+  if(e && e.preventDefault) e.preventDefault();
+  const overlay = qs('#player-overlay');
+  if(overlay && overlay.style.display === 'flex'){
+    PlayerModule.goBack();
+    _lastRootBackPressAt = 0;
+    return;
+  }
+  if(activeSearchOverlay){
+    activeSearchOverlay.close(false);
+    _lastRootBackPressAt = 0;
+    return;
+  }
+  if(State.ui.currentView === 'series-detail'){
+    goBackFromSeriesDetail();
+    _lastRootBackPressAt = 0;
+    return;
+  }
+  // Nada do app pra fechar — está na tela raiz. Só sai de verdade se
+  // apertar voltar de novo dentro de ~2s (senão, só avisa).
+  const now = Date.now();
+  if(now - _lastRootBackPressAt < 2000){
+    if(navigator.app && navigator.app.exitApp) navigator.app.exitApp();
+    else if(navigator.device && navigator.device.exitApp) navigator.device.exitApp();
+  } else {
+    _lastRootBackPressAt = now;
+    showToast('Aperte voltar novamente para sair');
+  }
+}, false);
 
 /* ======================================================================
    PLAYER MODULE
@@ -4180,6 +4257,7 @@ const PlayerModule = {
     const volumeBtn = qs('#player-volume');
     const fullscreenBtn = qs('#player-fullscreen');
     const pipBtn = qs('#player-pip');
+    const liveSyncBtn = qs('#player-live-sync');
 
     seekBack5Btn.innerHTML = this.ICONS.seekBack5;
     seekFwd5Btn.innerHTML = this.ICONS.seekFwd5;
@@ -4235,6 +4313,13 @@ const PlayerModule = {
 
     seekBack5Btn.addEventListener('click', (e) => { e.stopPropagation(); this.seekBy(-5); });
     seekFwd5Btn.addEventListener('click', (e) => { e.stopPropagation(); this.seekBy(5); });
+
+    // Botão "AO VIVO": pula pra ponta da transmissão (mais próximo do
+    // tempo real possível) e retoma a reprodução se estava pausado.
+    liveSyncBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.syncToLiveEdge();
+    });
 
     // Clicar no botão de velocidade agora ABRE UM MENU com as opções, em
     // vez de ciclar sozinho sem mostrar quais opções existem.
@@ -4377,6 +4462,60 @@ const PlayerModule = {
     }
   },
 
+  /**
+   * Onde fica a "ponta" (o momento mais recente disponível) do stream ao
+   * vivo agora. Tenta primeiro `seekable` (o que HLS.js e o HLS nativo do
+   * Safari expõem corretamente); alguns streams ao vivo só preenchem
+   * `buffered` (ex: TS bruto via mpegts.js), então cai pra isso quando
+   * `seekable` estiver vazio. Sem nenhum dos dois, não dá pra saber —
+   * retorna null (o botão então não marca "em dia").
+   */
+  _getLiveEdgeTime(video){
+    try{
+      if(video.seekable && video.seekable.length > 0){
+        return video.seekable.end(video.seekable.length - 1);
+      }
+    }catch(err){}
+    try{
+      if(video.buffered && video.buffered.length > 0){
+        return video.buffered.end(video.buffered.length - 1);
+      }
+    }catch(err){}
+    return null;
+  },
+
+  /** Pula pra ponta da transmissão ao vivo e retoma a reprodução. */
+  syncToLiveEdge(){
+    const video = qs('#video-player');
+    const edge = this._getLiveEdgeTime(video);
+    if(edge !== null){
+      // Um pouquinho atrás da ponta exata (não 0s) — encosta menos na
+      // borda do buffer, evitando ficar preso esperando segmento novo.
+      video.currentTime = Math.max(0, edge - 1);
+    }
+    if(video.paused) video.play().catch(()=>{});
+    this._updateLiveSyncUI();
+  },
+
+  /**
+   * Liga/desliga a bolinha vermelha (em dia com a transmissão) do botão
+   * "AO VIVO". Some junto com o resto do botão fora do live-mode, então só
+   * faz sentido chamar isso durante um canal ao vivo — mas é seguro chamar
+   * sempre (o botão só existe visualmente dentro de .live-mode).
+   */
+  _updateLiveSyncUI(){
+    if(!this.currentContent || this.currentContent.tipo !== 'live') return;
+    const btn = qs('#player-live-sync');
+    if(!btn) return;
+    const video = qs('#video-player');
+    const edge = this._getLiveEdgeTime(video);
+    // "Em dia" = tocando E a até ~12s da ponta disponível do stream —
+    // uma pequena folga porque o próprio buffer de reprodução já atrasa
+    // alguns segundos da ponta real por natureza, mesmo sincronizado.
+    const isSynced = !video.paused && edge !== null && (edge - video.currentTime) <= 12;
+    btn.classList.toggle('synced', isSynced);
+  },
+
   togglePlayPause(){
     const video = qs('#video-player');
     const willPlay = video.paused;
@@ -4409,8 +4548,8 @@ const PlayerModule = {
    * Clique no vídeo — comportamento com 4 estados (pausado/tocando ×
    * controles visíveis/escondidos), conforme especificado:
    *
-   * Tocando + controles escondidos: qualquer clique só revela os
-   *   controles (nunca pausa nesse clique).
+   * Tocando + controles escondidos: clique no centro PAUSA (e revela os
+   *   controles); clique nas laterais só revela os controles.
    * Tocando + controles visíveis: clique no centro pausa (e o ícone de
    *   pause aparece no centro, sem sumir — quem cuida disso é o listener
    *   de 'pause' do <video>, que não reagenda o auto-esconder); clique
@@ -4423,10 +4562,8 @@ const PlayerModule = {
    */
   _handlePlayerClick(e){
     const overlay = qs('#player-overlay');
-    const video = qs('#video-player');
-    const controlsVisible = !overlay.classList.contains('controls-hidden');
-    const isPaused = video.paused;
     const inCenter = this._isCenterZone(e);
+    const controlsVisible = !overlay.classList.contains('controls-hidden');
 
     if(controlsVisible){
       if(inCenter){
@@ -4440,11 +4577,13 @@ const PlayerModule = {
       return;
     }
 
-    // Controles escondidos.
-    if(isPaused && inCenter){
+    // Controles escondidos: clique no centro sempre alterna play/pause
+    // (pausa se estava tocando, despausa se estava pausado) e revela os
+    // controles; clique nas laterais só revela, sem alternar.
+    if(inCenter){
       this.togglePlayPause();
-      // O listener de 'play' não revela os controles sozinho, então
-      // garantimos isso aqui explicitamente.
+      // Nem todo 'play'/'pause' do <video> revela os controles sozinho
+      // (o de 'play' não revela), então garantimos isso aqui sempre.
       this._showControls();
       this._scheduleHideControls();
     } else {
@@ -4554,6 +4693,7 @@ const PlayerModule = {
     video.addEventListener('timeupdate', ()=>{
       this.lastTimeUpdateAt = Date.now();
       this._updateSeekUI();
+      this._updateLiveSyncUI();
     });
     // The stall watchdog only makes sense while the video is actually
     // supposed to be playing. Without this, pausing a live channel for more
@@ -4569,8 +4709,9 @@ const PlayerModule = {
       // ficava presa na tela mesmo já tendo carregado uma parte e estando
       // simplesmente pausado de propósito.
       this.hideBuffering();
+      this._updateLiveSyncUI(); // pausado = desincronizado, mesmo que ainda esteja na ponta ao vivo
     });
-    video.addEventListener('play', ()=>{ this.isUserPaused = false; this.lastTimeUpdateAt = Date.now(); this._updatePlayPauseIcon(); this._scheduleHideControls(); });
+    video.addEventListener('play', ()=>{ this.isUserPaused = false; this.lastTimeUpdateAt = Date.now(); this._updatePlayPauseIcon(); this._scheduleHideControls(); this._updateLiveSyncUI(); });
 
     // 'loadedmetadata' and 'ended' are attached ONCE here (not per open()/
     // _startPlayback call) and always read this.currentContent/this.playToken
