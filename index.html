@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>const APP_VERSION = '1.0.8';</script>
+<script>const APP_VERSION = '1.0.10';</script>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -473,8 +473,20 @@ a:focus,
 /* player */
 #player-overlay{
   position:fixed;top:0;right:0;bottom:0;left:0;background:#000;z-index:300;display:none;flex-direction:column;
+  touch-action:manipulation; /* mesmo motivo do vídeo abaixo — evita a espera de duplo-toque em toda a tela do player, inclusive nos botões */
 }
-#player-overlay video{flex:1;width:100%;height:100%;background:#000;position:relative;z-index:1;}
+#player-overlay video{
+  flex:1;width:100%;height:100%;background:#000;position:relative;z-index:1;
+  /* Sem isso, o navegador espera ~300ms depois de um toque rápido pra
+     confirmar que não é o primeiro de um duplo-toque (zoom) — e se dois
+     toques acontecem perto um do outro (ex: usuário tocando de novo rápido
+     pra testar mostrar/esconder), o navegador entende como duplo-toque de
+     zoom e o clique simplesmente não dispara. Isso fazia parecer que só
+     "clicar e segurar" funcionava (sem essa ambiguidade de duplo-toque).
+     manipulation desliga o zoom por toque aqui e faz todo toque virar
+     clique na hora. */
+  touch-action:manipulation;
+}
 #player-buffering{
   position:absolute;top:0;left:0;right:0;bottom:0;display:none;
   align-items:center;justify-content:center;flex-direction:column;gap:12px;
@@ -588,20 +600,29 @@ a:focus,
   position:absolute;top:50%;left:50%;transform:translate(-50%,-50%) scale(.85);
   background:rgba(10,11,18,.72);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
   border:1px solid rgba(255,255,255,.15);border-radius:50px;
-  padding:14px 22px;display:none;align-items:center;gap:8px;
+  padding:14px 22px;display:flex;align-items:center;gap:8px;
   color:#fff;font-size:15px;font-weight:700;z-index:3;pointer-events:none;
   opacity:0;transition:opacity .18s, transform .18s;
 }
-#player-seek-feedback.show{display:flex;opacity:1;transform:translate(-50%,-50%) scale(1);}
+#player-seek-feedback.show{opacity:1;transform:translate(-50%,-50%) scale(1);}
 #player-playpause-feedback{
+  /* Antes usava display:none/flex pra mostrar-esconder — só que "display"
+     não anima, então o ícone "piscava" em vez de esmaecer de verdade. Agora
+     fica sempre em display:flex e a visibilidade é só por opacidade (que
+     SIM anima), então a transição abaixo funciona tanto pra aparecer
+     quanto pra sumir. */
   position:absolute;top:50%;left:50%;transform:translate(-50%,-50%) scale(.7);
   width:76px;height:76px;border-radius:50%;
   background:rgba(10,11,18,.6);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
-  display:none;align-items:center;justify-content:center;
+  display:flex;align-items:center;justify-content:center;
   color:#fff;z-index:3;pointer-events:none;
-  opacity:0;transition:opacity .25s, transform .25s;
+  opacity:0;transition:opacity .32s ease, transform .32s ease;
 }
-#player-playpause-feedback.show{display:flex;opacity:1;transform:translate(-50%,-50%) scale(1);}
+#player-playpause-feedback.show{opacity:1;transform:translate(-50%,-50%) scale(1);}
+/* Ícone de pause "grande" no centro: enquanto os controles estão visíveis
+   ele fica junto (ver _showPlayPauseFeedback — não tem timer próprio pra
+   pausa); quando os controles escondem, ele esconde junto, esmaecendo. */
+#player-overlay.controls-hidden #player-playpause-feedback{opacity:0;pointer-events:none;}
 #player-playpause-feedback svg{width:34px;height:34px;}
 #player-seek-feedback svg{width:22px;height:22px;}
 /* Menu de opções de velocidade */
@@ -2281,9 +2302,14 @@ function openSearchPopup(term, initialFilters){
   }
 
   function runSearch(val){
+    // Importante: NÃO resetamos activeType/activeServer aqui. Essa função
+    // roda tanto pra uma busca nova quanto pra reabertura vinda de
+    // "voltar" (restaurando o termo/filtros salvos) — resetar aqui sempre
+    // acaba derrubando o filtro restaurado numa hora ou outra. Quem reseta
+    // o filtro de tipo é o listener de 'input' abaixo, porque SÓ ele sabe
+    // com certeza que o usuário está começando uma busca nova de verdade.
     if(lastSearchState && lastSearchState.term === val){
       currentResults = lastSearchState.results;
-      activeType = 'all';
       renderServerChips();
       renderResults();
       return;
@@ -2295,7 +2321,6 @@ function openSearchPopup(term, initialFilters){
       if(myToken !== searchToken) return; // usuário já digitou de novo
       currentResults = results;
       lastSearchState = { term: val, results: results };
-      activeType = 'all';
       renderServerChips(); // usa State.servers, já em memória — instantâneo
       renderResults();
     }).catch(function(){
@@ -2315,6 +2340,12 @@ function openSearchPopup(term, initialFilters){
 
   input.addEventListener('input', function(e){
     const val = e.target.value;
+    // Só aqui sabemos que foi o USUÁRIO que começou a digitar algo — reseta
+    // o filtro de tipo (Séries/Filmes/Ao Vivo) pra "Tudo", já que uma busca
+    // nova não tem por que continuar restrita ao filtro de uma busca
+    // anterior. A busca inicial (restaurada via "voltar", ou vinda da
+    // topbar) não passa por aqui, então não é afetada.
+    activeType = 'all';
     const topbarInput = qs('#global-search');
     if(topbarInput) topbarInput.value = val; // mantém sincronizado pra não "perder" o texto ao reabrir
     scheduleSearch(val.trim());
@@ -3971,6 +4002,47 @@ async function getNextEpisode(content){
 }
 
 /* ======================================================================
+   HISTÓRICO DO NAVEGADOR (botão "voltar" físico/gesto do Android)
+   ------------------------------------------------------------------
+   Sem isso, o botão/gesto de voltar nativo do celular não tinha nenhuma
+   entrada de histórico "nossa" pra consumir — ele saía do app/aba direto
+   em vez de fechar o player ou sair da tela de detalhes da série. Toda vez
+   que abrimos uma "camada" que devia ser fechável com voltar (o player, a
+   tela de detalhes de uma série), empilhamos uma entrada de histórico
+   (pushNavState). Ao sair dessa camada pelos NOSSOS próprios botões (←, ×,
+   "Voltar"), chamamos consumeNavState() — que dá um history.back() pra
+   manter a pilha em sincronia, mas avisa o listener de 'popstate' (via
+   _suppressNextPopstate) que essa saída já foi tratada, pra ele não tratar
+   de novo. Quando é o gesto/botão NATIVO do Android que dispara o
+   popstate, esse aviso não existe, então o listener executa a mesma ação
+   de "voltar" que os nossos botões fariam.
+   ====================================================================== */
+function pushNavState(label){
+  try{ history.pushState({ smNav: label, t: Date.now() }, ''); }catch(err){ /* file:// ou navegador sem History API: ignora, sem quebrar nada */ }
+}
+
+let _suppressNextPopstate = false;
+function consumeNavState(){
+  _suppressNextPopstate = true;
+  try{ history.back(); }catch(err){ _suppressNextPopstate = false; }
+}
+
+window.addEventListener('popstate', function(){
+  if(_suppressNextPopstate){ _suppressNextPopstate = false; return; }
+  // Voltar nativo (gesto/botão físico do Android): fecha a camada mais no
+  // topo agora aberta, se houver alguma.
+  const overlay = qs('#player-overlay');
+  if(overlay && overlay.style.display === 'flex'){
+    PlayerModule.goBack();
+    return;
+  }
+  if(State.ui.currentView === 'series-detail'){
+    goBackFromSeriesDetail();
+    return;
+  }
+});
+
+/* ======================================================================
    PLAYER MODULE
    ====================================================================== */
 const PlayerModule = {
@@ -3989,12 +4061,18 @@ const PlayerModule = {
   _skipNativeAttempt: false,
 
   open(content){
+    const overlay = qs('#player-overlay');
+    // Só empilha uma entrada de histórico quando o player estava REALMENTE
+    // fechado antes — troca de episódio (próximo episódio, ou clicar outro
+    // episódio já com o player aberto) reusa o mesmo open() mas não deve
+    // empilhar de novo (senão o usuário precisaria apertar voltar várias
+    // vezes só pra sair, uma por episódio trocado).
+    const wasClosed = overlay.style.display !== 'flex';
     this.currentContent = content;
     this.retryCount = 0;
     this.isUserPaused = false;
     this._skipNativeAttempt = false;
     this.playToken++;
-    const overlay = qs('#player-overlay');
     const title = qs('#player-title');
     title.textContent = resolveContentName(content);
     if(!content.nome && content.tipo === 'series' && content.seriesKey){
@@ -4011,6 +4089,7 @@ const PlayerModule = {
     }
     overlay.style.display = 'flex';
     overlay.classList.toggle('live-mode', content.tipo === 'live');
+    if(wasClosed) pushNavState('player');
 
     this._ensureVideoListeners();
     this._ensureNextEpisodeButton();
@@ -4129,7 +4208,21 @@ const PlayerModule = {
     // NÃO usamos 'mousedown'/'touchstart' aqui, porque eles disparam ANTES
     // do 'click' — se revelássemos os controles nesse momento, o clique
     // seguinte leria o estado errado (acharia que já estavam visíveis).
-    overlay.addEventListener('mousemove', showAndSchedule);
+    //
+    // No celular (e em qualquer navegador que emula eventos de mouse a
+    // partir do toque) isso também vale pro 'mousemove': todo toque dispara
+    // um 'mousemove' sintético logo ANTES do 'click' — então um toque na
+    // lateral com os controles escondidos "revelava e escondia de novo" no
+    // mesmo instante (o clique via os controles já visíveis por causa desse
+    // mousemove fantasma, e tratava como clique-com-controles-visíveis,
+    // escondendo de novo). Por isso, quando o navegador suporta Pointer
+    // Events, só reagimos a mousemove de mouse de verdade (pointerType
+    // 'mouse'); toque continua revelando normalmente através do 'click'.
+    if(window.PointerEvent){
+      overlay.addEventListener('pointermove', (e) => { if(e.pointerType === 'mouse') showAndSchedule(); });
+    } else {
+      overlay.addEventListener('mousemove', showAndSchedule);
+    }
     overlay.addEventListener('keydown', showAndSchedule);
 
     // Clique no vídeo: comportamento depende de 4 estados (pausado/tocando
@@ -4230,6 +4323,10 @@ const PlayerModule = {
       if(e.key === 'Escape'){
         e.preventDefault();
         this.goBack();
+        // Consome a entrada de histórico empilhada na abertura (ver
+        // pushNavState em open()), senão o botão/gesto de voltar nativo
+        // ficaria "atrasado" um passo da próxima vez que for usado.
+        consumeNavState();
       } else if(e.key === ' ' || e.code === 'Space'){
         e.preventDefault(); // evita rolar a página
         this.togglePlayPause();
@@ -4289,19 +4386,23 @@ const PlayerModule = {
   },
 
   /**
-   * Define se um clique caiu na "área central" do vídeo (zona de toque
-   * grande, pensada pra controle remoto/dedo, em vez de um ícone minúsculo).
-   * Área central ~= 56% da largura × ~64% da altura, centralizada.
+   * Define se um clique caiu na "área central" do vídeo — um círculo do
+   * tamanho do próprio botão/ícone de play/pause central (que tem 76px de
+   * diâmetro, ver #player-playpause-feedback no CSS), com uma pequena
+   * margem de toque. Era uma faixa grande (56%×64% da tela) antes; ficou
+   * pequena demais de propósito, do tamanho do que realmente aparece/some
+   * na tela.
    */
   _isCenterZone(e){
     const video = qs('#video-player');
     const rect = video.getBoundingClientRect();
     if(!rect.width || !rect.height) return true;
-    const relX = (e.clientX - rect.left) / rect.width;
-    const relY = (e.clientY - rect.top) / rect.height;
-    const marginX = 0.22;
-    const marginY = 0.18;
-    return relX >= marginX && relX <= (1 - marginX) && relY >= marginY && relY <= (1 - marginY);
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const dx = e.clientX - cx;
+    const dy = e.clientY - cy;
+    const radius = 48; // ~metade dos 76px do ícone + uma margem de toque
+    return (dx * dx + dy * dy) <= radius * radius;
   },
 
   /**
@@ -4352,16 +4453,26 @@ const PlayerModule = {
     }
   },
 
-  /** Ícone grande que pisca no centro da tela ao dar play/pause (feedback
-   * visual claro do que acabou de acontecer). */
+  /**
+   * Ícone grande no centro da tela ao dar play/pause. Dois comportamentos
+   * diferentes, conforme a especificação dos 4 estados do player:
+   *  - Ao PAUSAR: o ícone (de pause) fica junto com o resto dos controles
+   *    — não tem timer próprio pra sumir sozinho, ele some quando os
+   *    controles somem (ver CSS ".controls-hidden"). É o "grande botão"
+   *    central que fica visível enquanto pausado.
+   *  - Ao RETOMAR: é só uma confirmação rápida de "voltou a tocar" — pisca
+   *    com um esmaecer e some sozinho, sem depender dos controles.
+   */
   _showPlayPauseFeedback(isPlaying){
     const indicator = qs('#player-playpause-feedback');
     indicator.innerHTML = isPlaying ? this.ICONS.play : this.ICONS.pause;
-    indicator.classList.remove('show');
-    void indicator.offsetWidth;
-    indicator.classList.add('show');
     clearTimeout(this._playPauseFeedbackTimer);
-    this._playPauseFeedbackTimer = setTimeout(() => indicator.classList.remove('show'), 500);
+    indicator.classList.remove('show');
+    void indicator.offsetWidth; // reinicia a transição de esmaecer mesmo em cliques seguidos
+    indicator.classList.add('show');
+    if(isPlaying){
+      this._playPauseFeedbackTimer = setTimeout(() => indicator.classList.remove('show'), 900);
+    }
   },
 
   _updatePlayPauseIcon(){
@@ -5027,6 +5138,7 @@ function renderSeriesCard(entry){
     State.ui.activeSeriesKey = entry.key;
     State.ui.currentView = 'series-detail';
     Router.render();
+    pushNavState('series-detail'); // pro botão/gesto de voltar nativo do celular funcionar aqui
   };
   card.addEventListener('click', activateSeriesCard);
   card.addEventListener('keydown', function(e){
@@ -5237,6 +5349,14 @@ function goBackFromSeriesDetail(){
   }
 }
 
+/** Mesma ação acima, mas pros NOSSOS botões na tela (não pro listener de
+ * 'popstate') — também consome a entrada de histórico empilhada quando a
+ * série foi aberta, pra manter o botão/gesto de voltar nativo em sincronia. */
+function goBackFromSeriesDetailUI(){
+  goBackFromSeriesDetail();
+  consumeNavState();
+}
+
 async function renderSeriesDetailView(container){
   const key = State.ui.activeSeriesKey;
   const loading = el('div', { class:'loader-inline' }, [el('div',{class:'spinner'}), 'Carregando...']);
@@ -5256,7 +5376,7 @@ async function renderSeriesDetailView(container){
     // tela e permite tentar de novo, em vez de falhar silenciosamente.
     if(State.ui.currentView !== 'series-detail') return;
     loading.remove();
-    container.appendChild(el('button', { class:'btn', onclick: goBackFromSeriesDetail }, ['← Voltar']));
+    container.appendChild(el('button', { class:'btn', onclick: goBackFromSeriesDetailUI }, ['← Voltar']));
     container.appendChild(renderEmptyState('⚠️', 'Erro ao carregar a série', String((err && err.message) || err)));
     container.appendChild(el('button', { class:'btn primary', style:'margin-top:10px;', onclick: ()=>Router.render() }, ['Tentar novamente']));
     return;
@@ -5265,12 +5385,12 @@ async function renderSeriesDetailView(container){
   loading.remove();
 
   if(!entry){
-    container.appendChild(el('button', { class:'btn', onclick: goBackFromSeriesDetail }, ['← Voltar']));
+    container.appendChild(el('button', { class:'btn', onclick: goBackFromSeriesDetailUI }, ['← Voltar']));
     container.appendChild(renderEmptyState('❓','Série não encontrada','Esta série pode ter sido removida.'));
     return;
   }
 
-  container.appendChild(el('button', { class:'btn', style:'margin-bottom:16px;', onclick: goBackFromSeriesDetail }, ['← Voltar para Séries']));
+  container.appendChild(el('button', { class:'btn', style:'margin-bottom:16px;', onclick: goBackFromSeriesDetailUI }, ['← Voltar para Séries']));
 
   try{
   const header = el('div', { class:'series-header' });
@@ -5404,7 +5524,7 @@ async function renderSeriesDetailView(container){
     // sem nenhuma pista — foi exatamente esse silêncio que dificultou
     // diagnosticar o bug de "série não abre" no APK.
     container.innerHTML = '';
-    container.appendChild(el('button', { class:'btn', onclick: goBackFromSeriesDetail }, ['← Voltar']));
+    container.appendChild(el('button', { class:'btn', onclick: goBackFromSeriesDetailUI }, ['← Voltar']));
     container.appendChild(renderEmptyState('⚠️', 'Erro ao exibir a série', String((err && err.message) || err)));
   }
 }
@@ -6418,10 +6538,12 @@ function setupEventListeners(){
     if(!(content && content.tipo === 'series') && returnTo && returnTo.type === 'search'){
       openSearchPopup(returnTo.term, { activeType: returnTo.activeType, activeServer: returnTo.activeServer });
     }
+    consumeNavState(); // mantém o histórico do navegador em sincronia — ver definição acima
   });
 
   qs('#player-back').addEventListener('click', function(){
     PlayerModule.goBack();
+    consumeNavState();
   });
 }
 
