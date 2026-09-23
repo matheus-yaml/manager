@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>const APP_VERSION = '1.0.14';</script>
+<script>const APP_VERSION = '1.0.15';</script>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -3357,6 +3357,38 @@ const ServerModule = {
     let carry = ''; // pedacinho de linha incompleta entre chamadas de feedText
     let linesSinceYield = 0;
 
+    // CONTRAPRESSÃO (backpressure): sem isso, se o parsing andar mais rápido
+    // que o Worker conseguir gravar no disco (bem comum em TV
+    // box/projetor Android — CPU até que dá conta, mas o armazenamento é
+    // lento), cada lote pronto era disparado pro Worker na hora, sem
+    // esperar os anteriores terminarem. Como cada `save()` só resolve
+    // quando a transação inteira do IndexedDB confirma no disco, dezenas
+    // de lotes (cada um com milhares de itens) podiam ficar empilhados na
+    // fila de mensagens do Worker ao mesmo tempo — e o postMessage ainda
+    // clona os dados (mais uma cópia temporária de cada lote). Isso sozinho
+    // já era capaz de estourar a memória num aparelho fraco, mesmo com
+    // "Economizar memória" ligado (aquele modo evita acumular o ARQUIVO
+    // inteiro, mas não evitava isso aqui). Agora, no máximo
+    // MAX_INFLIGHT_SAVES lotes ficam "no ar" esperando o Worker de cada
+    // vez — se já tem esse tanto pendente, o parsing PAUSA (await) até
+    // algum deles confirmar gravação antes de continuar lendo mais linhas.
+    const MAX_INFLIGHT_SAVES = memorySavingMode ? 1 : 2;
+    let inflightSaves = 0;
+    let inflightWaiters = [];
+
+    function releaseInflightSlot(){
+      inflightSaves--;
+      if(inflightWaiters.length > 0){
+        const resolve = inflightWaiters.shift();
+        resolve();
+      }
+    }
+
+    function waitForInflightSlot(){
+      if(inflightSaves < MAX_INFLIGHT_SAVES) return Promise.resolve();
+      return new Promise((resolve) => inflightWaiters.push(resolve));
+    }
+
     function reportSaveProgress(){
       if(onSaveProgress) onSaveProgress(chunksCompleted, estimatedTotalChunks);
     }
@@ -3364,11 +3396,14 @@ const ServerModule = {
     function dispatchChunk(items, isFinal){
       if(items.length === 0 && !isFinal) return;
       chunksDispatched++;
+      inflightSaves++;
       const finalized = isFinal ? finalizeSeriesSummariesFromState(state, serverId) : { summaries: [], episodeRecords: [] };
       if(isFinal) writtenSeriesKeys = finalized.summaries.map(s => s.key);
       const task = PersistenceWorker.save(items, finalized.summaries, undefined, finalized.episodeRecords).then(() => {
         chunksCompleted++;
         reportSaveProgress();
+      }).finally(() => {
+        releaseInflightSlot();
       });
       saveTasks.push(task);
     }
@@ -3437,6 +3472,13 @@ const ServerModule = {
           processLine(combined.slice(pos, nl));
           pos = nl + 1;
           linesSinceYield++;
+          // Se já tem lote(s) demais esperando o Worker confirmar a
+          // gravação, PARA de ler mais linhas até sobrar espaço — é isso
+          // que impede o parsing (rápido, só CPU) de disparar lote atrás de
+          // lote mais rápido do que o disco (lento) consegue absorver.
+          if(inflightSaves >= MAX_INFLIGHT_SAVES){
+            await waitForInflightSlot();
+          }
           if(memorySavingMode && (state.pendingEpisodesSinceFlush || 0) >= EPISODE_FLUSH_THRESHOLD){
             await flushSeriesEpisodesPartial(state);
           }
