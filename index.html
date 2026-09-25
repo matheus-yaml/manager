@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>const APP_VERSION = '1.0.55';</script>
+<script>const APP_VERSION = '1.0.56';</script>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -427,6 +427,7 @@ html.tv .content-card:focus{outline:3px solid #fff;outline-offset:0;transform:sc
 html.tv .nav-item:focus{outline:2px solid #fff;outline-offset:-2px;background:rgba(var(--accent-rgb),.35);color:#fff;}
 html.tv button:focus, html.tv select:focus, html.tv .chip:focus, html.tv .episode-row:focus, html.tv [tabindex]:focus{outline:3px solid #fff;outline-offset:2px;}
 html.tv .episode-row:focus{background:rgba(var(--accent-rgb),.22);}
+html.tv #player-seek-track:focus{outline:3px solid #fff;outline-offset:6px;height:8px;}
 /* caixa de marcar com foco do controle: a caixa e a linha inteira acendem */
 html.tv input[type=checkbox]:focus, html.tv input[type=radio]:focus{outline:3px solid #fff;outline-offset:3px;box-shadow:0 0 0 7px rgba(var(--accent-rgb),.55);}
 html.tv label:focus-within{background:rgba(var(--accent-rgb),.22);border-radius:8px;box-shadow:0 0 0 2px rgba(255,255,255,.6);}
@@ -8339,14 +8340,17 @@ const TvNav = {
   /** Coisas clicáveis que não são botão de verdade (o "×" das janelas, linha
    * de episódio, cabeçalho de temporada, etc.) não recebem foco sozinhas —
    * no modo TV elas ganham tabindex/role=button, e OK nelas = clique. */
-  CLICKABLE: '.modal-close-x, .episode-row, [style*="cursor:pointer"], [style*="cursor: pointer"]',
+  CLICKABLE: '.modal-close-x, .episode-row, #player-seek-track, [style*="cursor:pointer"], [style*="cursor: pointer"]',
   makeFocusable(root){
     if(!this.on() || !root || !root.querySelectorAll) return;
     const list = root.matches && root.matches(this.CLICKABLE) ? [root] : [];
     root.querySelectorAll(this.CLICKABLE).forEach(e => list.push(e));
     for(const e of list){
       if(e.hasAttribute('tabindex') || /^(BUTTON|A|INPUT|SELECT|TEXTAREA)$/.test(e.tagName)) continue;
-      if(e.querySelector('input, select, textarea, button')) continue; // é só um contêiner (o campo dentro é que recebe o foco)
+      // <label> em volta de uma caixa de marcar: quem recebe o foco é a caixa.
+      // (Linha de episódio TEM botão de baixar dentro e mesmo assim precisa
+      // de foco próprio — OK na linha = assistir; → = botão de baixar.)
+      if(e.tagName === 'LABEL' && e.querySelector('input, select, textarea')) continue;
       e.setAttribute('tabindex', '0');
       e.setAttribute('role', 'button');
     }
@@ -8422,6 +8426,12 @@ const TvNav = {
           return;
         }
         PlayerModule._showControls(); PlayerModule._scheduleHideControls();
+        // barra de progresso com foco: ←/→ avançam/voltam 10s (↑/↓ saem dela)
+        if(a.id === 'player-seek-track' && (k === 'ArrowLeft' || k === 'ArrowRight')){
+          e.preventDefault(); e.stopPropagation();
+          PlayerModule.seekBy(k === 'ArrowRight' ? 10 : -10);
+          return;
+        }
       }
 
       // ---- caixa de marcar: OK marca/desmarca (o Enter nativo não faz isso) ----
