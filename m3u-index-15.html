@@ -1,0 +1,652 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>IPTV Listas</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font:14px/1.4 system-ui,sans-serif;background:#111;color:#eee}
+header,#bar,#lbar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px}
+header{background:#1b1b1b}
+input,select,button{font:inherit;padding:6px 8px;background:#222;color:#eee;border:1px solid #333;border-radius:4px}
+button{cursor:pointer}
+button.on{background:#2d5bd7;border-color:#2d5bd7}
+button:disabled,input:disabled{opacity:.5}
+#url,#q{flex:1;min-width:160px}
+#nome{width:170px}
+#lista{flex:1;min-width:160px}
+#grp{max-width:40vw}
+#status{padding:4px 8px;color:#aaa;font-size:12px;white-space:pre-wrap}
+#list{padding:0 8px 80px}
+.it{display:flex;align-items:center;gap:8px;padding:6px;border-bottom:1px solid #222;cursor:pointer}
+.it:hover,.it:focus{background:#1d2a4a;outline:none}
+.it img{width:40px;height:40px;object-fit:contain;background:#000;flex:none}
+.it small{color:#888;display:block}
+#player{position:fixed;left:0;right:0;bottom:0;background:#000;padding:8px;display:none}
+#player video{width:100%;max-height:45vh;background:#000}
+#player a{color:#8ab4ff;word-break:break-all;font-size:12px}
+</style>
+</head>
+<body>
+<header>
+  <input id="url" placeholder="URL da lista M3U" value="http://galaxy.mrtv2.shop/get.php?username=111111&amp;password=97500500187&amp;type=m3u_plus&amp;output=mpegts">
+  <input id="nome" placeholder="nome do servidor (opcional)" value="001">
+  <button id="btnUrl">Baixar e gravar</button>
+  <input type="file" id="file" accept=".m3u,.m3u8,.txt">
+</header>
+<div id="lbar">
+  <select id="lista"></select>
+  <button id="btnProc">Reprocessar</button>
+  <button id="btnDel">Excluir lista</button>
+  <label><input type="checkbox" id="logos"> logos</label>
+</div>
+<div id="status">Pronto.</div>
+<div id="bar">
+  <button data-t="0" class="tab on">Ao vivo</button>
+  <button data-t="1" class="tab">Filmes</button>
+  <button data-t="2" class="tab">Séries</button>
+  <select id="grp"><option value="">Todos os grupos</option></select>
+  <input id="q" placeholder="Buscar...">
+</div>
+<div id="list"></div>
+<div id="player">
+  <button id="btnClose">Fechar</button>
+  <video id="vid" controls autoplay playsinline></video>
+  <a id="vlink" target="_blank" rel="noopener"></a>
+</div>
+
+<!--
+  ========================= ESQUEMA DO BANCO (IndexedDB "iptv_db") =========================
+
+  listas                 catálogo — 1 linha por lista
+    { nome, origem, bytes, blocos_crus, data, processada, formato: 4, comp,
+      total:[aoVivo, filmes, episodios], series, blocos_series,
+      blocos: [ [nº dos blocos crus que têm ao vivo], [..filmes], [..episódios] ],
+      grupos: [ [ [grupo, qtd], ... ] × 3 tipos ] }
+
+  lista_<nome_servidor>  UMA TABELA POR SERVIDOR com a m3u CRUA
+    chave 0..n-1 → texto (~1 MB, cortado antes de "#EXTINF"); concatenar = arquivo original
+
+  conteudos              TABELA ESTRUTURADA
+    chave [lista, tipo, nº do bloco cru]   tipo: 0 ao vivo | 1 filme | 2 episódio
+    valor: texto COMPACTADO (deflate) — 1 item por linha, colunas separadas por TAB:
+      0 nome | 1 grupo | 2 url | 3 logo | 4 tvg_id | 5 xui_id | só episódios: 6 serie | 7 temporada | 8 episodio
+    (se o navegador não tiver CompressionStream, grava o texto puro; meta.comp diz qual)
+
+  busca                  índice de busca (ao vivo e filmes), mesma chave, texto puro:
+    1 linha por item na mesma posição: "nome_normalizado\tgrupo"
+
+  series                 chave [lista, bloco] → array de [nome, grupo, logo, qtd_eps, [blocos crus], nome_normalizado]
+
+  PROCESSAMENTO PARALELO: cada bloco cru é independente → um worker coordenador distribui os
+  blocos entre N workers (núcleos - 1, máx. 3). Cada um lê, interpreta, compacta e grava o seu
+  bloco e devolve só um resumo pequeno (contagens, grupos, séries). No fim tudo é encerrado
+  (terminate) e a memória de todos os workers volta para o sistema.
+-->
+
+<script id="shared-src" type="text/plain">
+// ---- código comum (workers + página) ----
+var DBN = 'iptv_db', RW = { durability: 'relaxed' };
+var ACC = { 'à':'a','á':'a','â':'a','ã':'a','ä':'a','å':'a','è':'e','é':'e','ê':'e','ë':'e','ì':'i','í':'i','î':'i','ï':'i',
+  'ò':'o','ó':'o','ô':'o','õ':'o','ö':'o','ù':'u','ú':'u','û':'u','ü':'u','ç':'c','ñ':'n','ý':'y','ÿ':'y' };
+var ACC_RE = /[àáâãäåèéêëìíîïòóôõöùúûüçñýÿ]/g, NON_ASCII = /[^\x00-\x7f]/;
+function accRep(c) { return ACC[c]; }
+function norm(s) {                        // minúsculas sem acento (tabela direta: mais barato que normalize NFD)
+  s = s.toLowerCase();
+  return NON_ASCII.test(s) ? s.replace(ACC_RE, accRep) : s;
+}
+function req(r) { return new Promise(function (ok, ko) { r.onsuccess = function () { ok(r.result); }; r.onerror = function () { ko(r.error); }; }); }
+function txDone(tx) { return new Promise(function (ok, ko) { tx.oncomplete = ok; tx.onerror = tx.onabort = function () { ko(tx.error); }; }); }
+function mb(n) { return (n / 1048576).toFixed(1) + ' MB'; }
+var TEM_COMP = typeof CompressionStream !== 'undefined' && typeof DecompressionStream !== 'undefined';
+function compactar(s) {
+  return new Response(new Blob([s]).stream().pipeThrough(new CompressionStream('deflate'))).arrayBuffer();
+}
+function descompactar(v) {
+  if (typeof v === 'string') return Promise.resolve(v);
+  return new Response(new Blob([v]).stream().pipeThrough(new DecompressionStream('deflate'))).text();
+}
+</script>
+
+<!-- ======================= worker de PARSE (roda N cópias em paralelo) ======================= -->
+<script id="parser-src" type="text/plain">
+'use strict';
+var db = null;
+var SE_RE = /^(.*?)[\s._\-|]*S(\d{1,3})[\s._]*E(\d{1,4})/i;
+var MOVIE_G = /filme|movie|vod|cinema|lancamento/;
+var SERIE_G = /serie|novela|temporada|anime|desenho/;
+var VID_RE = /\.(mp4|mkv|avi)(\?|$)/i;
+var TABNL = /[\t\n\r]/g;
+var ginfo = new Map();                        // cache de classificação por grupo (vale pra todos os blocos deste worker)
+function attr(line, key) {
+  var i = line.indexOf(key); if (i < 0) return '';
+  var s = i + key.length, e = line.indexOf('"', s);
+  return e < 0 ? '' : line.slice(s, e);
+}
+function limpa(s) { return s.indexOf('\t') >= 0 || s.indexOf('\r') >= 0 ? s.replace(TABNL, ' ') : s; }
+function abrir() {
+  return new Promise(function (ok, ko) { var r = indexedDB.open(DBN); r.onsuccess = function () { ok(r.result); }; r.onerror = function () { ko(r.error); }; });
+}
+
+async function bloco(lista, i, comp) {
+  var T = Date.now();
+  var s = await req(db.transaction(lista).objectStore(lista).get(i));
+  var tl = Date.now() - T; T = Date.now();
+
+  var rows = [[], [], []], busca = [[], []], cnt = [0, 0, 0];
+  var grupos = [new Map(), new Map(), new Map()], series = new Map();
+  var p = 0, L = s.length, inf = null;
+  while (p < L) {
+    var e = s.indexOf('\n', p); if (e < 0) e = L;
+    var url = s.slice(p, e).trim(); p = e + 1;
+    if (!url) continue;
+    if (url.charCodeAt(0) === 35) { if (url.lastIndexOf('#EXTINF', 0) === 0) inf = url; continue; }
+    if (!inf) continue;
+
+    var q = inf.lastIndexOf('"'), c = inf.indexOf(',', q < 0 ? 8 : q);
+    var nome = c >= 0 ? inf.slice(c + 1).trim() : '';
+    if (!nome) nome = attr(inf, 'tvg-name="') || url;
+    nome = limpa(nome);
+    var grupo = attr(inf, 'group-title="') || 'Sem grupo';
+    var gi = ginfo.get(grupo);
+    if (!gi) { var gk = norm(grupo); ginfo.set(grupo, gi = { g: limpa(grupo), s: SERIE_G.test(gk), m: MOVIE_G.test(gk) }); }
+    grupo = gi.g;
+    var t, se = null;
+    if (url.indexOf('/movie/') > 0) t = 1;
+    else if (url.indexOf('/series/') > 0) t = 2;
+    else if (gi.s || (se = SE_RE.exec(nome))) t = 2;
+    else t = gi.m || VID_RE.test(url) ? 1 : 0;
+    var logo = attr(inf, 'tvg-logo="');
+    var row = nome + '\t' + grupo + '\t' + url + '\t' + logo + '\t' + attr(inf, 'tvg-id="') + '\t' + attr(inf, 'xui-id="');
+    if (t === 2) {
+      if (!se) se = SE_RE.exec(nome);
+      var sn = se ? (se[1].trim() || nome) : nome;
+      row += '\t' + sn + '\t' + (se ? +se[2] : 0) + '\t' + (se ? +se[3] : 0);
+      var sr = series.get(sn);
+      if (!sr) series.set(sn, sr = [sn, grupo, logo, 0]);
+      sr[3]++;
+    } else busca[t].push(norm(nome) + '\t' + grupo);
+    rows[t].push(row);
+    var gm = grupos[t]; gm.set(grupo, (gm.get(grupo) || 0) + 1);
+    cnt[t]++;
+    inf = null;
+  }
+  s = null;
+  var txt = [rows[0].join('\n'), rows[1].join('\n'), rows[2].join('\n')];
+  rows = null;
+  var tp = Date.now() - T; T = Date.now();
+
+  var val = [null, null, null], bytes = 0;
+  for (var k = 0; k < 3; k++) {
+    if (!cnt[k]) continue;
+    val[k] = comp ? await compactar(txt[k]) : txt[k];
+    bytes += comp ? val[k].byteLength : txt[k].length;
+  }
+  txt = null;
+  var tc = Date.now() - T; T = Date.now();
+
+  var tx = db.transaction(['conteudos', 'busca'], 'readwrite', RW);
+  var cs = tx.objectStore('conteudos'), bs = tx.objectStore('busca');
+  for (k = 0; k < 3; k++) {
+    var key = [lista, k, i];
+    if (cnt[k]) cs.put(val[k], key); else cs.delete(key);       // sobrescreve; apaga só o que sumiu
+    if (k < 2 && cnt[k]) { var b = busca[k].join('\n'); bytes += b.length; bs.put(b, key); } else bs.delete(key);
+  }
+  val = busca = null;
+  await txDone(tx);
+  var tw = Date.now() - T;
+
+  return {
+    i: i, cnt: cnt, bytes: bytes, tl: tl, tp: tp, tc: tc, tw: tw,
+    grupos: grupos.map(function (g) { return Array.from(g.entries()); }),
+    series: Array.from(series.values())
+  };
+}
+
+self.onmessage = async function (ev) {
+  var m = ev.data;
+  try {
+    if (!db) db = await abrir();
+    self.postMessage(await bloco(m.lista, m.i, m.comp));
+  } catch (e) {
+    self.postMessage({ erro: String(e && e.message || e) });
+  }
+};
+</script>
+
+<!-- ======================= worker COORDENADOR (download, gravação crua, distribuição) ======================= -->
+<script id="worker-src" type="text/plain">
+'use strict';
+var CH = 1 << 20, BLOCO = 2000;
+var criar = null, apagar = null, db = null;
+function post(m) { self.postMessage(m); }
+function faixa(lista) { return IDBKeyRange.bound([lista], [lista, []]); }   // todas as chaves [lista, ...]
+
+function baseSchema(d) {
+  if (!d.objectStoreNames.contains('listas')) d.createObjectStore('listas', { keyPath: 'nome' });
+  ['conteudos', 'busca', 'series'].forEach(function (n) { if (!d.objectStoreNames.contains(n)) d.createObjectStore(n); });
+}
+function open(v) {
+  return new Promise(function (ok, ko) {
+    var r = v ? indexedDB.open(DBN, v) : indexedDB.open(DBN);
+    r.onupgradeneeded = function () {
+      var d = r.result; baseSchema(d);
+      if (criar && !d.objectStoreNames.contains(criar)) d.createObjectStore(criar);
+      if (apagar && d.objectStoreNames.contains(apagar)) d.deleteObjectStore(apagar);
+    };
+    r.onblocked = function () { post({ status: 'Aguardando o banco ser liberado...' }); };
+    r.onsuccess = function () { ok(r.result); };
+    r.onerror = function () { ko(r.error); };
+  });
+}
+// criar/apagar tabela exige subir a versão do banco
+async function alterarSchema(nomeCriar, nomeApagar) {
+  if (db) db.close();
+  db = await open();
+  var precisa = (nomeCriar && !db.objectStoreNames.contains(nomeCriar)) ||
+                (nomeApagar && db.objectStoreNames.contains(nomeApagar));
+  if (!precisa) return;
+  var v = db.version + 1; db.close();
+  criar = nomeCriar; apagar = nomeApagar;
+  db = await open(v);
+  criar = apagar = null;
+}
+
+/* ================= 1) baixar e gravar CRU em lista_<servidor> ================= */
+async function importar(src, nome) {
+  var next, total, rd = null, file = src.file, fr = null, off = 0, origem = src.url || (file && file.name) || 'arquivo';
+  if (src.url) {
+    var resp = await fetch(src.url);
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    rd = resp.body.getReader();
+    total = +resp.headers.get('content-length') || 0;
+    next = function () { return rd.read(); };
+    resp = null;
+  } else {
+    fr = new FileReaderSync(); total = file.size;
+    next = function () {
+      if (off >= file.size) return Promise.resolve({ done: true });
+      var b = fr.readAsArrayBuffer(file.slice(off, off + CH)); off += CH;
+      return Promise.resolve({ done: false, value: new Uint8Array(b) });
+    };
+  }
+  await alterarSchema(nome, null);
+  var tx0 = db.transaction(nome, 'readwrite', RW); tx0.objectStore(nome).clear(); await txDone(tx0);
+
+  var dec = new TextDecoder(), buf = '', n = 0, bytes = 0, last = 0, t0 = Date.now();
+  async function put(s) {
+    var tx = db.transaction(nome, 'readwrite', RW);
+    tx.objectStore(nome).put(s, n++);
+    await txDone(tx);                 // só lê mais rede/arquivo depois de gravar: RAM estável
+  }
+  for (;;) {
+    var c = await next();
+    if (c.done) break;
+    bytes += c.value.byteLength;
+    buf += dec.decode(c.value, { stream: true });
+    c = null;
+    while (buf.length >= CH) {
+      var cut = buf.lastIndexOf('\n#EXTINF', CH);
+      if (cut <= 0) cut = buf.indexOf('\n#EXTINF', CH);
+      if (cut < 0) break;
+      await put(buf.slice(0, cut + 1));
+      buf = buf.slice(cut + 1);
+    }
+    if (Date.now() - last > 300) {
+      last = Date.now();
+      post({ status: 'Gravando ' + nome + '... ' + mb(bytes) + (total ? ' / ' + mb(total) + ' (' + Math.round(bytes / total * 100) + '%)' : '') });
+    }
+  }
+  buf += dec.decode();
+  if (buf) await put(buf);
+  buf = dec = rd = next = file = fr = src = null;   // solta tudo do download
+
+  var tx = db.transaction('listas', 'readwrite', RW);
+  tx.objectStore('listas').put({ nome: nome, origem: origem, bytes: bytes, blocos_crus: n, data: Date.now(), processada: false });
+  await txDone(tx);
+  return 'Download + gravação crua: ' + mb(bytes) + ' em ' + n + ' blocos, ' + ((Date.now() - t0) / 1000).toFixed(1) + 's';
+}
+
+/* ================= 2) processar em PARALELO ================= */
+async function processar(lista, parserSrc) {
+  if (!db) db = await open();
+  var meta = await req(db.transaction('listas').objectStore('listas').get(lista));
+  if (!meta) throw new Error('Lista não encontrada: ' + lista);
+  var t0 = Date.now(), n = meta.blocos_crus;
+  var N = Math.max(1, Math.min(3, (self.navigator.hardwareConcurrency || 2) - 1, n));
+  var comp = TEM_COMP;
+
+  var cnt = [0, 0, 0], blocos = [[], [], []], grupos = [new Map(), new Map(), new Map()], series = new Map();
+  var soma = { tl: 0, tp: 0, tc: 0, tw: 0, bytes: 0 };
+
+  var url = URL.createObjectURL(new Blob([parserSrc], { type: 'text/javascript' }));
+  var ws = [];
+  try {
+    await new Promise(function (ok, ko) {
+      var prox = 0, feitos = 0;
+      if (!n) return ok();
+      function manda(w) { if (prox < n) w.postMessage({ lista: lista, i: prox++, comp: comp }); }
+      function junta(d) {
+        soma.tl += d.tl; soma.tp += d.tp; soma.tc += d.tc; soma.tw += d.tw; soma.bytes += d.bytes;
+        for (var t = 0; t < 3; t++) {
+          if (!d.cnt[t]) continue;
+          cnt[t] += d.cnt[t]; blocos[t].push(d.i);
+          var gm = grupos[t], ga = d.grupos[t];
+          for (var j = 0; j < ga.length; j++) gm.set(ga[j][0], (gm.get(ga[j][0]) || 0) + ga[j][1]);
+        }
+        for (var k = 0; k < d.series.length; k++) {
+          var s = d.series[k], x = series.get(s[0]);
+          if (!x) series.set(s[0], x = [s[0], s[1], s[2], 0, [], norm(s[0])]);
+          x[3] += s[3]; x[4].push(d.i);
+        }
+      }
+      for (var k = 0; k < N; k++) {
+        var w = new Worker(url);
+        w.onmessage = function (e) {
+          var d = e.data;
+          if (d.erro) return ko(new Error(d.erro));
+          junta(d); feitos++;
+          post({ status: 'Processando ' + lista + ' com ' + N + ' workers... bloco ' + feitos + '/' + n });
+          if (feitos === n) ok(); else manda(this);
+        };
+        w.onerror = function (e) { ko(new Error('parser: ' + e.message)); };
+        ws.push(w);
+        manda(w);
+      }
+    });
+  } finally {
+    ws.forEach(function (w) { w.terminate(); });   // libera a memória dos parsers
+    ws = null; URL.revokeObjectURL(url);
+  }
+
+  // séries + sobras de processamentos antigos
+  var tF = Date.now();
+  function porNome(a, b) { return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0; }
+  function num(a, b) { return a - b; }
+  var arr = Array.from(series.values()); series = null;
+  arr.sort(porNome);
+  arr.forEach(function (s) { s[4].sort(num); });
+  var nsb = 0, txs = db.transaction(['series', 'conteudos', 'busca'], 'readwrite', RW);
+  var ss = txs.objectStore('series');
+  for (var j = 0; j < arr.length; j += BLOCO) ss.put(arr.slice(j, j + BLOCO), [lista, nsb++]);
+  ss.delete(IDBKeyRange.bound([lista, nsb], [lista, Infinity]));
+  for (var t = 0; t < 3; t++) {
+    txs.objectStore('conteudos').delete(IDBKeyRange.bound([lista, t, n], [lista, t, Infinity]));
+    txs.objectStore('busca').delete(IDBKeyRange.bound([lista, t, t < 2 ? n : -Infinity], [lista, t, Infinity]));
+  }
+  await txDone(txs);
+
+  meta.processada = true; meta.formato = 4; meta.comp = comp; meta.total = cnt; meta.series = arr.length;
+  meta.blocos = blocos.map(function (b) { return b.sort(num); }); meta.blocos_series = nsb;
+  meta.grupos = grupos.map(function (g) { return Array.from(g.entries()).sort(porNome); });
+  arr = grupos = null;
+  var tx2 = db.transaction('listas', 'readwrite', RW); tx2.objectStore('listas').put(meta); await txDone(tx2);
+  tF = Date.now() - tF;
+  function s1(ms) { return (ms / 1000).toFixed(1) + 's'; }
+  return 'Processada em ' + s1(Date.now() - t0) + ' com ' + N + ' workers: ' + cnt[0].toLocaleString() + ' ao vivo, ' +
+    cnt[1].toLocaleString() + ' filmes, ' + cnt[2].toLocaleString() + ' episódios (' + meta.series.toLocaleString() + ' séries)' +
+    '\nSoma nos workers: leitura ' + s1(soma.tl) + ' · interpretação ' + s1(soma.tp) + ' · compactação ' + s1(soma.tc) +
+    ' · gravação ' + s1(soma.tw) + ' · finalização ' + s1(tF) + ' · gravado ' + mb(soma.bytes) + (comp ? ' (compactado)' : ' (sem compactação)');
+}
+
+/* ================= 3) excluir lista ================= */
+async function excluir(lista) {
+  if (!db) db = await open();
+  var tx = db.transaction(['conteudos', 'busca', 'series', 'listas'], 'readwrite', RW);
+  tx.objectStore('conteudos').delete(faixa(lista));
+  tx.objectStore('busca').delete(faixa(lista));
+  tx.objectStore('series').delete(faixa(lista));
+  tx.objectStore('listas').delete(lista);
+  await txDone(tx);
+  await alterarSchema(null, lista);
+  return 'Lista ' + lista + ' excluída.';
+}
+
+self.onmessage = async function (ev) {
+  var m = ev.data, txt;
+  try {
+    if (m.cmd === 'importar') {
+      var a = await importar(m.src, m.nome);
+      post({ status: a + '\nProcessando...' });
+      txt = a + '\n' + await processar(m.nome, m.parserSrc);
+    }
+    else if (m.cmd === 'processar') txt = await processar(m.nome, m.parserSrc);
+    else if (m.cmd === 'excluir') txt = await excluir(m.nome);
+    if (db) db.close(); db = null;
+    post({ fim: true, status: txt });
+  } catch (e) {
+    if (db) db.close(); db = null;
+    post({ erro: String(e && e.message || e) });
+  }
+};
+</script>
+
+<script>
+'use strict';
+var $ = function (id) { return document.getElementById(id); };
+(0, eval)($('shared-src').textContent);        // norm(), req(), descompactar()... comuns com os workers
+var LIMIT = 200, FORMATO = 4;
+var db = null, lista = '', meta = null, curType = 0, cur = [], curKind = 'item', busy = false, token = 0, st = null;
+
+/* ---------- utilidades ---------- */
+function esc(s) { return String(s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+function status(m) { $('status').textContent = m; }
+function nomeTabela(s) { s = norm(s).replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, ''); return 'lista_' + (s || 'sem_nome'); }
+function heap() { return performance.memory ? mb(performance.memory.usedJSHeapSize) : null; }
+
+// linha do bloco → objeto legível
+function item(l, serie) {
+  var c = l.split('\t');
+  var o = { nome: c[0], grupo: c[1], url: c[2], logo: c[3], tvg_id: c[4], xui_id: c[5] };
+  if (c.length > 6) { o.serie = c[6]; o.temporada = +c[7]; o.episodio = +c[8]; if (!o.logo && serie) o.logo = serie[2]; }
+  return o;
+}
+
+/* ---------- banco (thread principal: só leitura) ---------- */
+function getDB() {
+  if (db) return Promise.resolve(db);
+  return new Promise(function (ok, ko) {
+    var r = indexedDB.open(DBN);
+    r.onupgradeneeded = function () {
+      var d = r.result;
+      if (!d.objectStoreNames.contains('listas')) d.createObjectStore('listas', { keyPath: 'nome' });
+      ['conteudos', 'busca', 'series'].forEach(function (n) { if (!d.objectStoreNames.contains(n)) d.createObjectStore(n); });
+    };
+    r.onsuccess = function () {
+      db = r.result;
+      db.onversionchange = function () { db.close(); db = null; };   // libera para o worker criar/apagar tabelas
+      ok(db);
+    };
+    r.onerror = function () { ko(r.error); };
+  });
+}
+async function get(store, key) { return req((await getDB()).transaction(store).objectStore(store).get(key)); }
+async function linhasConteudo(t, b) { return (await descompactar(await get('conteudos', [lista, t, b]))).split('\n'); }
+
+/* ---------- worker: faz o pesado e é destruído no fim ---------- */
+function rodarWorker(msg) {
+  if (busy) return; busy = true; setBusy(true);
+  if (db) { db.close(); db = null; }
+  var antes = heap(), shared = $('shared-src').textContent;
+  msg.parserSrc = shared + '\n' + $('parser-src').textContent;
+  var url = URL.createObjectURL(new Blob([shared, '\n', $('worker-src').textContent], { type: 'text/javascript' }));
+  var w = new Worker(url);
+  function fim(txt) {
+    w.terminate(); w = null;             // encerra o coordenador (os parsers já foram encerrados por ele)
+    URL.revokeObjectURL(url); url = null;
+    msg = null;
+    $('file').value = '';                // solta a referência ao arquivo escolhido
+    busy = false; setBusy(false);
+    carregarListas().then(function () {
+      status(txt + '\nWorkers encerrados — memória do download/processamento liberada.' +
+        (antes ? ' Heap da página: ' + antes + ' antes → ' + heap() + ' agora.' : ''));
+    });
+  }
+  w.onmessage = function (e) {
+    var d = e.data;
+    if (d.erro) fim('Erro: ' + d.erro + '\n(Se for URL: verifique CORS ou use o botão de arquivo.)');
+    else if (d.fim) fim(d.status);
+    else if (d.status) status(d.status);
+  };
+  w.onerror = function (e) { fim('Erro no worker: ' + e.message); };
+  w.postMessage(msg);
+}
+function setBusy(b) { ['btnUrl', 'btnProc', 'btnDel', 'file'].forEach(function (id) { $(id).disabled = b; }); }
+
+/* ---------- listas ---------- */
+async function carregarListas() {
+  var todas = await req((await getDB()).transaction('listas').objectStore('listas').getAll());
+  if (!todas.some(function (l) { return l.nome === lista; })) lista = todas.length ? todas[0].nome : '';
+  var h = todas.length ? '' : '<option value="">(nenhuma lista)</option>';
+  meta = null;
+  todas.forEach(function (l) {
+    if (l.nome === lista) meta = l;
+    h += '<option value="' + esc(l.nome) + '"' + (l.nome === lista ? ' selected' : '') + '>' + esc(l.nome) + ' — ' + mb(l.bytes) +
+      (l.processada ? ' — ' + l.total[0] + ' ao vivo / ' + l.total[1] + ' filmes / ' + l.series + ' séries' : ' — não processada') + '</option>';
+  });
+  todas = null;
+  $('lista').innerHTML = h;
+  loadGroups(); await search();
+}
+
+function loadGroups() {
+  var h = '<option value="">Todos os grupos</option>';
+  if (meta && meta.formato === FORMATO) {
+    var gs = meta.grupos[curType];
+    for (var i = 0; i < gs.length; i++) h += '<option value="' + esc(gs[i][0]) + '">' + esc(gs[i][0]) + ' (' + gs[i][1] + ')</option>';
+  }
+  $('grp').innerHTML = h;
+}
+
+/* ---------- consultas ---------- */
+// Percorre só os blocos que têm o tipo pedido (meta.blocos[t]); st guarda a posição para "Carregar mais".
+async function search(more) {
+  var my = ++token, t0 = performance.now();
+  if (!more) st = { b: 0, i: 0 };
+  if (!meta || !meta.processada) { render([], 'item', false); if (!busy) status(lista ? 'Lista não processada.' : 'Nenhuma lista. Cole uma URL ou escolha um arquivo.'); return; }
+  if (meta.formato !== FORMATO) { render([], 'item', false); if (!busy) status('Lista em formato antigo: clique em Reprocessar.'); return; }
+  var q = norm($('q').value.trim()), g = $('grp').value, out = [], t = curType;
+  var series = t === 2, lb = series ? null : meta.blocos[t], nb = series ? meta.blocos_series : lb.length;
+
+  while (st.b < nb && out.length < LIMIT) {
+    var i = st.i, n;
+    if (series) {
+      var sr = await get('series', [lista, st.b]); if (my !== token) return;
+      for (n = sr.length; i < n && out.length < LIMIT; i++) {
+        var s = sr[i];
+        if ((!g || s[1] === g) && (!q || s[5].indexOf(q) >= 0)) out.push(s);
+      }
+    } else if (!q && !g) {
+      var rows = await linhasConteudo(t, lb[st.b]); if (my !== token) return;
+      for (n = rows.length; i < n && out.length < LIMIT; i++) out.push(item(rows[i]));
+    } else {
+      var linhas = (await get('busca', [lista, t, lb[st.b]])).split('\n'), hits = []; if (my !== token) return;
+      for (n = linhas.length; i < n && out.length + hits.length < LIMIT; i++) {
+        var L = linhas[i], tab = L.indexOf('\t');
+        if (g && L.slice(tab + 1) !== g) continue;
+        if (q) { var k = L.indexOf(q); if (k < 0 || k + q.length > tab) continue; }
+        hits.push(i);
+      }
+      linhas = null;
+      if (hits.length) {
+        var rw = await linhasConteudo(t, lb[st.b]); if (my !== token) return;
+        for (var j = 0; j < hits.length; j++) out.push(item(rw[hits[j]]));
+      }
+    }
+    if (i >= n) { st.b++; st.i = 0; } else st.i = i;
+  }
+  var tem = st.b < nb;
+  render(out, series ? 'series' : 'item', tem, more);
+  if (!busy) status(cur.length + (tem ? '+' : '') + ' resultados em ' + (performance.now() - t0).toFixed(0) + ' ms');
+}
+
+async function openSeries(s) {
+  var my = ++token, eps = [], chave = '\t' + s[0] + '\t';
+  for (var i = 0; i < s[4].length; i++) {
+    var rows = await linhasConteudo(2, s[4][i]); if (my !== token) return;
+    for (var j = 0; j < rows.length; j++) {
+      if (rows[j].indexOf(chave) < 0) continue;
+      var it = item(rows[j], s);
+      if (it.serie === s[0]) eps.push(it);
+    }
+  }
+  eps.sort(function (a, b) { return a.temporada - b.temporada || a.episodio - b.episodio; });
+  render(eps, 'ep', false);
+  status(s[0] + ': ' + eps.length + ' episódios');
+}
+
+/* ---------- render ---------- */
+function render(rows, kind, tem, append) {
+  curKind = kind;
+  if (!append) cur = [];
+  var logos = $('logos').checked, base = cur.length, h = '';
+  if (kind === 'ep') h += '<div class="it" tabindex="0" data-back="1">← Voltar</div>';
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i], titulo, sub, logo;
+    if (kind === 'series') { titulo = r[0]; sub = r[3] + ' episódios — ' + r[1]; logo = r[2]; }
+    else { titulo = r.nome; sub = kind === 'ep' && r.temporada ? 'T' + r.temporada + ' E' + r.episodio : r.grupo; logo = r.logo; }
+    var img = logos && logo ? '<img loading="lazy" src="' + esc(logo) + '" onerror="this.style.visibility=\'hidden\'">' : '';
+    h += '<div class="it" tabindex="0" data-i="' + (base + i) + '">' + img + '<div>' + esc(titulo) + '<small>' + esc(sub) + '</small></div></div>';
+  }
+  cur = cur.concat(rows);
+  if (tem) h += '<div class="it" id="more" tabindex="0" data-more="1">Carregar mais…</div>';
+  var old = $('more'); if (old) old.remove();
+  if (append) $('list').insertAdjacentHTML('beforeend', h); else $('list').innerHTML = h;
+}
+
+function activate(el) {
+  if (!el) return;
+  if (el.dataset.back) { search(); return; }
+  if (el.dataset.more) { search(true); return; }
+  var r = cur[+el.dataset.i]; if (!r) return;
+  if (curKind === 'series') { openSeries(r); return; }
+  $('player').style.display = 'block';
+  $('vid').src = r.url;
+  $('vlink').href = r.url; $('vlink').textContent = r.nome + ' — ' + r.url;
+}
+
+/* ---------- eventos ---------- */
+$('list').addEventListener('click', function (e) { activate(e.target.closest('.it')); });
+$('list').addEventListener('keydown', function (e) {
+  var el = e.target.closest('.it'); if (!el) return;
+  if (e.key === 'Enter') activate(el);
+  else if (e.key === 'ArrowDown' && el.nextElementSibling) { el.nextElementSibling.focus(); e.preventDefault(); }
+  else if (e.key === 'ArrowUp' && el.previousElementSibling) { el.previousElementSibling.focus(); e.preventDefault(); }
+});
+Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (b) {
+  b.onclick = function () {
+    document.querySelector('.tab.on').classList.remove('on'); b.classList.add('on');
+    curType = +b.dataset.t; loadGroups(); search();
+  };
+});
+var deb;
+$('q').oninput = function () { clearTimeout(deb); deb = setTimeout(search, 250); };
+$('grp').onchange = function () { search(); };
+$('lista').onchange = function () { lista = this.value; carregarListas(); };
+$('logos').onchange = function () { search(); };
+
+$('btnUrl').onclick = function () {
+  var u = $('url').value.trim(); if (!u) return;
+  var host; try { host = new URL(u).hostname; } catch (e) { status('URL inválida'); return; }
+  lista = nomeTabela($('nome').value.trim() || host);
+  rodarWorker({ cmd: 'importar', src: { url: u }, nome: lista });
+};
+$('file').onchange = function () {
+  var f = this.files[0]; if (!f) return;
+  lista = nomeTabela($('nome').value.trim() || f.name.replace(/\.[^.]+$/, ''));
+  rodarWorker({ cmd: 'importar', src: { file: f }, nome: lista });
+};
+$('btnProc').onclick = function () { if (lista) rodarWorker({ cmd: 'processar', nome: lista }); };
+$('btnDel').onclick = function () {
+  if (lista && confirm('Excluir ' + lista + ' (tabela crua e conteúdos)?')) rodarWorker({ cmd: 'excluir', nome: lista });
+};
+$('btnClose').onclick = function () { var v = $('vid'); v.pause(); v.removeAttribute('src'); v.load(); $('player').style.display = 'none'; };
+
+(async function () {
+  if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
+  await carregarListas();
+})();
+</script>
+</body>
+</html>
