@@ -1,9 +1,9 @@
 {
-  "SEVEN": "http://seven.blcplay.com/get.php?username=xxx&password=yyy&type=m3u_plus&output=mpegts",
+  "SEVEN": "http://sevenconect.lat/get.php?username=xxx&password=yyy&type=m3u_plus&output=mpegts",
   "SPEED": "http://netuno.live/get.php?username=xxx&password=yyy&type=m3u_plus&output=mpegts",
-  "GALAXY": "http://galaxy.blcplay.com/get.php?username=xxx&password=yyy&type=m3u_plus&output=mpegts",
+  "GALAXY": "http://galaxy.mrtv2.shop/get.php?username=xxx&password=yyy&type=m3u_plus&output=mpegts",
   "LUNAR": "http://lunar.mrtv2.shop/get.php?username=xxx&password=yyy&type=m3u_plus&output=mpegts",
   "EXPLOSION": "http://fasttv.sbs/get.php?username=xxx&password=yyy&type=m3u_plus&output=mpegts",
-  "ATENA": "http://atena.kkrototv.fun/get.php?username=xxx&password=yyy&type=m3u_plus&output=mpegts",
+  "ATENA": "http://seconecta.online/get.php?username=xxx&password=yyy&type=m3u_plus&output=mpegts",
   "FIRE": "http://fire.mrtv2.shop/get.php?username=xxx&password=yyy&type=m3u_plus&output=mpegts"
 }
