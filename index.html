@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>const APP_VERSION = '1.0.49';</script>
+<script>const APP_VERSION = '1.0.54';</script>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -318,18 +318,21 @@ a:focus,
 }
 .content-card:hover::after{opacity:1;}
 .content-card .thumb{
-  width:100%;aspect-ratio:2/3;background:var(--bg-3);
-  display:flex;align-items:center;justify-content:center;
+  /* Proporção 2:3 (capa em pé) pelo truque do padding-top — funciona em
+     QUALQUER navegador. aspect-ratio só existe do Chrome 88 em diante: no
+     WebView antigo de TV/projetor ele era ignorado e a altura do card virava
+     a da imagem (ou quase nada, antes de a capa carregar) — cards quadrados. */
+  width:100%;height:0;padding-top:150%;background:var(--bg-3);
   position:relative;overflow:hidden;
 }
-.content-card .thumb img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .3s;}
+.content-card .thumb img{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;display:block;transition:transform .3s;}
 .content-card:hover .thumb img{transform:scale(1.05);}
 .content-card .thumb::before{
   content:"";position:absolute;left:0;right:0;bottom:0;height:55%;
   background:linear-gradient(180deg,transparent,rgba(6,7,12,.75));
   pointer-events:none;
 }
-.content-card .thumb .ph{font-size:30px;color:var(--text-2);z-index:1;}
+.content-card .thumb .ph{position:absolute;top:0;left:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;font-size:30px;color:var(--text-2);z-index:1;}
 .content-card .fav-btn{
   position:absolute;top:8px;right:8px;width:29px;height:29px;border-radius:50%;
   background:rgba(10,11,18,.55);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);
@@ -410,7 +413,6 @@ html.tv #content-area{padding:12px 16px 40px;}
 html.tv .section-header{margin-bottom:10px;}
 html.tv .section-header h2{font-size:15px;}
 html.tv .card-grid{grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;}
-html.tv .content-card .thumb{aspect-ratio:5/7;} /* um pouco mais baixo que 2:3 — cabem 2 fileiras na tela de 540px */
 html.tv .content-card .info{padding:5px 7px 6px;gap:3px;}
 html.tv .content-card .info .name{font-size:11px;min-height:0;-webkit-line-clamp:1;}
 html.tv .content-card .info .server-tag{padding:1px 5px;}
@@ -429,6 +431,13 @@ html.tv .car-track{padding:12px 12px 14px;}
 /* campo de texto "trancado" (focado pelo controle, sem teclado): OK pra digitar */
 html.tv input.tv-locked:focus{outline:3px dashed #fff;outline-offset:2px;}
 html.tv input.tv-editing:focus{outline:3px solid var(--accent-2);outline-offset:2px;}
+.tv-select-box{max-width:min(520px,92vw);max-height:86vh;display:flex;flex-direction:column;padding:16px;}
+.tv-select-box h3{font-size:15px;margin-bottom:10px;}
+.tv-select-list{overflow-y:auto;display:flex;flex-direction:column;gap:4px;padding:4px;}
+.tv-select-group{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--accent);padding:10px 8px 4px;}
+.tv-select-opt{text-align:left;padding:9px 12px;border-radius:8px;background:var(--bg-2);color:var(--text-0);font-size:13px;font-weight:600;}
+.tv-select-opt.selected{background:rgba(var(--accent-rgb),.3);}
+.tv-select-opt:focus{outline:3px solid #fff;outline-offset:0;background:rgba(var(--accent-rgb),.45);}
 #tv-hint{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:9000;padding:7px 14px;border-radius:20px;
   background:rgba(10,11,18,.92);border:1px solid rgba(255,255,255,.2);color:#fff;font-size:12px;font-weight:700;
   pointer-events:none;opacity:0;transition:opacity .2s;}
@@ -462,7 +471,7 @@ html.lite .modal-box{background:#141622 !important;}
 }
 .suggest-hero.dim{opacity:.45;}
 @keyframes suggest-in{from{opacity:0;transform:translateY(10px) scale(.97);}to{opacity:1;transform:none;}}
-.suggest-hero .sh-poster{flex:0 0 190px;aspect-ratio:2/3;border-radius:var(--radius-sm);overflow:hidden;background:var(--bg-2);display:flex;align-items:center;justify-content:center;box-shadow:0 14px 34px -12px rgba(0,0,0,.7);}
+.suggest-hero .sh-poster{flex:0 0 190px;height:285px;aspect-ratio:2/3;border-radius:var(--radius-sm);overflow:hidden;background:var(--bg-2);display:flex;align-items:center;justify-content:center;box-shadow:0 14px 34px -12px rgba(0,0,0,.7);}
 .suggest-hero .sh-poster img{width:100%;height:100%;object-fit:cover;}
 .suggest-hero .sh-poster .ph{font-size:52px;}
 .suggest-hero .sh-info{display:flex;flex-direction:column;gap:9px;min-width:0;justify-content:center;}
@@ -500,6 +509,10 @@ html.lite .modal-box{background:#141622 !important;}
 .empty-state .big-ic{font-size:44px;opacity:.6;}
 .empty-state h3{color:var(--text-0);font-size:16px;font-weight:700;}
 .empty-state p{font-size:13px;max-width:360px;}
+html.tv .empty-state{padding:14px 16px;gap:4px;flex-direction:row;flex-wrap:wrap;justify-content:flex-start;text-align:left;}
+html.tv .empty-state .big-ic{font-size:20px;}
+html.tv .empty-state h3{font-size:13px;}
+html.tv .empty-state p{font-size:11.5px;max-width:none;flex-basis:100%;}
 
 /* pagination */
 .pagination{display:flex;align-items:center;justify-content:center;gap:6px;margin-top:26px;flex-wrap:wrap;}
@@ -562,7 +575,8 @@ html.lite .modal-box{background:#141622 !important;}
   box-shadow:0 24px 60px -12px rgba(0,0,0,.6), inset 0 1px 0 rgba(255,255,255,.06);
 }
 .modal-box h3{font-size:17px;margin-bottom:16px;display:flex;align-items:center;gap:10px;font-weight:800;}
-.modal-close-x{margin-left:auto;font-size:20px;color:var(--text-2);cursor:pointer;transition:color .15s;}
+.modal-close-x{margin-left:auto;font-size:20px;color:var(--text-2);cursor:pointer;transition:color .15s;padding:0 6px;border-radius:6px;}
+html.tv .modal-close-x:focus{color:#fff;background:rgba(var(--accent-rgb),.45);outline:3px solid #fff;}
 .modal-close-x:hover{color:var(--text-0);}
 
 /* progress modal */
@@ -583,7 +597,7 @@ html.lite .modal-box{background:#141622 !important;}
 
 /* series detail */
 .series-header{display:flex;gap:22px;margin-bottom:26px;flex-wrap:wrap;}
-.series-header .cover{width:180px;min-width:140px;aspect-ratio:2/3;border-radius:var(--radius);
+.series-header .cover{width:180px;min-width:140px;height:270px;aspect-ratio:2/3;border-radius:var(--radius);
   background:var(--bg-2);overflow:hidden;border:1px solid var(--border);
   box-shadow:0 16px 40px -12px rgba(0,0,0,.6);}
 .series-header .cover img{width:100%;height:100%;object-fit:cover;}
@@ -1347,7 +1361,7 @@ function classifyFast(nome, url, grupo){
   return 1;
 }
 
-async function blocoPool(db, serverId, bi, texto){
+async function blocoPool(db, serverId, bi, texto, keepRaw){
   var s = texto;
   if(s == null){ s = await req(db.transaction(STORES.rawBlocks).objectStore(STORES.rawBlocks).get([serverId, bi])); if(typeof s !== 'string') s = ''; }
   var rows = [[], [], []], busca = [[], [], []], cnt = [0, 0, 0];
@@ -1386,8 +1400,10 @@ async function blocoPool(db, serverId, bi, texto){
     cnt[t]++;
     inf = null;
   }
-  var tx = db.transaction(texto != null ? [STORES.rawBlocks, STORES.contentBlocks, STORES.searchBlocks] : [STORES.contentBlocks, STORES.searchBlocks], 'readwrite', RW);
-  if(texto != null) tx.objectStore(STORES.rawBlocks).put(texto, [serverId, bi]); // o cru também é gravado aqui (fora da tela)
+  // A lista crua NÃO é mais gravada (nada no app relê ela): eram ~80 MB a
+  // mais de escrita no disco a cada importação — pesado no eMMC de TV/projetor.
+  var tx = db.transaction(keepRaw && texto != null ? [STORES.rawBlocks, STORES.contentBlocks, STORES.searchBlocks] : [STORES.contentBlocks, STORES.searchBlocks], 'readwrite', RW);
+  if(keepRaw && texto != null) tx.objectStore(STORES.rawBlocks).put(texto, [serverId, bi]);
   s = texto = null;
   for(var k = 0; k < 3; k++){
     if(!cnt[k]) continue;
@@ -1410,7 +1426,7 @@ self.onmessage = async function(ev){
   if(m.cmd === 'bloco'){
     try{
       if(!poolDb) poolDb = await openDB();
-      var r = await blocoPool(poolDb, m.serverId, m.i, m.texto);
+      var r = await blocoPool(poolDb, m.serverId, m.i, m.texto, !!m.keepRaw);
       m = null;
       self.postMessage({ pool: true, ok: true, r: r });
     }catch(err){
@@ -1440,12 +1456,19 @@ self.onmessage = async function(ev){
   /** Pool de N workers de parse (ver blocoPool no worker). send() espera um
    * worker livre — isso limita a memória: no máximo N blocos (~1 MB cada)
    * em processamento; se os workers ficam pra trás, o download espera. */
-  function createPool(N, onResult){
+  function createPool(N, onResult, queueMax){
+    const QMAX = queueMax === undefined ? 2 : queueMax;
     const blobUrl = URL.createObjectURL(new Blob([buildWorkerSrc()], { type: 'application/javascript' }));
-    let workers = [], free = [], waiting = [], active = 0, error = null, onIdle = null;
+    let workers = [], free = [], queue = [], roomWaiters = [], active = 0, error = null, onIdle = null;
+    const post = (w, job) => { active++; w.postMessage({ cmd:'bloco', serverId: job.serverId, i: job.i, texto: job.texto }); };
     const release = (w) => {
-      if(waiting.length) waiting.shift()(w);
-      else { free.push(w); if(!active && onIdle) onIdle(); }
+      if(queue.length){
+        post(w, queue.shift());
+        if(roomWaiters.length) roomWaiters.shift()(); // abriu vaga na fila: o download continua
+      } else {
+        free.push(w);
+        if(!active && onIdle) onIdle();
+      }
     };
     for(let k = 0; k < N; k++){
       const w = new Worker(blobUrl);
@@ -1462,22 +1485,35 @@ self.onmessage = async function(ev){
     }
     return {
       N,
+      /** Entrega um bloco. Worker livre = processa já; senão entra numa
+       * fila curta (QMAX blocos, ~1 MB cada) pra rede não parar a cada
+       * bloco; fila cheia = aí sim o download espera (memória limitada). */
       async send(serverId, i, texto){
-        const w = free.length ? free.pop() : await new Promise(r => waiting.push(r));
-        if(error){ free.push(w); throw error; }
-        active++;
-        w.postMessage({ cmd:'bloco', serverId, i, texto });
+        if(error) throw error;
+        const job = { serverId, i, texto };
+        if(free.length){ post(free.pop(), job); return; }
+        while(queue.length >= QMAX){
+          await new Promise(r => roomWaiters.push(r));
+          if(error) throw error;
+        }
+        if(free.length){ post(free.pop(), job); return; }
+        queue.push(job);
       },
       async finish(){
-        if(active) await new Promise(r => { onIdle = r; });
+        while(queue.length || active){
+          if(!active && queue.length && free.length){ post(free.pop(), queue.shift()); continue; }
+          await new Promise(r => { onIdle = r; });
+          onIdle = null;
+        }
         workers.forEach(w => w.terminate()); // devolve a memória dos workers pro sistema
-        workers = free = waiting = null;
+        workers = free = null; queue = [];
         URL.revokeObjectURL(blobUrl);
         if(error) throw error;
       },
       abort(){
         if(workers) workers.forEach(w => w.terminate());
-        workers = free = null;
+        workers = free = null; queue = [];
+        roomWaiters.forEach(r => r()); roomWaiters = [];
         URL.revokeObjectURL(blobUrl);
       }
     };
@@ -1862,7 +1898,7 @@ const BootProgress = {
   start(){
     const wrap = document.createElement('div');
     wrap.id = 'boot-progress';
-    wrap.style.cssText = 'position:fixed;inset:0;z-index:9500;background:var(--bg-1-solid,#0a0b12);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;opacity:0;pointer-events:none;transition:opacity .2s;font-family:inherit;';
+    wrap.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:9500;background:var(--bg-1-solid,#0a0b12);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;opacity:0;pointer-events:none;transition:opacity .2s;font-family:inherit;';
     const title = document.createElement('div');
     title.textContent = 'Aguarde…';
     title.style.cssText = 'font-size:18px;font-weight:700;color:var(--text-0,#fff);';
@@ -3624,7 +3660,34 @@ const ServerModule = {
    *    não cresce com o tamanho da lista);
    *  - no fim, os workers são encerrados e a memória volta pro sistema.
    */
+  /** Erro de REDE (conexão caiu, servidor não respondeu, 5xx...) — vale
+   * tentar de novo. Erro de dados/banco ou 4xx (ex: login errado) não. */
+  isRetryableNetworkError(err){
+    if(!err) return false;
+    if(err.status) return err.status >= 500 || err.status === 408 || err.status === 429;
+    if(err instanceof TypeError) return true; // fetch/stream: "Failed to fetch", "network error"
+    return /network|failed to fetch|load failed|net::|err_|timeout|timed out|conex|socket|reset/i.test(String(err.message || err));
+  },
+
+  /** Importa 1 servidor; se cair por erro de REDE, tenta de novo até 3x,
+   * esperando 5s entre as tentativas (recomeça o download do zero). */
   async importServerContent(server, statusCallback){
+    const report = (patch) => { if(statusCallback) statusCallback(patch); };
+    const RETRIES = 3, WAIT_S = 5;
+    for(let attempt = 0; ; attempt++){
+      const r = await this._importOnce(server, statusCallback, attempt < RETRIES);
+      if(r.ok || !r.retryable || attempt >= RETRIES) return r;
+      const why = r.error && (r.error.status ? 'HTTP ' + r.error.status : (r.error.message || r.error));
+      pushDebugLog('Rede: "' + server.nome + '" falhou (' + why + ') — tentativa ' + (attempt + 1) + ' de ' + RETRIES + ' em ' + WAIT_S + 's.', true);
+      for(let sLeft = WAIT_S; sLeft > 0; sLeft--){
+        report({ phase:'download', status:'processing', downloaded:0, total:null, speed:0,
+          retryIn: sLeft, retryAttempt: attempt + 1, retryMax: RETRIES, retryWhy: String(why) });
+        await new Promise(res => setTimeout(res, 1000));
+      }
+    }
+  },
+
+  async _importOnce(server, statusCallback, quietNetworkErrors){
     const report = (patch) => { if(statusCallback) statusCallback(patch); };
     const tStart = performance.now();
     const serverId = server.id;
@@ -3668,9 +3731,12 @@ const ServerModule = {
 
       // 3) download em streaming → blocos de ~1 MB → pool
       const CH = 1 << 20;
-      const response = await fetch(server.url);
+      // no-store: sem isso o navegador ainda gravava a lista inteira (~80 MB)
+      // no cache HTTP em disco — escrita à toa, pesada em TV/projetor.
+      const response = await fetch(server.url, { cache: 'no-store' });
       if(!response.ok){ const err = new Error('HTTP ' + response.status); err.status = response.status; throw err; }
       const totalBytes = parseInt(response.headers.get('Content-Length'), 10) || null;
+      let tNet = 0, tWaitPool = 0; // onde o tempo foi: esperando a REDE x esperando o PROCESSAMENTO
       let n = 0, bytes = 0, buf = '', lastReport = 0, lastBytes = 0, lastTime = Date.now(), speed = 0;
       const dec = new TextDecoder('utf-8');
       const progress = (force) => {
@@ -3688,7 +3754,9 @@ const ServerModule = {
           let cut = buf.lastIndexOf('\n#EXTINF', CH);
           if(cut <= 0) cut = buf.indexOf('\n#EXTINF', CH);
           if(cut < 0) break;
-          await pool.send(serverId, n++, buf.slice(0, cut + 1)); // espera worker livre = download espera
+          const tw = performance.now();
+          await pool.send(serverId, n++, buf.slice(0, cut + 1)); // fila cheia = download espera
+          tWaitPool += performance.now() - tw;
           buf = buf.slice(cut + 1);
         }
         if(final && (buf || n === 0)){ await pool.send(serverId, n++, buf); buf = ''; }
@@ -3696,7 +3764,9 @@ const ServerModule = {
       if(response.body && response.body.getReader){
         const reader = response.body.getReader();
         for(;;){
+          const tr = performance.now();
           const { done, value } = await reader.read();
+          tNet += performance.now() - tr;
           if(done) break;
           bytes += value.byteLength;
           buf += dec.decode(value, { stream: true });
@@ -3710,7 +3780,9 @@ const ServerModule = {
       }
       await drain(true);
       const tDownloaded = performance.now();
-      pushDebugLog('⏱ "' + server.nome + '": download ' + Math.round(tDownloaded - tStart) + ' ms (' + formatBytes(bytes) + ', ' + n + ' blocos, processados junto)');
+      pushDebugLog('⏱ "' + server.nome + '": download ' + Math.round(tDownloaded - tStart) + ' ms (' + formatBytes(bytes) + ', ' + n + ' blocos, processados junto) — esperando a rede ' +
+        Math.round(tNet) + ' ms, esperando o processamento ' + Math.round(tWaitPool) + ' ms' +
+        (tWaitPool > tNet ? ' → gargalo: PROCESSADOR' : ' → gargalo: REDE/Wi-Fi'));
       report({ phase:'process', status:'processing', processed: acc.cnt[0] + acc.cnt[1] + acc.cnt[2], total: 0,
         counts: { live: acc.cnt[0], movie: acc.cnt[1], series: acc.cnt[2] }, seriesCount: acc.series.size });
 
@@ -3788,12 +3860,15 @@ const ServerModule = {
       return { ok:true, count: total };
     }catch(err){
       if(pool){ try{ pool.abort(); }catch(e){} }
+      const retryable = ServerModule.isRetryableNetworkError(err);
+      // vai tentar de novo (ver importServerContent): não marca erro ainda
+      if(retryable && quietNetworkErrors) return { ok:false, error: err, retryable: true };
       const message = err && err.status ? ('Erro ' + err.status) : (err && err.message ? err.message : 'Erro desconhecido');
       report({ phase: 'error', status:'error', message: message });
       server.lastStatus = 'error';
       server.lastError = message;
       try{ await IDB.put(STORES.servers, server); }catch(e){}
-      return { ok:false, error: err };
+      return { ok:false, error: err, retryable: retryable };
     }
   },
 
@@ -4093,6 +4168,7 @@ window.addEventListener('popstate', function(){
 let _lastRootBackPressAt = 0;
 document.addEventListener('backbutton', function(e){
   if(e && e.preventDefault) e.preventDefault();
+  if(TvSelect._overlay){ const sel = TvSelect._select; TvSelect.close(); if(sel && sel.isConnected) TvNav.focus(sel); return; }
   const overlay = qs('#player-overlay');
   if(overlay && overlay.style.display === 'flex'){
     PlayerModule.goBack();
@@ -5832,7 +5908,7 @@ function renderCategorySelectWithFilter(viewKey, filters, allCategories){
     'data-cat-search': viewKey,
     style:'font-size:12.5px;padding:7px 10px;'
   });
-  const catSelect = el('select', { onchange:function(e){ filters.category = e.target.value; filters.page=1; Router.render(); } });
+  const catSelect = el('select', { 'aria-label':'Categoria', onchange:function(e){ filters.category = e.target.value; filters.page=1; Router.render(); } });
   const emptyMsg = el('div', { style:'font-size:11px;color:var(--text-2);display:none;' }, ['Nenhuma categoria encontrada']);
 
   // Refaz SÓ as opções do <select> — o campo de texto nunca é recriado,
@@ -6423,9 +6499,15 @@ async function renderSeriesDetailView(container){
           el('span', { style:'display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:var(--bg-3);color:var(--text-0);font-size:16px;font-weight:700;line-height:1;' }, [isOpen ? '−' : '+'])
         ])
       ]);
+      seasonHeader.setAttribute('data-season', String(seasonNum));
       seasonHeader.addEventListener('click', function(){
         openSeasonNum = isOpen ? null : seasonNum; // clicar na mesma fecha; clicar em outra troca
         renderSeasonsAccordion();
+        // controle remoto: o foco continua no cabeçalho dessa temporada (redesenhado)
+        if(TvNav.on()){
+          const h = seasonsWrap.querySelector('[data-season="' + seasonNum + '"]');
+          if(h){ TvNav.makeFocusable(h); TvNav.focus(h); }
+        }
       });
       seasonBlock.appendChild(seasonHeader);
 
@@ -7194,12 +7276,18 @@ async function runImportWithProgressModal(servers){
     if(patch.phase === 'download'){
       dotEl.className = 'status-dot processing';
       statusEl.className = 'sp-status proc';
-      statusEl.textContent = patch.status === 'done' ? 'Download concluído, na fila' : (patch.counts ? 'Baixando e processando...' : 'Baixando...');
-      let pct = 0;
-      if(patch.total){ pct = Math.min(100, (patch.downloaded/patch.total)*100); }
-      fillEl.style.width = (patch.status==='done' ? 100 : pct) + '%';
-      detailEl.textContent = formatBytes(patch.downloaded) + (patch.total ? ' / ' + formatBytes(patch.total) : '') + (patch.speed ? '  •  ' + formatSpeed(patch.speed) : '') +
-        (patch.counts ? '  •  Filmes: ' + patch.counts.movie + '  Séries: ' + (patch.seriesCount || 0) + '  Ao Vivo: ' + patch.counts.live : '');
+      if(patch.retryIn){
+        statusEl.textContent = 'Erro de rede — tentando de novo (' + patch.retryAttempt + '/' + patch.retryMax + ') em ' + patch.retryIn + 's';
+        fillEl.style.width = '0%';
+        detailEl.textContent = patch.retryWhy || '';
+      } else {
+        statusEl.textContent = patch.status === 'done' ? 'Download concluído, na fila' : (patch.counts ? 'Baixando e processando...' : 'Baixando...');
+        let pct = 0;
+        if(patch.total){ pct = Math.min(100, (patch.downloaded/patch.total)*100); }
+        fillEl.style.width = (patch.status==='done' ? 100 : pct) + '%';
+        detailEl.textContent = formatBytes(patch.downloaded) + (patch.total ? ' / ' + formatBytes(patch.total) : '') + (patch.speed ? '  •  ' + formatSpeed(patch.speed) : '') +
+          (patch.counts ? '  •  Filmes: ' + patch.counts.movie + '  Séries: ' + (patch.seriesCount || 0) + '  Ao Vivo: ' + patch.counts.live : '');
+      }
     } else if(patch.phase === 'cleanup'){
       dotEl.className = 'status-dot processing';
       statusEl.className = 'sp-status proc';
@@ -7927,7 +8015,7 @@ function renderSuggestView(container){
   container.appendChild(typeRow);
 
   const modeRow = el('div', { class:'filter-row' });
-  const sel = el('select', { onchange:(e) => { st.mode = e.target.value; rollSuggestions(); } });
+  const sel = el('select', { 'aria-label':'Como sugerir', onchange:(e) => { st.mode = e.target.value; rollSuggestions(); } });
   sel.appendChild(el('option', { value:'__foryou' }, ['✨ Pra você (pelo que você assiste)']));
   sel.appendChild(el('option', { value:'__random' }, ['🎲 Categoria surpresa']));
   const gb = CategoryGroups.build(SuggestModule.rawCategories(st.type));
@@ -8034,6 +8122,58 @@ function renderSuggestView(container){
      e o foco passa pros botões (aí as setas andam entre eles).
    O item focado sempre fica visível (rola sozinho).
    ====================================================================== */
+/* Lista de escolha própria pro modo TV: o <select> nativo do Android não
+   funciona direito com o controle (OK pulava pra outro botão e a lista de
+   categorias nem abria). No modo TV, OK num <select> abre esta janela: as
+   setas andam pelas opções, OK escolhe, Voltar fecha. */
+const TvSelect = {
+  _overlay: null,
+  open(select){
+    this.close();
+    const overlay = el('div', { class:'modal-overlay tv-select-overlay' });
+    const box = el('div', { class:'modal-box tv-select-box' });
+    const label = select.getAttribute('aria-label') || select.title || 'Escolha uma opção';
+    box.appendChild(el('h3', {}, [label]));
+    const list = el('div', { class:'tv-select-list' });
+    let current = null;
+    const addOpt = (opt) => {
+      const b = el('button', { class:'tv-select-opt' + (opt.selected ? ' selected' : '') }, [(opt.selected ? '✓ ' : '') + opt.textContent]);
+      b.addEventListener('click', () => {
+        this.close();
+        const lbl = select.getAttribute('aria-label');
+        if(select.value !== opt.value){
+          select.value = opt.value;
+          select.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        if(select.isConnected) TvNav.focus(select);
+        // a tela pode ter sido redesenhada (select novo): foco no select novo, pra trocar de novo fácil
+        else if(lbl) setTimeout(() => { const ns = document.querySelector('select[aria-label="' + lbl + '"]'); if(ns) TvNav.focus(ns); }, 150);
+      });
+      if(opt.selected) current = b;
+      list.appendChild(b);
+    };
+    for(const child of Array.from(select.children)){
+      if(child.tagName === 'OPTGROUP'){
+        list.appendChild(el('div', { class:'tv-select-group' }, [child.label]));
+        for(const o of Array.from(child.children)) addOpt(o);
+      } else if(child.tagName === 'OPTION') addOpt(child);
+    }
+    box.appendChild(list);
+    overlay.appendChild(box);
+    overlay.addEventListener('click', (e) => { if(e.target === overlay){ this.close(); if(select.isConnected) TvNav.focus(select); } });
+    document.body.appendChild(overlay);
+    this._overlay = overlay; this._select = select;
+    setTimeout(() => TvNav.focus(current || list.querySelector('.tv-select-opt')), 20);
+  },
+  /** Fecha se estiver aberta; true = fechou (quem chamou não precisa fazer mais nada). */
+  close(){
+    if(!this._overlay) return false;
+    this._overlay.remove();
+    this._overlay = null;
+    return true;
+  }
+};
+
 const TvNav = {
   _lastContent: null,
   _okTimer: null, _okFired: false, _okCard: null,
@@ -8181,7 +8321,30 @@ const TvNav = {
     input.readOnly = true; // teclado fecha; foco continua no campo
   },
 
+  /** Coisas clicáveis que não são botão de verdade (o "×" das janelas, linha
+   * de episódio, cabeçalho de temporada, etc.) não recebem foco sozinhas —
+   * no modo TV elas ganham tabindex/role=button, e OK nelas = clique. */
+  CLICKABLE: '.modal-close-x, .episode-row, [style*="cursor:pointer"], [style*="cursor: pointer"]',
+  makeFocusable(root){
+    if(!this.on() || !root || !root.querySelectorAll) return;
+    const list = root.matches && root.matches(this.CLICKABLE) ? [root] : [];
+    root.querySelectorAll(this.CLICKABLE).forEach(e => list.push(e));
+    for(const e of list){
+      if(e.hasAttribute('tabindex') || /^(BUTTON|A|INPUT|SELECT|TEXTAREA)$/.test(e.tagName)) continue;
+      if(e.querySelector('input, select, textarea') && e.tagName !== 'LABEL') continue; // é só um contêiner
+      e.setAttribute('tabindex', '0');
+      e.setAttribute('role', 'button');
+    }
+  },
+
   init(){
+    this.makeFocusable(document.body);
+    try{
+      new MutationObserver((muts) => {
+        if(!this.on()) return;
+        for(const m of muts) for(const n of m.addedNodes) if(n.nodeType === 1) this.makeFocusable(n);
+      }).observe(document.body, { childList: true, subtree: true });
+    }catch(e){}
     // Campo de texto recebeu foco pelo controle: trava (sem teclado) até apertar OK
     document.addEventListener('focusin', (e) => {
       const el = e.target;
@@ -8206,6 +8369,12 @@ const TvNav = {
       el.classList.remove('tv-locked');
     }, true);
     document.addEventListener('input', (e) => { if(this.on() && this.isTextInput(e.target)) this._typingUntil = Date.now() + 1500; }, true);
+    // clique (mouse do controle) num <select> no modo TV: também usa a nossa lista
+    document.addEventListener('mousedown', (e) => {
+      if(!this.on() || !e.target || e.target.tagName !== 'SELECT') return;
+      e.preventDefault();
+      TvSelect.open(e.target);
+    }, true);
 
     document.addEventListener('keydown', (e) => {
       if(!this.on()) return;
@@ -8238,6 +8407,26 @@ const TvNav = {
           return;
         }
         PlayerModule._showControls(); PlayerModule._scheduleHideControls();
+      }
+
+      // ---- "botão" que não é <button> (ex: × de fechar): OK = clique ----
+      if((k === 'Enter' || k === ' ') && a && a.getAttribute && a.getAttribute('role') === 'button' && !/^(BUTTON|A|INPUT|SELECT)$/.test(a.tagName)){
+        e.preventDefault(); e.stopPropagation();
+        a.click();
+        return;
+      }
+
+      // ---- <select>: OK abre a nossa lista (a nativa não funciona com controle) ----
+      if(k === 'Enter' && a && a.tagName === 'SELECT'){
+        e.preventDefault(); e.stopPropagation();
+        TvSelect.open(a);
+        return;
+      }
+      if((k === 'Escape' || k === 'GoBack' || k === 'BrowserBack') && TvSelect._overlay){
+        e.preventDefault(); e.stopPropagation();
+        const sel = TvSelect._select; TvSelect.close();
+        if(sel && sel.isConnected) TvNav.focus(sel);
+        return;
       }
 
       // ---- segurar OK num card = favoritar ----
@@ -8465,7 +8654,7 @@ function setupEventListeners(){
 function showFatalDbScreen(err){
   const box = document.createElement('div');
   box.id = 'fatal-db-screen';
-  box.style.cssText = 'position:fixed;inset:0;z-index:9999;background:#0a0b12;color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;text-align:center;font-family:system-ui,sans-serif;';
+  box.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:9999;background:#0a0b12;color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;text-align:center;font-family:system-ui,sans-serif;';
   const detail = (err && ((err.name ? err.name + ': ' : '') + (err.message || ''))) || String(err);
   const title = document.createElement('div');
   title.style.cssText = 'font-size:20px;font-weight:800;';
