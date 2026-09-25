@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>const APP_VERSION = '1.0.28';</script>
+<script>const APP_VERSION = '1.0.29';</script>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -343,6 +343,36 @@ a:focus,
   position:absolute;bottom:0;left:0;right:0;height:4px;background:rgba(255,255,255,.18);z-index:1;
 }
 .content-card .progress-bar-mini .fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent-2));}
+.content-card .next-ep-badge{position:absolute;left:6px;bottom:6px;padding:3px 7px;border-radius:6px;font-size:10.5px;font-weight:700;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent-2));box-shadow:0 2px 6px rgba(0,0,0,.4);}
+
+/* ---------- Sugira-me ---------- */
+.suggest-lead{color:var(--text-2);font-size:13.5px;margin:-8px 0 16px;}
+.suggest-roll .dice{display:inline-block;font-size:16px;line-height:1;}
+.suggest-roll.rolling .dice{animation:dice-roll .6s linear infinite;}
+@keyframes dice-roll{0%{transform:rotate(0) scale(1);}50%{transform:rotate(180deg) scale(1.25);}100%{transform:rotate(360deg) scale(1);}}
+.suggest-hero{
+  display:flex;gap:22px;align-items:stretch;padding:18px;border-radius:var(--radius);
+  background:linear-gradient(135deg,rgba(var(--accent-rgb),.16),var(--bg-1));
+  border:1px solid var(--border);-webkit-backdrop-filter:blur(var(--blur));backdrop-filter:blur(var(--blur));
+  animation:suggest-in .45s cubic-bezier(.2,.9,.3,1.2);transition:opacity .2s;
+}
+.suggest-hero.dim{opacity:.45;}
+@keyframes suggest-in{from{opacity:0;transform:translateY(10px) scale(.97);}to{opacity:1;transform:none;}}
+.suggest-hero .sh-poster{flex:0 0 190px;aspect-ratio:2/3;border-radius:var(--radius-sm);overflow:hidden;background:var(--bg-2);display:flex;align-items:center;justify-content:center;box-shadow:0 14px 34px -12px rgba(0,0,0,.7);}
+.suggest-hero .sh-poster img{width:100%;height:100%;object-fit:cover;}
+.suggest-hero .sh-poster .ph{font-size:52px;}
+.suggest-hero .sh-info{display:flex;flex-direction:column;gap:9px;min-width:0;justify-content:center;}
+.suggest-hero .sh-kicker{font-size:11.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--accent);}
+.suggest-hero .sh-title{font-size:24px;font-weight:800;line-height:1.2;letter-spacing:-.01em;overflow-wrap:anywhere;}
+.suggest-hero .sh-meta{font-size:13px;color:var(--text-1);}
+.suggest-hero .sh-why{font-size:13px;color:var(--text-2);font-style:italic;}
+.suggest-hero .sh-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:6px;}
+@media (max-width:600px){
+  .suggest-hero{flex-direction:column;align-items:center;text-align:center;padding:16px;}
+  .suggest-hero .sh-poster{flex-basis:auto;width:min(200px,60vw);}
+  .suggest-hero .sh-actions{justify-content:center;}
+  .suggest-hero .sh-title{font-size:20px;}
+}
 .content-card .live-badge{
   position:absolute;top:8px;left:8px;background:var(--danger);color:#fff;font-size:9px;
   font-weight:800;padding:3px 7px;border-radius:5px;letter-spacing:.06em;z-index:1;
@@ -585,7 +615,16 @@ a:focus,
 #player-seek-track{
   flex:1;height:5px;background:rgba(255,255,255,.22);border-radius:4px;cursor:pointer;position:relative;
 }
-#player-seek-track:hover{height:7px;}
+/* PiP nativo do APK: o app todo vira a janelinha — só o vídeo aparece. */
+html.native-pip #player-topbar,html.native-pip #player-controls-bottom,html.native-pip #player-seek-feedback,
+html.native-pip #player-playpause-feedback,html.native-pip #player-lock-affordance,html.native-pip #player-buffering,
+html.native-pip #debug-panel,html.native-pip #toast-wrap,html.native-pip #boot-progress{display:none !important;}
+html.native-pip #video-player{width:100vw !important;height:100vh !important;object-fit:contain;}
+#player-seek-track:hover,#player-seek-track.dragging{height:7px;}
+/* Área de toque bem maior que a barra fininha (fica invisível): dá pra
+   pegar a bolinha com o dedo sem precisar acertar os 5px da barra. */
+#player-seek-track{touch-action:none;}
+#player-seek-track::before{content:"";position:absolute;left:-8px;right:-8px;top:-16px;bottom:-16px;}
 #player-buffered-fill{
   position:absolute;top:0;left:0;height:100%;border-radius:4px;
   background:rgba(255,255,255,.35);width:0%;
@@ -686,7 +725,11 @@ a:focus,
 }
 #player-speed-menu button:hover{background:rgba(255,255,255,.14);}
 #player-speed-menu button.active{background:linear-gradient(135deg,var(--accent),var(--accent-2));}
-#player-seek-track:hover #player-seek-fill::after{opacity:1;}
+#player-seek-track:hover #player-seek-fill::after,
+#player-seek-track.dragging #player-seek-fill::after{opacity:1;}
+#player-seek-track.dragging #player-seek-fill::after{transform:translateY(-50%) scale(1.35);}
+/* Tela de toque (sem mouse/hover): a bolinha fica sempre visível. */
+@media (hover:none){ #player-seek-fill::after{opacity:1;} }
 /* Os números de tempo (00:00 / duração) não fazem sentido pra ao vivo,
    então continuam escondidos. Já a barra de progresso e os botões de
    5s passaram a aparecer também em ao vivo — ver seekBy()/seekTrack no
@@ -834,6 +877,7 @@ a:focus,
       <li class="nav-item" data-view="live" tabindex="0"><span class="ic">&#9679;</span>Ao Vivo<span class="count" id="cnt-live">0</span></li>
       <li class="nav-item" data-view="series" tabindex="0"><span class="ic">&#127909;</span>Séries<span class="count" id="cnt-series">0</span></li>
       <li class="nav-item" data-view="movies" tabindex="0"><span class="ic">&#127916;</span>Filmes<span class="count" id="cnt-movies">0</span></li>
+      <li class="nav-item" data-view="suggest" tabindex="0"><span class="ic">&#127922;</span>Sugira-me</li>
       <li class="nav-item" data-view="favorites" tabindex="0"><span class="ic">&#9733;</span>Favoritos<span class="count" id="cnt-favs">0</span></li>
       <li class="nav-item" data-view="continue" tabindex="0"><span class="ic">&#9199;</span>Continuar Assistindo<span class="count" id="cnt-continue">0</span></li>
       <li class="nav-item" data-view="servers" tabindex="0"><span class="ic">&#128421;</span>Servidores<span class="count" id="cnt-servers">0</span></li>
@@ -1234,6 +1278,7 @@ const State = {
   continueCache: null,  // array retornado por getContinueWatchingList()
   ui: {
     currentView: 'dashboard',
+    suggest: { type:'all', mode:'__foryou', current:null, more:[], loading:false, empty:false, rolls:0 },
     searchTerm: '',
     filters: {
       movie: { server: 'all', category: 'all', page: 1, favoritesOnly:false },
@@ -1860,7 +1905,39 @@ function serverHasBlocks(srv){ return !!(srv && srv.blocos); }
 const QueryModule = {
   // seriesKey -> resumo da série (cache só de leitura; limpo a cada import/exclusão)
   _seriesCache: new Map(),
-  invalidateCaches(){ this._seriesCache.clear(); },
+  invalidateCaches(){ this._seriesCache.clear(); this._seriesCountCache.clear(); },
+
+  /** Contagem REAL de séries (total e por categoria) de um servidor, lida
+   * dos próprios blocos de série — 1x por sessão/importação. O contador da
+   * barra lateral usa isso, então ele sempre bate com a lista mostrada,
+   * mesmo pra servidor baixado por versão antiga (contagem gravada
+   * faltando ou em outro formato). */
+  _seriesCountCache: new Map(),
+  async _seriesCounts(serverId){
+    if(this._seriesCountCache.has(serverId)) return this._seriesCountCache.get(serverId);
+    const srv = State.servers.get(serverId);
+    const perCat = Object.create(null);
+    let total = 0;
+    for(let b = 0; b < ((srv && srv.blocosSeries) || 0); b++){
+      const bloco = await IDB.getByKey(STORES.seriesBlocks, [serverId, b]);
+      if(!bloco) continue;
+      for(const t of bloco){
+        total++;
+        const cats = Array.isArray(t[5]) ? t[5] : [t[5]];
+        for(const c of cats){ if(c) perCat[c] = (perCat[c] || 0) + 1; }
+      }
+    }
+    const out = { total, perCat };
+    this._seriesCountCache.set(serverId, out);
+    const stored = srv && srv.seriesCategoryCounts;
+    if(srv && (srv.seriesCount !== total || !stored)){
+      pushDebugLog('Séries: contagem gravada do servidor "' + srv.nome + '" estava diferente (' + srv.seriesCount + ' → ' + total + ') — corrigida.');
+      srv.seriesCount = total;
+      srv.seriesCategoryCounts = Object.assign({}, perCat);
+      IDB.put(STORES.servers, srv).catch(()=>{});
+    }
+    return out;
+  },
 
   tupleToContent(tup, tipoInt, serverId, block, idx){
     const c = {
@@ -2007,14 +2084,8 @@ const QueryModule = {
     if(!filters.favoritesOnly){
       fastTotal = 0;
       for(const id of serverIds){
-        const srv = State.servers.get(id);
-        if(hasCat){
-          if(!srv.seriesCategoryCounts){ fastTotal = undefined; break; }
-          fastTotal += srv.seriesCategoryCounts[filters.category] || 0;
-        } else {
-          if(typeof srv.seriesCount !== 'number'){ fastTotal = undefined; break; }
-          fastTotal += srv.seriesCount;
-        }
+        const c = await this._seriesCounts(id);
+        fastTotal += hasCat ? (c.perCat[filters.category] || 0) : c.total;
       }
     }
 
@@ -2030,7 +2101,7 @@ const QueryModule = {
         if(!bloco) continue;
         for(let i = 0; i < bloco.length; i++){
           const t = bloco[i];
-          if(hasCat && t[5].indexOf(filters.category) === -1) continue;
+          if(hasCat && (Array.isArray(t[5]) ? t[5] : [t[5]]).indexOf(filters.category) === -1) continue;
           const isFav = favIds.has(t[0]);
           if(filters.favoritesOnly && !isFav) continue;
           if(matched >= targetStart && collected.length < pageSize){
@@ -2999,6 +3070,45 @@ const ProgressModule = {
     State.dashboardCache = null;
     State.continueCache = null;
     try{ await IDB.put(STORES.progress, progress); }catch(err){}
+    // Acabou de concluir um episódio: o próximo entra no Continuar
+    // Assistindo como "não iniciado" (se o usuário não for direto pra ele,
+    // a série não some da lista).
+    if(concluded && seriesKey && !(prev && prev.concluido)){
+      this._queueNextEpisode(contentId, seriesKey).catch(()=>{});
+    }
+  },
+  async _queueNextEpisode(contentId, seriesKey){
+    const next = await getNextEpisode({ id: contentId, tipo: 'series', seriesKey: seriesKey });
+    if(!next || State.progress.has(next.id)) return false; // já tem progresso (assistindo/assistido): não mexe
+    const entry = {
+      contentId: next.id, currentTime: 0, duration: 0, porcentagem: 0,
+      dataUltimaReproducao: Date.now(), concluido: false,
+      seriesKey: seriesKey, loc: next._loc || null,
+      naoIniciado: true // aparece no Continuar Assistindo mesmo com 0%
+    };
+    State.progress.set(next.id, entry);
+    State.dashboardCache = null;
+    State.continueCache = null;
+    try{ await IDB.put(STORES.progress, entry); }catch(err){}
+    try{ updateSidebarCounts(); }catch(e){}
+    return true;
+  },
+  /** Uma vez só (versões antigas não faziam isso): séries cujo último
+   * episódio assistido foi concluído ganham o próximo como "não iniciado". */
+  async backfillNextEpisodes(){
+    try{ if(localStorage.getItem('sm_next_ep_backfill_v1')) return 0; }catch(e){ return 0; }
+    const latest = new Map(); // seriesKey -> progresso mais recente
+    for(const [, prog] of State.progress){
+      if(!prog.seriesKey) continue;
+      const cur = latest.get(prog.seriesKey);
+      if(!cur || prog.dataUltimaReproducao > cur.dataUltimaReproducao) latest.set(prog.seriesKey, prog);
+    }
+    let added = 0;
+    for(const [seriesKey, prog] of latest){
+      if(prog.concluido){ try{ if(await this._queueNextEpisode(prog.contentId, seriesKey)) added++; }catch(e){} }
+    }
+    try{ localStorage.setItem('sm_next_ep_backfill_v1', '1'); }catch(e){}
+    return added;
   },
   getProgress(contentId){
     return State.progress.get(contentId) || null;
@@ -3013,14 +3123,14 @@ const ProgressModule = {
   },
   getContinueWatchingCount(){
     let count = 0;
-    for(const [, prog] of State.progress){ if(!prog.concluido && prog.porcentagem > 0) count++; }
+    for(const [, prog] of State.progress){ if(!prog.concluido && (prog.porcentagem > 0 || prog.naoIniciado)) count++; }
     return count;
   },
   async getContinueWatchingList(limit){
     const entries = [];
     for(const [contentId, prog] of State.progress){
       if(prog.concluido) continue;
-      if(prog.porcentagem <= 0) continue;
+      if(prog.porcentagem <= 0 && !prog.naoIniciado) continue;
       entries.push({ contentId, prog });
     }
     entries.sort((a,b)=> b.prog.dataUltimaReproducao - a.prog.dataUltimaReproducao);
@@ -3156,6 +3266,64 @@ document.addEventListener('backbutton', function(e){
 /* ======================================================================
    PLAYER MODULE
    ====================================================================== */
+/* ======================================================================
+   PiP NATIVO (APK)
+   ------------------------------------------------------------------
+   O WebView do Android não tem o PiP da web (document.pictureInPictureEnabled
+   = false). No APK, o PiP é o do próprio Android: o plugin
+   cordova-plugin-manager-pip (pasta que vai junto do build.sh) encolhe o
+   app INTEIRO numa janelinha. Aqui a gente só deixa o vídeo visível
+   enquanto está nela (classe .native-pip no <html>) e percebe a volta pelo
+   tamanho da janela (volta ao tamanho normal = saiu do PiP).
+   ====================================================================== */
+const NativePip = {
+  _active: false, _baseArea: 0,
+  available(){
+    return !!(window.cordova && typeof window.cordova.exec === 'function');
+  },
+  enter(video){
+    return new Promise((resolve, reject) => {
+      const w = video.videoWidth || 16, h = video.videoHeight || 9;
+      this._baseArea = window.innerWidth * window.innerHeight;
+      document.documentElement.classList.add('native-pip');
+      this._active = true;
+      window.cordova.exec(() => resolve(), (msg) => {
+        this._exit();
+        const m = String(msg || 'erro desconhecido');
+        const err = new Error(/class not found|not found/i.test(m) ? 'este APK não tem o plugin de PiP nativo (gere o APK de novo com o build.sh novo)' : m);
+        err.name = 'NotSupportedError';
+        reject(err);
+      }, 'ManagerPip', 'enter', [w, h]);
+    });
+  },
+  _exit(){
+    this._active = false;
+    document.documentElement.classList.remove('native-pip');
+  },
+  _onResize(){
+    if(!this._active || !this._baseArea) return;
+    // Janela voltou pra (quase) o tamanho de antes = usuário saiu do PiP.
+    if(window.innerWidth * window.innerHeight > this._baseArea * 0.6){
+      this._exit();
+      pushDebugLog('PiP nativo: voltou ao app.');
+    }
+  }
+};
+window.addEventListener('resize', () => NativePip._onResize());
+// Fechou a janelinha do PiP (X): o Android esconde o app. Sem isso o som
+// continuaria tocando em segundo plano.
+document.addEventListener('visibilitychange', () => {
+  if(!NativePip._active || document.visibilityState !== 'hidden') return;
+  setTimeout(() => {
+    if(NativePip._active && document.visibilityState === 'hidden'){
+      const v = document.getElementById('video-player');
+      if(v && !v.paused) v.pause();
+      pushDebugLog('PiP nativo: janelinha fechada — vídeo pausado.');
+      NativePip._exit();
+    }
+  }, 600);
+});
+
 const PlayerModule = {
   hls: null,
   mpegtsPlayer: null,
@@ -3422,22 +3590,43 @@ const PlayerModule = {
 
     pipBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      const supported = !!(video.requestPictureInPicture && document.pictureInPictureEnabled !== false);
-      pushDebugLog('PiP: clique (suportado=' + supported + ', habilitado=' + document.pictureInPictureEnabled + ', readyState=' + video.readyState + ', disabled=' + video.disablePictureInPicture + ').');
+      const webPip = !!(video.requestPictureInPicture && document.pictureInPictureEnabled);
+      const nativePip = !webPip && NativePip.available();
+      pushDebugLog('PiP: clique (web=' + webPip + ', nativo=' + nativePip + ', readyState=' + video.readyState + ').');
       try{
         if(document.pictureInPictureElement){
           await document.exitPictureInPicture();
           pushDebugLog('PiP: saiu do modo picture-in-picture.');
-        } else if(video.requestPictureInPicture){
-          if(document.pictureInPictureEnabled === false){
-            throw new DOMException('document.pictureInPictureEnabled = false (bloqueado pelo navegador/WebView)', 'NotSupportedError');
-          }
-          await video.requestPictureInPicture();
-          pushDebugLog('PiP: ativado com sucesso.');
-        } else {
-          pushDebugLog('PiP: video.requestPictureInPicture não existe neste navegador/WebView.', true);
-          showToast('Picture-in-Picture não é suportado neste navegador.', 'error');
+          return;
         }
+        if(!webPip && !nativePip){
+          if(window.cordova){
+            throw new DOMException('o WebView do APK não tem PiP e este APK não tem o plugin de PiP nativo (gere o APK de novo com o build.sh novo)', 'NotSupportedError');
+          }
+          throw new DOMException('este navegador não suporta Picture-in-Picture', 'NotSupportedError');
+        }
+        // Vídeo ainda não carregou (o navegador recusa PiP sem os dados do
+        // vídeo): espera carregar — até 4s, que é o tempo que o navegador
+        // ainda considera "o usuário acabou de tocar no botão".
+        if(video.readyState < 1){
+          showToast('Aguarde o vídeo carregar…', 'success');
+          const ok = await new Promise((resolve) => {
+            const t = setTimeout(() => { video.removeEventListener('loadedmetadata', on); resolve(false); }, 4000);
+            function on(){ clearTimeout(t); resolve(true); }
+            video.addEventListener('loadedmetadata', on, { once: true });
+          });
+          if(!ok){
+            pushDebugLog('PiP: vídeo não carregou em 4s — cancelado.', true);
+            showToast('O vídeo ainda não carregou. Toque no PiP de novo quando ele começar.', 'error');
+            return;
+          }
+        }
+        if(webPip){
+          await video.requestPictureInPicture();
+        } else {
+          await NativePip.enter(video);
+        }
+        pushDebugLog('PiP: ativado com sucesso (' + (webPip ? 'web' : 'nativo') + ').');
       }catch(err){
         const detail = err && (err.name || '') + (err.message ? (': ' + err.message) : '');
         pushDebugLog('PiP: falhou ao ativar — ' + (detail || 'erro desconhecido'), true);
@@ -3465,22 +3654,75 @@ const PlayerModule = {
       }
     });
 
-    seekTrack.addEventListener('click', (e) => {
+    // Barra de progresso: tocar/clicar num ponto pula pra lá, e dá pra
+    // SEGURAR a bolinha (ou qualquer ponto da barra) e ARRASTAR. Durante o
+    // arraste a barra e o tempo acompanham o dedo, o vídeo vai buscando o
+    // ponto aos poucos (um seek por vez, sem atropelar o anterior) e, ao
+    // soltar, para exatamente onde o dedo parou.
+    const isLive = () => !!(this.currentContent && this.currentContent.tipo === 'live');
+    const pctFromX = (clientX) => {
       const rect = seekTrack.getBoundingClientRect();
-      const pct = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
-      if(this.currentContent && this.currentContent.tipo === 'live'){
+      return rect.width > 0 ? Math.min(1, Math.max(0, (clientX - rect.left) / rect.width)) : 0;
+    };
+    const timeForPct = (pct) => {
+      if(isLive()){
         const range = this._getLiveWindowRange(video);
-        if(!range) return;
-        const [start, end] = range;
-        video.currentTime = start + pct * (end - start);
-        this._updateSeekUI();
-        this._updateLiveSyncUI();
-        return;
+        if(!range) return null;
+        return range[0] + pct * (range[1] - range[0]);
       }
-      if(!video.duration || isNaN(video.duration)) return;
-      video.currentTime = pct * video.duration;
-      this._updateSeekUI();
+      if(!video.duration || isNaN(video.duration) || !isFinite(video.duration)) return null;
+      return pct * video.duration;
+    };
+    const seekFill = qs('#player-seek-fill');
+    const previewAt = (pct) => {
+      seekFill.style.width = (pct * 100) + '%';
+      if(!isLive() && video.duration && isFinite(video.duration)){
+        qs('#player-time-current').textContent = this._formatTime(pct * video.duration);
+      }
+    };
+    const commitSeek = (pct) => {
+      const t = timeForPct(pct);
+      if(t === null) return;
+      try{ video.currentTime = t; }catch(e){}
+    };
+    let seekDragging = false, seekPct = 0, lastDragSeekAt = 0;
+    seekTrack.addEventListener('pointerdown', (e) => {
+      if(e.button !== undefined && e.button > 0) return; // só botão principal/dedo
+      e.stopPropagation();
+      e.preventDefault();
+      seekDragging = true;
+      this._seekDragging = true;
+      seekTrack.classList.add('dragging');
+      try{ seekTrack.setPointerCapture(e.pointerId); }catch(err){}
+      this._showControls();
+      clearTimeout(this._hideControlsTimer);
+      seekPct = pctFromX(e.clientX);
+      previewAt(seekPct);
     });
+    seekTrack.addEventListener('pointermove', (e) => {
+      if(!seekDragging) return;
+      e.preventDefault();
+      seekPct = pctFromX(e.clientX);
+      previewAt(seekPct);
+      const now = Date.now();
+      if(!video.seeking && now - lastDragSeekAt > 200){ lastDragSeekAt = now; commitSeek(seekPct); }
+    });
+    const endSeekDrag = () => {
+      if(!seekDragging) return;
+      seekDragging = false;
+      seekTrack.classList.remove('dragging');
+      commitSeek(seekPct);
+      this._seekDragging = false;
+      this._updateSeekUI();
+      if(isLive()) this._updateLiveSyncUI();
+      this._scheduleHideControls();
+    };
+    seekTrack.addEventListener('pointerup', endSeekDrag);
+    seekTrack.addEventListener('pointercancel', endSeekDrag);
+    seekTrack.addEventListener('lostpointercapture', endSeekDrag);
+    // O 'click' que o navegador dispara depois do pointerup não pode chegar
+    // no vídeo (lá ele pausaria/mostraria controles).
+    seekTrack.addEventListener('click', (e) => e.stopPropagation());
 
     // Atalhos de teclado SEMPRE ativos enquanto o player está aberto — sem
     // precisar clicar no vídeo primeiro. Guardado por overlay visível pra
@@ -4136,6 +4378,7 @@ const PlayerModule = {
   },
 
   _updateSeekUI(){
+    if(this._seekDragging) return; // arrastando a barra: quem manda é o dedo
     const video = qs('#video-player');
     const fill = qs('#player-seek-fill');
     const curEl = qs('#player-time-current');
@@ -4182,7 +4425,7 @@ const PlayerModule = {
     this._hideControlsTimer = setTimeout(() => {
       // Segurando pra acelerar/retroceder (sem travar): controles ficam
       // visíveis o tempo todo. Travado: some normalmente.
-      if(this._sideHoldActive && !this._sideHoldLocked){ this._scheduleHideControls(); return; }
+      if((this._sideHoldActive && !this._sideHoldLocked) || this._seekDragging){ this._scheduleHideControls(); return; }
       qs('#player-overlay').classList.add('controls-hidden');
     }, 3000);
   },
@@ -4722,6 +4965,8 @@ function renderContentCard(content, options){
     if(prog && prog.porcentagem > 0){
       const pbar = el('div', { class:'progress-bar-mini' }, [el('div',{class:'fill', style:'width:'+Math.min(100,prog.porcentagem)+'%'})]);
       thumb.appendChild(pbar);
+    } else if(prog && prog.naoIniciado){
+      thumb.appendChild(el('div', { class:'next-ep-badge' }, ['Próximo episódio']));
     }
   }
 
@@ -6102,6 +6347,327 @@ async function renderSettingsView(container){
 /* ======================================================================
    ROUTER
    ====================================================================== */
+/* ======================================================================
+   SUGIRA-ME — "não sei o que assistir"
+   ------------------------------------------------------------------
+   Sorteia um filme ou série que o usuário AINDA NÃO VIU, de três jeitos:
+    - Pra você: pesa as categorias do que ele tem assistido (histórico
+      do Continuar Assistindo) — quanto mais assiste, mais chance;
+    - Categoria surpresa: sorteia uma categoria qualquer (tira o usuário
+      da rotina) — categorias adultas ficam de fora do sorteio;
+    - Uma categoria escolhida na lista.
+   Nada de varrer a biblioteca inteira: sorteia o servidor (pelo peso da
+   categoria nele), um bloco aleatório, e só lê blocos até achar algo.
+   ====================================================================== */
+const ADULT_CAT_RE = /adult|xxx|\+ ?18|18 ?\+|porn|er[oó]tic|hentai|sexy|\bhot\b/i;
+
+const SuggestModule = {
+  _forYou: null, _forYouSize: -1,
+
+  _rand(n){ return Math.floor(Math.random() * n); },
+  _weighted(pairs){ // [[valor, peso], ...]
+    const total = pairs.reduce((a, p) => a + p[1], 0);
+    if(total <= 0) return null;
+    let r = Math.random() * total;
+    for(const [v, w] of pairs){ r -= w; if(r < 0) return v; }
+    return pairs[pairs.length - 1][0];
+  },
+
+  hasMovies(){ return Array.from(State.servers.values()).some(s => serverHasBlocks(s) && s.blocos[1] > 0); },
+  hasSeries(){ return Array.from(State.servers.values()).some(s => serverHasBlocks(s) && s.blocosSeries > 0); },
+
+  /** Categorias disponíveis pro tipo ('all' = filmes + séries). */
+  categories(type){
+    const set = new Set();
+    for(const s of State.servers.values()){
+      if(!serverHasBlocks(s)) continue;
+      if(type !== 'series') for(const c of (s.movieCategories || [])) set.add(c);
+      if(type !== 'movie') for(const c of (s.seriesCategories || [])) set.add(c);
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  },
+
+  /** Categorias do que o usuário tem assistido, com peso (mais recente e
+   * mais assistido pesa mais). Cacheado enquanto o histórico não muda. */
+  async forYouCategories(){
+    if(this._forYou && this._forYouSize === State.progress.size) return this._forYou;
+    const entries = Array.from(State.progress.values())
+      .sort((a, b) => (b.dataUltimaReproducao || 0) - (a.dataUltimaReproducao || 0))
+      .slice(0, 40);
+    const weights = new Map(), blockCache = new Map();
+    for(let i = 0; i < entries.length; i++){
+      const p = entries[i];
+      const c = await QueryModule.resolveContentById(p.contentId, p.loc, blockCache).catch(() => null);
+      if(!c || c.tipo === 'live' || !c.categoria) continue;
+      const w = 1 + (entries.length - i) / entries.length; // recente pesa até 2x
+      weights.set(c.categoria, (weights.get(c.categoria) || 0) + w);
+    }
+    this._forYou = Array.from(weights.entries());
+    this._forYouSize = State.progress.size;
+    return this._forYou;
+  },
+
+  _watchedSeriesKeys(){
+    const set = new Set();
+    for(const p of State.progress.values()) if(p.seriesKey) set.add(p.seriesKey);
+    return set;
+  },
+
+  /** Um filme não visto (categoria opcional). */
+  async pickMovie(category, avoid){
+    const servers = [];
+    for(const s of State.servers.values()){
+      if(!serverHasBlocks(s) || !(s.blocos[1] > 0)) continue;
+      const w = category ? ((s.movieCategoryCounts && s.movieCategoryCounts[category]) || 0) : ((s.counts && s.counts.movie) || 0);
+      if(w > 0) servers.push([s, w]);
+    }
+    for(let tries = 0; tries < 3 && servers.length; tries++){
+      const srv = this._weighted(servers);
+      const n = srv.blocos[1], start = this._rand(n);
+      for(let k = 0; k < n; k++){
+        const b = (start + k) % n;
+        const bloco = await IDB.getByKey(STORES.contentBlocks, [srv.id, 1, b]).catch(() => null);
+        if(!bloco) continue;
+        const idx = [];
+        for(let i = 0; i < bloco.length; i++){
+          const t = bloco[i];
+          if(category && t[2] !== category) continue;
+          if(!category && ADULT_CAT_RE.test(t[2] || '')) continue;
+          if(State.progress.has(t[0]) || avoid.has(t[0])) continue;
+          idx.push(i);
+        }
+        if(!idx.length) continue;
+        const i = idx[this._rand(idx.length)];
+        return QueryModule.tupleToContent(bloco[i], 1, srv.id, b, i);
+      }
+    }
+    return null;
+  },
+
+  /** Uma série que o usuário ainda não começou (categoria opcional). */
+  async pickSeries(category, avoid){
+    const watched = this._watchedSeriesKeys();
+    const servers = [];
+    for(const s of State.servers.values()){
+      if(!serverHasBlocks(s) || !(s.blocosSeries > 0)) continue;
+      const c = await QueryModule._seriesCounts(s.id);
+      const w = category ? (c.perCat[category] || 0) : c.total;
+      if(w > 0) servers.push([s, w]);
+    }
+    for(let tries = 0; tries < 3 && servers.length; tries++){
+      const srv = this._weighted(servers);
+      const n = srv.blocosSeries, start = this._rand(n);
+      for(let k = 0; k < n; k++){
+        const b = (start + k) % n;
+        const bloco = await IDB.getByKey(STORES.seriesBlocks, [srv.id, b]).catch(() => null);
+        if(!bloco) continue;
+        const idx = [];
+        for(let i = 0; i < bloco.length; i++){
+          const t = bloco[i];
+          const cats = Array.isArray(t[5]) ? t[5] : [t[5]];
+          if(category && cats.indexOf(category) === -1) continue;
+          if(!category && cats.some(c => ADULT_CAT_RE.test(c || ''))) continue;
+          if(watched.has(t[0]) || avoid.has(t[0])) continue;
+          idx.push(i);
+        }
+        if(!idx.length) continue;
+        const s = QueryModule.seriesTupleToSummary(bloco[idx[this._rand(idx.length)]], srv.id);
+        QueryModule._seriesCache.set(s.key, s);
+        return s;
+      }
+    }
+    return null;
+  },
+
+  /** Categoria sorteada pro modo escolhido. Devolve { category, type, why }. */
+  async _resolveMode(type, mode){
+    const wantMovie = type !== 'series' && this.hasMovies();
+    const wantSeries = type !== 'movie' && this.hasSeries();
+    const pickType = () => (wantMovie && wantSeries) ? (Math.random() < 0.5 ? 'movie' : 'series') : (wantMovie ? 'movie' : 'series');
+    if(mode === '__foryou'){
+      const cats = (await this.forYouCategories()).filter(([c]) => this.categories(type).indexOf(c) !== -1);
+      if(cats.length){
+        const category = this._weighted(cats);
+        const inMovies = wantMovie && this.categories('movie').indexOf(category) !== -1;
+        const inSeries = wantSeries && this.categories('series').indexOf(category) !== -1;
+        const t = (inMovies && inSeries) ? pickType() : (inMovies ? 'movie' : 'series');
+        return { category, type: t, why: 'Você tem assistido bastante "' + category + '" — escolhi algo de lá que você ainda não viu.' };
+      }
+      mode = '__random'; // sem histórico ainda: vira surpresa
+      const r = await this._resolveMode(type, mode);
+      r.why = 'Ainda não sei do que você gosta (assista algumas coisas!) — então foi surpresa: "' + r.category + '".';
+      return r;
+    }
+    if(mode === '__random'){
+      const t = pickType();
+      const cats = this.categories(t).filter(c => !ADULT_CAT_RE.test(c));
+      const category = cats.length ? cats[this._rand(cats.length)] : null;
+      return { category, type: t, why: category ? 'Sorteei a categoria "' + category + '" pra você sair da rotina.' : 'Sorteado entre tudo o que você tem.' };
+    }
+    // categoria escolhida
+    const inMovies = wantMovie && this.categories('movie').indexOf(mode) !== -1;
+    const inSeries = wantSeries && this.categories('series').indexOf(mode) !== -1;
+    const t = (inMovies && inSeries) ? pickType() : (inMovies ? 'movie' : 'series');
+    return { category: mode, type: t, why: 'Da categoria "' + mode + '", que você escolheu.' };
+  },
+
+  /** Uma sugestão completa: { kind:'movie'|'series', data, why, category }. */
+  async suggest(type, mode, avoid){
+    for(let attempt = 0; attempt < 6; attempt++){
+      const r = await this._resolveMode(type, mode);
+      let data = r.type === 'movie' ? await this.pickMovie(r.category, avoid) : await this.pickSeries(r.category, avoid);
+      if(!data && r.type === 'movie' && type === 'all' && this.hasSeries()) data = await this.pickSeries(r.category, avoid), r.type = data ? 'series' : r.type;
+      if(!data && r.type === 'series' && type === 'all' && this.hasMovies()) data = await this.pickMovie(r.category, avoid), r.type = data ? 'movie' : r.type;
+      if(data){
+        avoid.add(r.type === 'movie' ? data.id : data.key);
+        return { kind: r.type, data, why: r.why, category: r.category };
+      }
+      // categoria escolhida sem nada novo: não adianta sortear de novo
+      if(mode !== '__random' && mode !== '__foryou') return null;
+    }
+    return null;
+  }
+};
+
+async function rollSuggestions(){
+  const st = State.ui.suggest;
+  st.loading = true;
+  Router.render();
+  const avoid = new Set();
+  if(st.current) avoid.add(st.current.kind === 'movie' ? st.current.data.id : st.current.data.key); // "outra" = não repete
+  const favs = await IDB.getAll(STORES.favorites).catch(() => []);
+  const favIds = new Set(favs.map(f => f.id));
+  try{
+    const main = await SuggestModule.suggest(st.type, st.mode, avoid);
+    const more = [];
+    for(let i = 0; i < 6 && main; i++){
+      const s = await SuggestModule.suggest(st.type, st.mode, avoid);
+      if(s) more.push(s);
+    }
+    for(const s of [main].concat(more)){
+      if(!s) continue;
+      s.data.favorito = favIds.has(s.kind === 'movie' ? s.data.id : s.data.key);
+    }
+    st.current = main;
+    st.more = more;
+    st.empty = !main;
+  }catch(err){
+    pushDebugLog('Sugira-me: falhou — ' + (err && err.message), true);
+    st.current = null; st.more = []; st.empty = true;
+  }
+  st.loading = false;
+  st.rolls = (st.rolls || 0) + 1;
+  if(State.ui.currentView === 'suggest') Router.render();
+}
+
+function renderSuggestView(container){
+  const st = State.ui.suggest;
+  container.appendChild(el('div', { class:'section-header' }, [el('h2', {}, ['Sugira-me'])]));
+
+  if(!SuggestModule.hasMovies() && !SuggestModule.hasSeries()){
+    container.appendChild(renderEmptyState('🎲', 'Nada pra sortear ainda', 'Importe um servidor com filmes ou séries e volte aqui — eu escolho o que você vai assistir.'));
+    return;
+  }
+
+  container.appendChild(el('p', { class:'suggest-lead' }, ['Não sabe o que assistir? Escolha como quer ser surpreendido e deixa comigo.']));
+
+  const typeRow = el('div', { class:'chip-row' });
+  const types = [['all', 'Tudo'], ['movie', '🎬 Filmes'], ['series', '📺 Séries']]
+    .filter(([t]) => t === 'all' || (t === 'movie' ? SuggestModule.hasMovies() : SuggestModule.hasSeries()));
+  for(const [t, label] of types){
+    typeRow.appendChild(el('button', { class:'chip' + (st.type === t ? ' active' : ''), onclick:() => {
+      st.type = t;
+      if(st.mode !== '__foryou' && st.mode !== '__random' && SuggestModule.categories(t).indexOf(st.mode) === -1) st.mode = '__random';
+      rollSuggestions();
+    } }, [label]));
+  }
+  container.appendChild(typeRow);
+
+  const modeRow = el('div', { class:'filter-row' });
+  const sel = el('select', { onchange:(e) => { st.mode = e.target.value; rollSuggestions(); } });
+  sel.appendChild(el('option', { value:'__foryou' }, ['✨ Pra você (pelo que você assiste)']));
+  sel.appendChild(el('option', { value:'__random' }, ['🎲 Categoria surpresa']));
+  const grp = el('optgroup', { label:'Escolher categoria' });
+  for(const c of SuggestModule.categories(st.type)) grp.appendChild(el('option', { value:c }, [c]));
+  sel.appendChild(grp);
+  sel.value = st.mode;
+  modeRow.appendChild(sel);
+  const rollBtn = el('button', { class:'btn primary suggest-roll' + (st.loading ? ' rolling' : ''), onclick:() => { if(!st.loading) rollSuggestions(); } }, [
+    el('span', { class:'dice' }, ['🎲']), st.current ? 'Sortear outro' : 'Sortear'
+  ]);
+  if(st.loading) rollBtn.disabled = true;
+  modeRow.appendChild(rollBtn);
+  container.appendChild(modeRow);
+
+  if(st.loading && !st.current){
+    container.appendChild(el('div', { class:'loader-inline' }, [el('div', { class:'spinner' }), 'Sorteando...']));
+    return;
+  }
+  if(st.empty){
+    container.appendChild(renderEmptyState('🤷', 'Não achei nada novo aqui', 'Você já viu tudo dessa categoria (ou ela está vazia). Tente outra ou a categoria surpresa.'));
+    return;
+  }
+  if(!st.current) return;
+
+  const s = st.current;
+  const isMovie = s.kind === 'movie';
+  const name = isMovie ? resolveContentName(s.data) : s.data.name;
+  const logo = isMovie ? resolveContentLogo(s.data) : s.data.logo;
+
+  const hero = el('div', { class:'suggest-hero' + (st.loading ? ' dim' : '') });
+  hero.setAttribute('data-roll', String(st.rolls || 0));
+  const poster = el('div', { class:'sh-poster' });
+  if(logo){
+    const img = el('img', { alt:'' });
+    img.src = logo;
+    img.onerror = function(){ img.remove(); poster.appendChild(el('div', { class:'ph' }, [isMovie ? '🎬' : '📺'])); };
+    poster.appendChild(img);
+  } else poster.appendChild(el('div', { class:'ph' }, [isMovie ? '🎬' : '📺']));
+  hero.appendChild(poster);
+
+  const info = el('div', { class:'sh-info' });
+  info.appendChild(el('div', { class:'sh-kicker' }, [(isMovie ? 'Filme' : 'Série') + ' · ' + getServerName(s.data.serverId)]));
+  info.appendChild(el('h3', { class:'sh-title' }, [name]));
+  const metaBits = [];
+  if(s.category) metaBits.push(s.category);
+  if(!isMovie){
+    metaBits.push((s.data.seasonCount || 1) + (s.data.seasonCount > 1 ? ' temporadas' : ' temporada'));
+    metaBits.push((s.data.episodeCount || 0) + ' episódios');
+  }
+  info.appendChild(el('div', { class:'sh-meta' }, [metaBits.join(' · ')]));
+  info.appendChild(el('div', { class:'sh-why' }, [s.why]));
+
+  const actions = el('div', { class:'sh-actions' });
+  actions.appendChild(el('button', { class:'btn primary', onclick:() => {
+    State.ui.returnTo = null;
+    if(isMovie){ PlayerModule.open(s.data); return; }
+    State.ui.activeSeriesKey = s.data.key;
+    State.ui.currentView = 'series-detail';
+    Router.render();
+    pushNavState('series-detail');
+  } }, [isMovie ? '▶ Assistir agora' : '▶ Ver a série']));
+  const favBtn = el('button', { class:'btn' }, [s.data.favorito ? '★ Favorito' : '☆ Favoritar']);
+  favBtn.addEventListener('click', async () => {
+    if(isMovie){ await FavoritesModule.toggleFavoriteContent(s.data); }
+    else { await FavoritesModule.toggleFavoriteSeries(s.data.key); s.data.favorito = !s.data.favorito; }
+    favBtn.textContent = s.data.favorito ? '★ Favorito' : '☆ Favoritar';
+    updateSidebarCounts();
+  });
+  actions.appendChild(favBtn);
+  info.appendChild(actions);
+  hero.appendChild(info);
+  container.appendChild(hero);
+
+  if(st.more && st.more.length){
+    container.appendChild(el('div', { class:'section-header', style:'margin-top:22px;' }, [el('h2', { style:'font-size:15px;' }, ['Também pode curtir'])]));
+    const grid = el('div', { class:'card-grid' });
+    for(const m of st.more){
+      grid.appendChild(m.kind === 'movie' ? renderContentCard(m.data, { hideDownload:true }) : renderSeriesCard(m.data));
+    }
+    container.appendChild(grid);
+  }
+}
+
 const VIEW_TITLES = {
   dashboard: 'Dashboard',
   live: 'Ao Vivo',
@@ -6110,6 +6676,7 @@ const VIEW_TITLES = {
   movies: 'Filmes',
   favorites: 'Favoritos',
   continue: 'Continuar Assistindo',
+  suggest: 'Sugira-me',
   servers: 'Servidores',
   settings: 'Configurações'
 };
@@ -6136,6 +6703,7 @@ const Router = {
       case 'movies': renderListView('movie', 'Filmes', container); break;
       case 'favorites': renderFavoritesView(container); break;
       case 'continue': renderContinueView(container); break;
+      case 'suggest': renderSuggestView(container); if(!State.ui.suggest.current && !State.ui.suggest.loading && !State.ui.suggest.empty) rollSuggestions(); break;
       case 'servers': container.appendChild(renderServersView()); break;
       case 'settings': renderSettingsView(container); break;
       default: renderDashboardView(container);
@@ -6167,9 +6735,14 @@ async function updateSidebarCounts(){
     // importação) — nada de contar registro por registro no banco.
     const totals = QueryModule.totals();
     const favs = await IDB.getAll(STORES.favorites);
-    qs('#cnt-movies').textContent = totals.movie;
-    qs('#cnt-live').textContent = totals.live;
-    qs('#cnt-series').textContent = totals.series;
+    // A tela aberta (Filmes/Ao Vivo/Séries) escreve no próprio contador o
+    // total COM os filtros dela — não sobrescreve com o total geral. Antes
+    // isso era uma corrida: dependendo de quem terminava por último, o
+    // contador filtrado virava o geral (ex: "Todos" + uma categoria).
+    const v = State.ui.currentView;
+    if(v !== 'movies') qs('#cnt-movies').textContent = totals.movie;
+    if(v !== 'live') qs('#cnt-live').textContent = totals.live;
+    if(v !== 'series') qs('#cnt-series').textContent = totals.series;
     qs('#cnt-favs').textContent = favs.length;
   }catch(e){}
 }
@@ -6357,6 +6930,9 @@ async function initApp(){
   // Pré-carrega a página 1 de Filmes/Séries/Ao Vivo em segundo plano (fica
   // no cache), então ao trocar de aba pela primeira vez já está pronto.
   prefetchFirstPages();
+  ProgressModule.backfillNextEpisodes().then((added) => {
+    if(added && State.ui.currentView === 'dashboard' || State.ui.currentView === 'continue') Router.render();
+  }).catch(()=>{});
 }
 
 async function prefetchFirstPages(){
