@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>const APP_VERSION = '1.0.45';</script>
+<script>const APP_VERSION = '1.0.48';</script>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1136,6 +1136,13 @@ async function processar(db, serverId, blocosCrus, onProgress){
 
   // tipo: 0 ao vivo, 1 filme, 2 episódio de série (mesma convenção do protótipo testado)
   var itens = [[], [], []], linhas = [[], [], []], nb = [0, 0, 0], cnt = [0, 0, 0];
+  // IMPORTANTE (memória): nome/categoria/capa saem de .slice()/regex sobre o
+  // bloco cru de ~1 MB — no V8 isso vira um "pedaço" que mantém o bloco
+  // INTEIRO vivo. Guardar esses pedaços nos mapas de séries/categorias (que
+  // vivem até o fim da importação) prendia na memória praticamente a lista
+  // M3U inteira — num aparelho de 1 GB o app era morto no meio do
+  // processamento. flat() faz uma cópia independente, curtinha.
+  function flat(str){ return str ? (' ' + str).slice(1) : str; }
   var grupos = [new Map(), new Map(), new Map()], series = new Map(), seasonsBySeries = new Map();
 
   async function flush(t){
@@ -1169,16 +1176,21 @@ async function processar(db, serverId, blocosCrus, onProgress){
       // tupla de série: 0 key, 1 nome, 2 capa, 3 qtdEpisodios, 4 qtdTemporadas,
       // 5 categorias[], 6 blocos de contentBlocks[tipo 2] onde tem episódio
       var s = series.get(seriesKey);
-      if(!s){ series.set(seriesKey, s = [seriesKey, baseName, logo, 0, 0, [grupo], []]); seasonsBySeries.set(seriesKey, new Set()); }
-      if(!s[2] && logo) s[2] = logo;
+      if(!s){
+        var fk = flat(seriesKey);
+        series.set(fk, s = [fk, flat(baseName), flat(logo), 0, 0, [flat(grupo)], []]);
+        seasonsBySeries.set(fk, new Set());
+      }
+      if(!s[2] && logo) s[2] = flat(logo);
       s[3]++;
       seasonsBySeries.get(seriesKey).add(se ? se.season : 1);
-      if(s[5].indexOf(grupo) === -1) s[5].push(grupo);
+      if(s[5].indexOf(grupo) === -1) s[5].push(flat(grupo));
       if(s[6][s[6].length - 1] !== nb[2]) s[6].push(nb[2]);
     }
     itens[t].push(tup);
     linhas[t].push(normalizeText(nome) + '\\t' + grupo);
-    grupos[t].set(grupo, (grupos[t].get(grupo) || 0) + 1);
+    var gc = grupos[t].get(grupo);
+    if(gc === undefined) grupos[t].set(flat(grupo), 1); else grupos[t].set(grupo, gc + 1); // 1ª vez: chave copiada (ver flat)
     cnt[t]++;
     return t;
   }
@@ -1233,8 +1245,128 @@ async function processar(db, serverId, blocosCrus, onProgress){
   };
 }
 
+
+/* ===== MODO NOVO (pool): 1 bloco cru -> blocos estruturados, direto da
+   memória (sem reler o cru do banco). Vários workers destes rodam em
+   paralelo, cada um com o SEU bloco — blocos independentes: a chave do
+   bloco estruturado é o nº do bloco cru ([serverId, tipo, nºcru]).
+   Devolve só um resumo pequeno (contagens, categorias, séries). ===== */
+var ACC = { 'à':'a','á':'a','â':'a','ã':'a','ä':'a','å':'a','è':'e','é':'e','ê':'e','ë':'e','ì':'i','í':'i','î':'i','ï':'i',
+  'ò':'o','ó':'o','ô':'o','õ':'o','ö':'o','ù':'u','ú':'u','û':'u','ü':'u','ç':'c','ñ':'n','ý':'y','ÿ':'y' };
+var ACC_RE = /[àáâãäåèéêëìíîïòóôõöùúûüçñýÿ]/g, NON_ASCII = /[^\\x00-\\x7f]/;
+function accRep(c){ return ACC[c]; }
+// MESMO resultado de normalizeText(), só que sem normalize('NFD') (caro) na
+// maioria dos casos: ASCII puro = só minúsculas; acento comum = tabela.
+function fastNorm(str){
+  if(!str) return '';
+  var x = String(str).toLowerCase();
+  if(!NON_ASCII.test(x)) return x;
+  x = x.replace(ACC_RE, accRep);
+  return NON_ASCII.test(x) ? normalizeText(x) : x;
+}
+function attr(line, key){
+  var i = line.indexOf(key); if(i < 0) return '';
+  var st = i + key.length, e = line.indexOf('"', st);
+  return e < 0 ? '' : line.slice(st, e);
+}
+var liveGroupCache = new Map();
+function groupIsLive(grupo){
+  var v = liveGroupCache.get(grupo);
+  if(v === undefined){
+    v = false;
+    var nc = normalizeForKeywordMatch(grupo);
+    for(var k = 0; k < LIVE_GROUP_KEYWORDS_NORMALIZED.length; k++){
+      var kw = LIVE_GROUP_KEYWORDS_NORMALIZED[k];
+      if(kw && nc.indexOf(kw) !== -1){ v = true; break; }
+    }
+    liveGroupCache.set(grupo, v);
+  }
+  return v;
+}
+// Mesma regra de classify() (ver ParserModule.classify), com a parte do
+// grupo calculada 1x por grupo em vez de 1x por item.
+var LIVE_TS_RE = /\\/ts(\\?.*)?$/i, LIVE_DOT_TS_RE = /\\.ts(\\?.*)?$/i;
+function classifyFast(nome, url, grupo){
+  var ln = nome.toLowerCase();
+  for(var i = 0; i < SERIES_PATTERNS.length; i++) if(SERIES_PATTERNS[i].test(ln)) return 2;
+  var lu = url.toLowerCase();
+  for(var j = 0; j < VIDEO_EXTENSIONS.length; j++) if(lu.indexOf(VIDEO_EXTENSIONS[j]) !== -1) return 1;
+  if(LIVE_TS_RE.test(url) || lu.indexOf('m3u8') !== -1 || LIVE_DOT_TS_RE.test(url)) return 0;
+  if(grupo && groupIsLive(grupo)) return 0;
+  return 1;
+}
+
+async function blocoPool(db, serverId, bi, texto){
+  var s = texto;
+  if(s == null){ s = await req(db.transaction(STORES.rawBlocks).objectStore(STORES.rawBlocks).get([serverId, bi])); if(typeof s !== 'string') s = ''; }
+  var rows = [[], [], []], busca = [[], [], []], cnt = [0, 0, 0];
+  var grupos = [new Map(), new Map(), new Map()], series = new Map();
+  var p = 0, L = s.length, inf = null;
+  while(p < L){
+    var e = s.indexOf('\\n', p); if(e < 0) e = L;
+    var url = s.slice(p, e).trim(); p = e + 1;
+    if(!url) continue;
+    if(url.charCodeAt(0) === 35){ if(url.lastIndexOf('#EXTINF', 0) === 0) inf = url; continue; }
+    if(!inf) continue;
+    var q = inf.lastIndexOf('"'), c = inf.indexOf(',', q < 0 ? 8 : q);
+    var nome = (c >= 0 ? inf.slice(c + 1).trim() : '') || attr(inf, 'tvg-name="') || url;
+    var grupo = attr(inf, 'group-title="') || 'Sem categoria';
+    if(grupo.indexOf('\\t') !== -1 || grupo.indexOf('\\n') !== -1) grupo = grupo.replace(/[\\t\\n]/g, ' ');
+    var t = classifyFast(nome, url, grupo);
+    var logo = attr(inf, 'tvg-logo="');
+    var tup = [stableContentId(serverId, url), nome, grupo, url, logo];
+    if(t === 2){
+      var baseName = extractSeriesBaseName(nome);
+      var seriesKey = serverId + '::' + fastNorm(baseName);
+      var se = extractSeasonEpisodeStrict(nome);
+      tup.push(seriesKey, se ? se.season : 0, se ? se.episode : 0);
+      // série parcial: 0 key, 1 nome, 2 capa, 3 qtdEps, 4 temporadas[], 5 categorias[]
+      var sr = series.get(seriesKey);
+      if(!sr) series.set(seriesKey, sr = [seriesKey, baseName, logo, 0, [], [grupo]]);
+      if(!sr[2] && logo) sr[2] = logo;
+      sr[3]++;
+      var sn = se ? se.season : 1;
+      if(sr[4].indexOf(sn) === -1) sr[4].push(sn);
+      if(sr[5].indexOf(grupo) === -1) sr[5].push(grupo);
+    }
+    rows[t].push(tup);
+    busca[t].push(fastNorm(nome) + '\\t' + grupo);
+    var gm = grupos[t]; gm.set(grupo, (gm.get(grupo) || 0) + 1);
+    cnt[t]++;
+    inf = null;
+  }
+  var tx = db.transaction(texto != null ? [STORES.rawBlocks, STORES.contentBlocks, STORES.searchBlocks] : [STORES.contentBlocks, STORES.searchBlocks], 'readwrite', RW);
+  if(texto != null) tx.objectStore(STORES.rawBlocks).put(texto, [serverId, bi]); // o cru também é gravado aqui (fora da tela)
+  s = texto = null;
+  for(var k = 0; k < 3; k++){
+    if(!cnt[k]) continue;
+    tx.objectStore(STORES.contentBlocks).put(rows[k], [serverId, k, bi]);
+    tx.objectStore(STORES.searchBlocks).put(busca[k].join('\\n'), [serverId, k, bi]);
+  }
+  rows = busca = null;
+  await txDone(tx);
+  // O resumo vai por postMessage (cópia) — nada daqui fica preso no worker.
+  return {
+    i: bi, cnt: cnt,
+    grupos: grupos.map(function(g){ return Array.from(g.entries()); }),
+    series: Array.from(series.values())
+  };
+}
+
+var poolDb = null;
 self.onmessage = async function(ev){
   var m = ev.data;
+  if(m.cmd === 'bloco'){
+    try{
+      if(!poolDb) poolDb = await openDB();
+      var r = await blocoPool(poolDb, m.serverId, m.i, m.texto);
+      m = null;
+      self.postMessage({ pool: true, ok: true, r: r });
+    }catch(err){
+      self.postMessage({ pool: true, ok: false, error: String(err && err.message || err) });
+    }
+    return;
+  }
   try{
     var db = await openDB();
     var result;
@@ -1253,6 +1385,52 @@ self.onmessage = async function(ev){
   }
 
   let nextId = 1;
+
+  /** Pool de N workers de parse (ver blocoPool no worker). send() espera um
+   * worker livre — isso limita a memória: no máximo N blocos (~1 MB cada)
+   * em processamento; se os workers ficam pra trás, o download espera. */
+  function createPool(N, onResult){
+    const blobUrl = URL.createObjectURL(new Blob([buildWorkerSrc()], { type: 'application/javascript' }));
+    let workers = [], free = [], waiting = [], active = 0, error = null, onIdle = null;
+    const release = (w) => {
+      if(waiting.length) waiting.shift()(w);
+      else { free.push(w); if(!active && onIdle) onIdle(); }
+    };
+    for(let k = 0; k < N; k++){
+      const w = new Worker(blobUrl);
+      w.onmessage = (e) => {
+        const d = e.data;
+        if(!d || !d.pool) return;
+        active--;
+        if(d.ok){ try{ onResult(d.r); }catch(err){ error = error || err; } }
+        else error = error || new Error(d.error || 'Erro no worker de processamento.');
+        release(w);
+      };
+      w.onerror = (e) => { active--; error = error || new Error('worker: ' + (e && e.message)); release(w); };
+      workers.push(w); free.push(w);
+    }
+    return {
+      N,
+      async send(serverId, i, texto){
+        const w = free.length ? free.pop() : await new Promise(r => waiting.push(r));
+        if(error){ free.push(w); throw error; }
+        active++;
+        w.postMessage({ cmd:'bloco', serverId, i, texto });
+      },
+      async finish(){
+        if(active) await new Promise(r => { onIdle = r; });
+        workers.forEach(w => w.terminate()); // devolve a memória dos workers pro sistema
+        workers = free = waiting = null;
+        URL.revokeObjectURL(blobUrl);
+        if(error) throw error;
+      },
+      abort(){
+        if(workers) workers.forEach(w => w.terminate());
+        workers = free = null;
+        URL.revokeObjectURL(blobUrl);
+      }
+    };
+  }
 
   /** Roda uma importação/reprocessamento completo num worker DESCARTÁVEL
    * (criado agora, destruído no final — ver comentário acima do módulo).
@@ -1286,6 +1464,7 @@ self.onmessage = async function(ev){
   }
 
   return {
+    createPool,
     /** Processa o texto cru já gravado em rawBlocks[serverId, 0..blocosCrus-1]
      * (ver ServerModule.downloadRawToBlocks) e grava os blocos prontos. */
     processar(serverId, blocosCrus, onProgress){
@@ -1528,6 +1707,7 @@ function renderDebugPanel(){
     panel.appendChild(header);
     // Linha fixa de memória, atualizada a cada 2s (ver MemMonitor)
     panel.appendChild(el('div', { id:'debug-panel-mem', style:'padding:6px 10px;border-bottom:1px solid rgba(255,255,255,.1);color:#ffd479;white-space:pre-wrap;line-height:1.45;flex-shrink:0;' }, ['Memória: medindo…']));
+    // (a linha é atualizada a cada 3s)
     MemMonitor.start();
     const body = el('div', { id:'debug-panel-body', style:'overflow-y:auto;padding:6px 10px;white-space:pre-wrap;line-height:1.5;' });
     panel.appendChild(body);
@@ -1535,7 +1715,7 @@ function renderDebugPanel(){
   }
   const body = document.getElementById('debug-panel-body');
   body.innerHTML = '';
-  for(const entry of State.debugLog){
+  for(const entry of State.debugLog.slice(-80)){ // só as últimas 80 (redesenhar centenas pesa em aparelho fraco)
     body.appendChild(el('div', { style:'color:' + (entry.isError ? '#ff6b6b' : '#8fd9b0') }, ['[' + entry.time + '] ' + entry.message]));
   }
   body.scrollTop = body.scrollHeight;
@@ -1560,7 +1740,7 @@ const MemMonitor = {
   start(){
     if(this._timer) return;
     this.tick();
-    this._timer = setInterval(() => this.tick(), 2000);
+    this._timer = setInterval(() => this.tick(), 3000);
     this._storageTick();
   },
   stop(){ clearInterval(this._timer); this._timer = null; },
@@ -1568,17 +1748,11 @@ const MemMonitor = {
   _storageTick(){
     try{
       if(navigator.storage && navigator.storage.estimate){
-        navigator.storage.estimate().then(e => { this._storage = 'Banco/arquivos do app: ' + this._mb(e.usage || 0); }).catch(()=>{});
+        navigator.storage.estimate().then(e => { this._storage = e.usage ? 'Banco/arquivos do app: ' + this._mb(e.usage) : ''; }).catch(()=>{});
       }
     }catch(e){}
   },
-  _nativeMem(){
-    return new Promise((resolve) => {
-      if(!(window.cordova && typeof window.cordova.exec === 'function')) return resolve(null);
-      try{ window.cordova.exec((o) => resolve(o || null), () => resolve(null), 'ManagerPip', 'memInfo', []); }
-      catch(e){ resolve(null); }
-    });
-  },
+  _nativeMem(){ return MemGuard.read(); },
   async tick(){
     const box = document.getElementById('debug-panel-mem');
     if(!box){ this.stop(); return; }
@@ -1588,6 +1762,7 @@ const MemMonitor = {
       const used = n.total - n.avail, pct = Math.round(n.avail / n.total * 100);
       lines.push('RAM do aparelho: ' + this._mb(n.avail) + ' livre de ' + this._mb(n.total) + ' (' + pct + '% livre, ' + this._mb(used) + ' em uso)' + (n.low ? ' ⚠ POUCA MEMÓRIA' : ''));
       if(n.appPssKb) lines.push('Este app (processo principal): ' + Math.round(n.appPssKb / 1024) + ' MB');
+      if(!n.low && Math.round(n.avail / 1048576) < MemGuard.LOW_MB) lines.push('(abaixo de ' + MemGuard.LOW_MB + ' MB o app solta caches e imagens pra não fechar)');
       if((n.low || pct < 12) && !this._lowWarned){
         this._lowWarned = true;
         pushDebugLog('⚠ Memória do aparelho quase no fim: ' + this._mb(n.avail) + ' livre de ' + this._mb(n.total) + '. O Android pode fechar coisas e o app fica lento.', true);
@@ -1603,7 +1778,7 @@ const MemMonitor = {
       lines.push('JavaScript da página: ' + this._mb(pm.usedJSHeapSize) + ' em uso (limite ' + this._mb(pm.jsHeapSizeLimit) + ')');
     }
     if(this._storage) lines.push(this._storage);
-    box.textContent = 'Memória (atualiza a cada 2s)\n' + lines.join('\n');
+    box.textContent = 'Memória (atualiza a cada 3s)\n' + lines.join('\n');
   }
 };
 
@@ -1692,7 +1867,17 @@ const PerfMode = {
     const m = this.setting();
     return m === 'on' || (m === 'auto' && this.isWeakDevice());
   },
-  apply(){ document.documentElement.classList.toggle('lite', this.isLite()); },
+  apply(){
+    const lite = this.isLite();
+    document.documentElement.classList.toggle('lite', lite);
+    // Aparelho fraco: páginas menores (menos cards e capas na memória de uma vez),
+    // só se a pessoa não mudou o tamanho padrão.
+    if(State.settings){
+      if(lite && (!State.settings.pageSize || State.settings.pageSize === PAGE_SIZE_DEFAULT)){ State.settings.pageSize = 24; State.pageCache && State.pageCache.clear(); }
+      else if(!lite && State.settings.pageSize === 24 && this._shrunk){ State.settings.pageSize = PAGE_SIZE_DEFAULT; State.pageCache && State.pageCache.clear(); }
+      this._shrunk = lite;
+    }
+  },
   deviceSummary(){
     const ua = navigator.userAgent || '';
     const chrome = (/Chrome\/([\d.]+)/.exec(ua) || [])[1] || '?';
@@ -1716,6 +1901,107 @@ const PerfMode = {
         }
       }).observe({ type:'longtask', buffered:true });
     }catch(e){}
+  }
+};
+
+/* ======================================================================
+   IMAGENS SEM ESTOURAR A RAM (modo leve)
+   ------------------------------------------------------------------
+   Cada capa de filme, depois de baixada, vira um bitmap na memória — capa
+   de IPTV costuma ser grande (1000x1500 = ~6 MB cada). Com dezenas de
+   cards na tela + carrossel, num aparelho de 1 GB isso sozinho derruba o
+   app. No modo leve a imagem só é carregada quando o card está perto da
+   tela, e é DESCARREGADA quando sai de perto (volta sozinha ao rolar de
+   novo). Fora do modo leve, é só um <img src> normal.
+   ====================================================================== */
+const ImageMem = {
+  _io: null,
+  _observer(){
+    if(this._io || !('IntersectionObserver' in window)) return this._io;
+    this._io = new IntersectionObserver((entries) => {
+      for(const e of entries){
+        const img = e.target, url = img.dataset.lazySrc;
+        if(!url) continue;
+        if(e.isIntersecting){
+          if(img.getAttribute('src') !== url) img.src = url;
+        } else if(img.hasAttribute('src')){
+          img.removeAttribute('src'); // libera o bitmap decodificado
+        }
+      }
+    }, { rootMargin: '400px' });
+    return this._io;
+  },
+  set(img, url){
+    if(!url) return;
+    const io = PerfMode.isLite() ? this._observer() : null;
+    if(!io){ img.src = url; return; }
+    img.dataset.lazySrc = url;
+    img.decoding = 'async';
+    io.observe(img);
+  },
+  /** Emergência de memória: descarrega TODA imagem fora da tela agora. */
+  releaseOffscreen(){
+    const vh = window.innerHeight, vw = window.innerWidth;
+    let n = 0;
+    document.querySelectorAll('img[data-lazy-src][src]').forEach(img => {
+      const r = img.getBoundingClientRect();
+      if(r.bottom < -50 || r.top > vh + 50 || r.right < -50 || r.left > vw + 50){ img.removeAttribute('src'); n++; }
+    });
+    return n;
+  }
+};
+
+/* Guarda de memória (APK): a cada 10s pergunta ao Android quanta RAM
+   sobra. Abaixo de ~220 MB livres (ou se o Android avisar "pouca
+   memória"), solta tudo que dá pra recarregar depois — caches de página,
+   imagens fora da tela — ANTES do Android matar o app. */
+const MemGuard = {
+  _timer: null, _busy: false, _lastRelief: 0, last: null,
+  LOW_MB: 220,
+  start(){
+    if(this._timer || !(window.cordova && typeof window.cordova.exec === 'function')) return;
+    this._timer = setInterval(() => this.check(), 10000);
+    setTimeout(() => this.check(), 3000);
+  },
+  read(){
+    return new Promise((resolve) => {
+      if(this._busy || !(window.cordova && typeof window.cordova.exec === 'function')) return resolve(this.last);
+      this._busy = true;
+      try{
+        window.cordova.exec((o) => { this._busy = false; this.last = o || null; resolve(this.last); },
+          () => { this._busy = false; resolve(null); }, 'ManagerPip', 'memInfo', []);
+      }catch(e){ this._busy = false; resolve(null); }
+    });
+  },
+  async check(){
+    const n = await this.read();
+    if(!n || !n.total) return;
+    const availMb = n.avail / 1048576;
+    if((n.low || availMb < this.LOW_MB) && Date.now() - this._lastRelief > 15000){
+      this._lastRelief = Date.now();
+      this.relieve('RAM livre ' + Math.round(availMb) + ' MB');
+    }
+  },
+  /** Durante a importação: registra a RAM livre no máximo a cada 5s
+   * (pra ver no painel em que etapa a memória está indo embora). */
+  _lastImportLog: 0,
+  logDuring(what){
+    if(!(window.cordova && typeof window.cordova.exec === 'function')) return;
+    const now = Date.now();
+    if(now - this._lastImportLog < 5000) return;
+    this._lastImportLog = now;
+    this.read().then((n) => {
+      if(n && n.total) pushDebugLog('📊 ' + what + ' — RAM livre ' + Math.round(n.avail / 1048576) + ' MB, app ' + Math.round((n.appPssKb || 0) / 1024) + ' MB', n.low);
+    });
+  },
+  relieve(reason){
+    const pages = State.pageCache ? State.pageCache.size : 0;
+    if(State.pageCache) State.pageCache.clear();
+    try{ QueryModule.invalidateCaches(); }catch(e){}
+    State.favoritesCache = null;
+    State.continueCache = null;
+    const imgs = ImageMem.releaseOffscreen();
+    pushDebugLog('🧹 Liberando memória (' + reason + '): ' + pages + ' páginas em cache e ' + imgs + ' imagens fora da tela.', true);
   }
 };
 
@@ -2049,7 +2335,7 @@ const IDB = {
     await new Promise((resolve) => {
       try{
         const tx = db.transaction([STORES.servers, STORES.settings, STORES.favorites], 'readwrite');
-        const blockFields = ['blocos','blocosSeries','blocosCrus','counts','seriesCount','movieCategories','liveCategories','seriesCategories','movieCategoryCounts','liveCategoryCounts','seriesCategoryCounts','urlPrefixes','logoPrefixes'];
+        const blockFields = ['blocos','blocosIdx','blocosSeries','blocosCrus','counts','seriesCount','movieCategories','liveCategories','seriesCategories','movieCategoryCounts','liveCategoryCounts','seriesCategoryCounts','urlPrefixes','logoPrefixes'];
         for(const sv of servers){
           if(!sv || !sv.id) continue;
           for(const f of blockFields) delete sv[f];
@@ -2221,6 +2507,16 @@ function serverIdFromSeriesKey(key){
   return k > 0 ? key.slice(0, k) : null;
 }
 function serverHasBlocks(srv){ return !!(srv && srv.blocos); }
+/** Chaves (nº) dos blocos prontos de um tipo, em ordem. Importação nova
+ * (pool paralelo): blocosIdx[t] = nº dos blocos crus que têm aquele tipo.
+ * Servidor importado por versão antiga: 0..blocos[t]-1 (continua funcionando). */
+function blockKeys(srv, t){
+  if(srv && srv.blocosIdx && srv.blocosIdx[t]) return srv.blocosIdx[t];
+  const n = (srv && srv.blocos && srv.blocos[t]) || 0;
+  const a = new Array(n);
+  for(let i = 0; i < n; i++) a[i] = i;
+  return a;
+}
 
 const QueryModule = {
   // seriesKey -> resumo da série (cache só de leitura; limpo a cada import/exclusão)
@@ -2347,8 +2643,7 @@ const QueryModule = {
     serverLoop:
     for(const serverId of serverIds){
       const srv = State.servers.get(serverId);
-      const numBlocks = srv.blocos[tipoInt] || 0;
-      for(let b = 0; b < numBlocks; b++){
+      for(const b of blockKeys(srv, tipoInt)){
         if(pageDone()) break serverLoop;
         const bloco = await IDB.getByKey(STORES.contentBlocks, [serverId, tipoInt, b]);
         if(!bloco) continue;
@@ -2529,7 +2824,9 @@ const QueryModule = {
     const favSet = await this._favoriteIdSet(type);
     const items = [];
     let skip = offset;
-    for(let b = (srv.blocos[tipoInt] || 0) - 1; b >= 0 && items.length < limit; b--){
+    const bkeys = blockKeys(srv, tipoInt);
+    for(let bk = bkeys.length - 1; bk >= 0 && items.length < limit; bk--){
+      const b = bkeys[bk];
       const len = await (async () => {
         // pula blocos inteiros sem montar os itens enquanto ainda está no "offset"
         const bloco = await IDB.getByKey(STORES.contentBlocks, [serverId, tipoInt, b]);
@@ -2555,7 +2852,9 @@ const QueryModule = {
     let keys = [];
     const seen = new Set();
     const want = offset + limit;
-    for(let b = (srv.blocos[2] || 0) - 1; b >= 0 && keys.length < want; b--){
+    const ekeys = blockKeys(srv, 2);
+    for(let bk = ekeys.length - 1; bk >= 0 && keys.length < want; bk--){
+      const b = ekeys[bk];
       const bloco = await IDB.getByKey(STORES.contentBlocks, [serverId, 2, b]);
       if(!bloco) continue;
       for(let i = bloco.length - 1; i >= 0 && keys.length < want; i--){
@@ -2603,7 +2902,7 @@ const QueryModule = {
     const srv = State.servers.get(serverId);
     if(!serverHasBlocks(srv)) return null;
     for(const t of [1, 2, 0]){
-      for(let b = 0; b < (srv.blocos[t] || 0); b++){
+      for(const b of blockKeys(srv, t)){
         const bloco = await readBlock(serverId, t, b);
         if(!bloco) continue;
         for(let j = 0; j < bloco.length; j++){
@@ -2648,7 +2947,7 @@ const GlobalSearchModule = {
       const favSet = await QueryModule._favoriteIdSet(type);
       const catNorm = new Map(); // categoria -> normalizada (poucas categorias, muitas linhas)
       for(const srv of servers){
-        for(let b = 0; b < (srv.blocos[tipoInt] || 0); b++){
+        for(const b of blockKeys(srv, tipoInt)){
           if(result[type].length >= maxPerType) return;
           const txt = await IDB.getByKey(STORES.searchBlocks, [srv.id, tipoInt, b]);
           if(!txt) continue;
@@ -3245,42 +3544,163 @@ const ServerModule = {
     return { blocosCrus: n, bytes: bytes };
   },
 
+  /** Quantos workers de processamento cada importação usa (ver
+   * importManyServersPipelined, que divide os núcleos entre as importações
+   * que rodam ao mesmo tempo). */
+  _workersPerImport: 0,
+  workersTotal(){
+    const cores = navigator.hardwareConcurrency || 2;
+    return Math.max(1, Math.min(PerfMode.isLite() ? 3 : 6, cores - 1));
+  },
+
+  /**
+   * Importa 1 servidor BAIXANDO E PROCESSANDO AO MESMO TEMPO:
+   *  - o download chega em pedaços; a cada ~1 MB (cortado antes de um
+   *    #EXTINF) o texto vai DIRETO da memória pra um worker livre do pool,
+   *    que interpreta, grava o bloco cru + os blocos prontos e devolve um
+   *    resumo pequeno — nada de reler a lista crua do banco depois;
+   *  - N workers em paralelo (núcleos − 1, máx. 3 no modo leve);
+   *  - se os workers ficam pra trás, o download ESPERA (memória constante,
+   *    não cresce com o tamanho da lista);
+   *  - no fim, os workers são encerrados e a memória volta pro sistema.
+   */
   async importServerContent(server, statusCallback){
     const report = (patch) => { if(statusCallback) statusCallback(patch); };
     const tStart = performance.now();
+    const serverId = server.id;
+    let pool = null;
     try{
       report({ phase:'download', status:'processing', downloaded:0, total:null, speed:0 });
-      let lastBytes = 0, lastTime = Date.now(), speed = 0;
-      const raw = await ServerModule.downloadRawToBlocks(server.url, server.id, (bytes, total) => {
-        const now = Date.now(), dt = (now - lastTime) / 1000;
-        if(dt > 0.2){ speed = (bytes - lastBytes) / dt; lastBytes = bytes; lastTime = now; }
-        report({ phase:'download', status:'processing', downloaded: bytes, total: total, speed: speed });
-      });
-      report({ phase:'download', status:'done', downloaded: raw.bytes, total: raw.bytes });
-      const tDownloaded = performance.now();
-      pushDebugLog('⏱ "' + server.nome + '": download ' + Math.round(tDownloaded - tStart) + ' ms (' + formatBytes(raw.bytes) + ')');
 
-      let latestCounts = { movie:0, series:0, live:0 };
-      report({ phase:'process', status:'processing', processed:0, total:0, counts: latestCounts, seriesCount: 0 });
-      const result = await BlockSyncWorker.processar(server.id, raw.blocosCrus, (d) => {
-        if(d.phase !== 'process') return;
-        latestCounts = d.counts;
-        const done = d.counts.movie + d.counts.series + d.counts.live;
-        // Total real só se sabe no fim; estima pela fração de blocos crus já lidos.
-        const est = d.blocosFeitos ? Math.round(done * d.blocosTotal / d.blocosFeitos) : 0;
-        // d.counts.series = nº de EPISÓDIOS lidos até agora (não confundir com
-        // d.seriesCount = nº de SÉRIES distintas já vistas, é o que a UI mostra).
-        report({ phase:'process', status:'processing', processed: done, total: Math.max(done, est), counts: d.counts, seriesCount: d.seriesCount });
+      // 1) apaga TUDO do servidor (cru + prontos + séries) — os blocos novos são numerados do zero
+      await new Promise((resolve, reject) => {
+        const range = IDBKeyRange.bound([serverId], [serverId, []]);
+        const tx = IDB.tx([STORES.rawBlocks, STORES.contentBlocks, STORES.searchBlocks, STORES.seriesBlocks], 'readwrite', { durability:'relaxed' });
+        [STORES.rawBlocks, STORES.contentBlocks, STORES.searchBlocks, STORES.seriesBlocks].forEach(n => tx.objectStore(n).delete(range));
+        tx.oncomplete = () => resolve();
+        tx.onerror = tx.onabort = () => reject(tx.error);
       });
-      result.bytes = raw.bytes;
-      pushDebugLog('⏱ "' + server.nome + '": processar e gravar ' + Math.round(performance.now() - tDownloaded) + ' ms (' +
-        (result.counts.movie + result.counts.series + result.counts.live) + ' itens)');
+
+      // 2) resumo acumulado (o que cada worker devolve)
+      const acc = { cnt:[0,0,0], blocks:[[],[],[]], grupos:[new Map(),new Map(),new Map()], series:new Map(), done:0 };
+      const N = this._workersPerImport || this.workersTotal();
+      pool = BlockSyncWorker.createPool(N, (d) => {
+        acc.done++;
+        for(let t = 0; t < 3; t++){
+          if(!d.cnt[t]) continue;
+          acc.cnt[t] += d.cnt[t];
+          acc.blocks[t].push(d.i);
+          const gm = acc.grupos[t];
+          for(const [g, c] of d.grupos[t]) gm.set(g, (gm.get(g) || 0) + c);
+        }
+        for(const sp of d.series){
+          let x = acc.series.get(sp[0]);
+          // série final: 0 key, 1 nome, 2 capa, 3 qtdEps, 4 temporadas(Set), 5 categorias[], 6 blocos de episódio[]
+          if(!x){ x = [sp[0], sp[1], sp[2], 0, new Set(), [], []]; acc.series.set(sp[0], x); }
+          if(!x[2] && sp[2]) x[2] = sp[2];
+          x[3] += sp[3];
+          for(const sn of sp[4]) x[4].add(sn);
+          for(const c of sp[5]) if(x[5].indexOf(c) === -1) x[5].push(c);
+          x[6].push(d.i);
+        }
+      });
+      pushDebugLog('Importação "' + server.nome + '": ' + N + ' worker(s) processando junto com o download.');
+
+      // 3) download em streaming → blocos de ~1 MB → pool
+      const CH = 1 << 20;
+      const response = await fetch(server.url);
+      if(!response.ok){ const err = new Error('HTTP ' + response.status); err.status = response.status; throw err; }
+      const totalBytes = parseInt(response.headers.get('Content-Length'), 10) || null;
+      let n = 0, bytes = 0, buf = '', lastReport = 0, lastBytes = 0, lastTime = Date.now(), speed = 0;
+      const dec = new TextDecoder('utf-8');
+      const progress = (force) => {
+        const now = Date.now();
+        if(!force && now - lastReport < 250) return;
+        lastReport = now;
+        const dt = (now - lastTime) / 1000;
+        if(dt > 0.3){ speed = (bytes - lastBytes) / dt; lastBytes = bytes; lastTime = now; }
+        report({ phase:'download', status:'processing', downloaded: bytes, total: totalBytes, speed: speed,
+          counts: { live: acc.cnt[0], movie: acc.cnt[1], series: acc.cnt[2] }, seriesCount: acc.series.size, blocksDone: acc.done });
+        MemGuard.logDuring('"' + server.nome + '" baixando+processando ' + formatBytes(bytes) + ' (' + acc.done + ' blocos prontos)');
+      };
+      const drain = async (final) => {
+        while(buf.length >= CH){
+          let cut = buf.lastIndexOf('\n#EXTINF', CH);
+          if(cut <= 0) cut = buf.indexOf('\n#EXTINF', CH);
+          if(cut < 0) break;
+          await pool.send(serverId, n++, buf.slice(0, cut + 1)); // espera worker livre = download espera
+          buf = buf.slice(cut + 1);
+        }
+        if(final && (buf || n === 0)){ await pool.send(serverId, n++, buf); buf = ''; }
+      };
+      if(response.body && response.body.getReader){
+        const reader = response.body.getReader();
+        for(;;){
+          const { done, value } = await reader.read();
+          if(done) break;
+          bytes += value.byteLength;
+          buf += dec.decode(value, { stream: true });
+          await drain(false);
+          progress(false);
+        }
+        buf += dec.decode();
+      } else {
+        buf = await response.text();
+        bytes = buf.length;
+      }
+      await drain(true);
+      const tDownloaded = performance.now();
+      pushDebugLog('⏱ "' + server.nome + '": download ' + Math.round(tDownloaded - tStart) + ' ms (' + formatBytes(bytes) + ', ' + n + ' blocos, processados junto)');
+      report({ phase:'process', status:'processing', processed: acc.cnt[0] + acc.cnt[1] + acc.cnt[2], total: 0,
+        counts: { live: acc.cnt[0], movie: acc.cnt[1], series: acc.cnt[2] }, seriesCount: acc.series.size });
+
+      // 4) espera os últimos blocos e encerra os workers
+      await pool.finish(); pool = null;
+
+      // 5) séries (ordenadas por nome) em blocos + totais
+      const arr = Array.from(acc.series.values()); acc.series = null;
+      const seriesPerCategory = new Map();
+      for(const x of arr){
+        x[4] = x[4].size;
+        x[6].sort((p, q) => p - q);
+        for(const c of x[5]) seriesPerCategory.set(c, (seriesPerCategory.get(c) || 0) + 1);
+      }
+      arr.sort((p, q) => p[1] < q[1] ? -1 : p[1] > q[1] ? 1 : 0);
+      const SB = 2000;
+      let nsb = 0;
+      await new Promise((resolve, reject) => {
+        const tx = IDB.tx([STORES.seriesBlocks], 'readwrite', { durability:'relaxed' });
+        const st = tx.objectStore(STORES.seriesBlocks);
+        for(let j = 0; j < arr.length; j += SB) st.put(arr.slice(j, j + SB), [serverId, nsb++]);
+        tx.oncomplete = () => resolve();
+        tx.onerror = tx.onabort = () => reject(tx.error);
+      });
+      const blocosIdx = acc.blocks.map(b => b.sort((p, q) => p - q));
+      const sortedKeys = (m) => Array.from(m.keys()).sort();
+      const result = {
+        counts: { live: acc.cnt[0], movie: acc.cnt[1], series: acc.cnt[2] },
+        seriesCount: arr.length,
+        blocos: blocosIdx.map(b => b.length),
+        blocosIdx: blocosIdx,
+        blocosSeries: nsb,
+        blocosCrus: n,
+        liveCategoryCounts: Object.fromEntries(acc.grupos[0]),
+        movieCategoryCounts: Object.fromEntries(acc.grupos[1]),
+        seriesCategoryCounts: Object.fromEntries(seriesPerCategory),
+        liveCategories: sortedKeys(acc.grupos[0]),
+        movieCategories: sortedKeys(acc.grupos[1]),
+        seriesCategories: sortedKeys(seriesPerCategory),
+        bytes: bytes
+      };
+      pushDebugLog('⏱ "' + server.nome + '": total ' + Math.round(performance.now() - tStart) + ' ms (' +
+        (result.counts.movie + result.counts.series + result.counts.live) + ' itens, ' + arr.length + ' séries)');
 
       const total = result.counts.movie + result.counts.series + result.counts.live;
       Object.assign(server, {
         counts: result.counts,               // { movie, live, series(=episódios) }
         seriesCount: result.seriesCount,
         blocos: result.blocos,               // [ao vivo, filme, episódio] — nº de blocos de cada
+        blocosIdx: result.blocosIdx,         // chaves reais dos blocos de cada tipo (= nº do bloco cru) — ver blockKeys()
         blocosSeries: result.blocosSeries,
         blocosCrus: result.blocosCrus,
         bytes: result.bytes,
@@ -3307,6 +3727,7 @@ const ServerModule = {
       report({ phase:'process', status:'done', processed: total, total: total, counts: result.counts, seriesCount: result.seriesCount });
       return { ok:true, count: total };
     }catch(err){
+      if(pool){ try{ pool.abort(); }catch(e){} }
       const message = err && err.status ? ('Erro ' + err.status) : (err && err.message ? err.message : 'Erro desconhecido');
       report({ phase: 'error', status:'error', message: message });
       server.lastStatus = 'error';
@@ -3325,6 +3746,9 @@ const ServerModule = {
    */
   async importManyServersPipelined(servers, concurrency, onServerUpdate, onOverallUpdate, onFirstSuccess){
     const total = servers.length;
+    // divide os workers de processamento entre as importações simultâneas
+    const lanes = Math.max(1, Math.min(concurrency || 1, total));
+    ServerModule._workersPerImport = Math.max(1, Math.floor(ServerModule.workersTotal() / lanes));
     let completed = 0, next = 0, firstSuccessFired = false;
     const results = new Array(total);
     const updateOverall = () => { if(onOverallUpdate) onOverallUpdate({ completed, total }); };
@@ -3345,10 +3769,10 @@ const ServerModule = {
       }
     }
 
-    const lanes = Math.max(1, Math.min(concurrency || 1, total));
     const running = [];
     for(let i = 0; i < lanes; i++) running.push(lane());
     await Promise.all(running);
+    ServerModule._workersPerImport = 0;
     return results;
   }
 };
@@ -5400,7 +5824,7 @@ function renderContentCard(content, options){
   const needsSeriesFallback = content.tipo === 'series' && content.seriesKey && (!ownLogo || !content.nome);
   if(ownLogo){
     const img = el('img', { loading:'lazy' });
-    img.src = ownLogo;
+    ImageMem.set(img, ownLogo);
     img.onerror = function(){ img.remove(); thumb.appendChild(el('div',{class:'ph'},['🎬'])); };
     thumb.appendChild(img);
   } else if(needsSeriesFallback){
@@ -5418,7 +5842,7 @@ function renderContentCard(content, options){
       if(!summary) return;
       if(!ownLogo && summary.logo && placeholder && thumb.contains(placeholder)){
         const img = el('img', { loading:'lazy' });
-        img.src = summary.logo;
+        ImageMem.set(img, summary.logo);
         img.onerror = function(){ img.remove(); };
         placeholder.remove();
         thumb.insertBefore(img, thumb.firstChild);
@@ -5525,7 +5949,7 @@ function renderSeriesCard(entry){
   const thumb = el('div', { class:'thumb' });
   if(entry.logo){
     const img = el('img', { loading:'lazy' });
-    img.src = entry.logo;
+    ImageMem.set(img, entry.logo);
     img.onerror = function(){ img.remove(); thumb.appendChild(el('div',{class:'ph'},['🎬'])); };
     thumb.appendChild(img);
   } else {
@@ -5885,7 +6309,7 @@ async function renderSeriesDetailView(container){
     // Episódio sem capa própria no M3U cai pra capa da série.
     const episodeLogo = resolveContentLogo(content, entry.logo);
     if(episodeLogo){
-      const img = el('img'); img.src = episodeLogo; img.onerror=()=>img.remove();
+      const img = el('img'); ImageMem.set(img, episodeLogo); img.onerror=()=>img.remove();
       eth.appendChild(img);
     }
     const episodeName = resolveContentName(content, entry.name);
@@ -6704,11 +7128,12 @@ async function runImportWithProgressModal(servers){
     if(patch.phase === 'download'){
       dotEl.className = 'status-dot processing';
       statusEl.className = 'sp-status proc';
-      statusEl.textContent = patch.status === 'done' ? 'Download concluído, na fila' : 'Baixando...';
+      statusEl.textContent = patch.status === 'done' ? 'Download concluído, na fila' : (patch.counts ? 'Baixando e processando...' : 'Baixando...');
       let pct = 0;
       if(patch.total){ pct = Math.min(100, (patch.downloaded/patch.total)*100); }
       fillEl.style.width = (patch.status==='done' ? 100 : pct) + '%';
-      detailEl.textContent = formatBytes(patch.downloaded) + (patch.total ? ' / ' + formatBytes(patch.total) : '') + (patch.speed ? '  •  ' + formatSpeed(patch.speed) : '');
+      detailEl.textContent = formatBytes(patch.downloaded) + (patch.total ? ' / ' + formatBytes(patch.total) : '') + (patch.speed ? '  •  ' + formatSpeed(patch.speed) : '') +
+        (patch.counts ? '  •  Filmes: ' + patch.counts.movie + '  Séries: ' + (patch.seriesCount || 0) + '  Ao Vivo: ' + patch.counts.live : '');
     } else if(patch.phase === 'cleanup'){
       dotEl.className = 'status-dot processing';
       statusEl.className = 'sp-status proc';
@@ -7130,9 +7555,9 @@ const SuggestModule = {
     }
     for(let tries = 0; tries < 3 && servers.length; tries++){
       const srv = this._weighted(servers);
-      const n = srv.blocos[1], start = this._rand(n);
+      const mkeys = blockKeys(srv, 1), n = mkeys.length, start = this._rand(n);
       for(let k = 0; k < n; k++){
-        const b = (start + k) % n;
+        const b = mkeys[(start + k) % n];
         const bloco = await IDB.getByKey(STORES.contentBlocks, [srv.id, 1, b]).catch(() => null);
         if(!bloco) continue;
         const idx = [];
@@ -7267,7 +7692,7 @@ const CrossServer = {
     const out = [];
     for(const srv of State.servers.values()){
       if(!serverHasBlocks(srv)) continue;
-      for(let b = 0; b < (srv.blocos[1] || 0); b++){
+      for(const b of blockKeys(srv, 1)){
         const txt = await IDB.getByKey(STORES.searchBlocks, [srv.id, 1, b]).catch(() => null);
         if(typeof txt !== 'string') continue;
         const lines = txt.split('\n');
@@ -7750,6 +8175,7 @@ async function initApp(){
   }
   applyThemeColors(State.settings.colors);
   PerfMode.apply();
+  if(PerfMode.isLite()) MemGuard.start();
 
   // Servidores, progresso e favoritos são pequenos — carregam rápido e
   // eager. O conteúdo (que pode ter milhões de itens) NUNCA é carregado
@@ -7838,7 +8264,7 @@ async function prefetchFirstPages(){
   // completar 100% do menu pré-carregado.
   try{
     const fresh = await IDB.getByKey(STORES.settings, 'app');
-    if(fresh) State.settings = Object.assign({}, DEFAULT_SETTINGS, fresh);
+    if(fresh){ State.settings = Object.assign({}, DEFAULT_SETTINGS, fresh); PerfMode.apply(); }
   }catch(e){}
 }
 
