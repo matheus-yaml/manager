@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>const APP_VERSION = '1.0.22';</script>
+<script>const APP_VERSION = '1.0.23';</script>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -484,8 +484,14 @@ a:focus,
      zoom e o clique simplesmente não dispara. Isso fazia parecer que só
      "clicar e segurar" funcionava (sem essa ambiguidade de duplo-toque).
      manipulation desliga o zoom por toque aqui e faz todo toque virar
-     clique na hora. */
-  touch-action:manipulation;
+     clique na hora.
+     Agora é `none` (não só manipulation): com manipulation o navegador
+     ainda podia assumir um arrasto VERTICAL como rolagem/pan — ao segurar
+     pra 2x e arrastar pra cima pra travar, o Android "pegava" o gesto (a
+     tela dava um tranco) e cancelava o toque no meio (pointercancel). Na
+     área do vídeo não existe nada pra rolar nem dar zoom, então todo
+     gesto aqui fica com o app. */
+  touch-action:none;
 }
 #player-buffering{
   position:absolute;top:0;left:0;right:0;bottom:0;display:none;
@@ -606,39 +612,46 @@ a:focus,
 }
 #player-seek-feedback.show{opacity:1;transform:translate(-50%,-50%) scale(1);}
 #player-seek-feedback.locked{gap:10px;}
-/* "Arraste pra cima pra travar" — aparece ao segurar numa lateral (ver
-   _startSideHold/_updateLockDragUI), inspirado no gesto de travar áudio do
-   WhatsApp. Fica logo acima do badge "2x", com um "trilho" vertical e uma
-   alcinha que sobe junto com o dedo/mouse; passado o threshold de arrasto
-   ela "trava" (classe .locked) e vira um cadeado fechado destacado — a
-   partir daí solta o dedo que o 2x continua rodando sozinho. */
+/* "Arraste pra cima pra travar" — aparece EMBAIXO DO DEDO ao segurar
+   numa lateral (posição definida em _showLockAffordance), com a alça já
+   sob o dedo e um trilho subindo até o cadeado. A alça acompanha o dedo;
+   chegando no cadeado, trava (classe .locked) — a partir daí dá pra soltar
+   que o 2x continua. Inspirado no gesto de travar áudio do WhatsApp. */
 #player-lock-affordance{
-  position:absolute;top:50%;left:50%;
-  transform:translate(-50%,-50%) translateY(-96px);
+  position:absolute;left:0;top:0;
+  /* a borda de baixo do contêiner é o fundo do trilho; o centro da alça
+     fica 26px acima dela — é esse ponto que fica sob o dedo */
+  transform:translate(-50%, calc(-100% + 27px)); /* 6px de margem + 20px (meia alça) + 1px de borda */
   display:flex;flex-direction:column;align-items:center;gap:8px;
   opacity:0;pointer-events:none;transition:opacity .15s;z-index:4;
 }
 #player-lock-affordance.show{opacity:1;}
 #player-lock-track{
-  width:36px;height:92px;border-radius:18px;position:relative;
-  background:rgba(10,11,18,.55);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
-  border:1px solid rgba(255,255,255,.15);
-  display:flex;justify-content:center;
+  width:52px;height:136px;border-radius:26px;position:relative;
+  background:rgba(10,11,18,.6);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
+  border:1px solid rgba(255,255,255,.18);
 }
+#player-lock-target{
+  position:absolute;left:50%;top:10px;transform:translateX(-50%);
+  width:32px;height:32px;display:flex;align-items:center;justify-content:center;
+  color:rgba(255,255,255,.75);transition:color .15s, transform .15s;
+}
+#player-lock-target svg{width:20px;height:20px;}
 #player-lock-handle{
-  position:absolute;left:50%;bottom:4px;width:26px;height:26px;border-radius:50%;
-  background:rgba(255,255,255,.18);color:#fff;
+  position:absolute;left:50%;bottom:6px;width:40px;height:40px;border-radius:50%;
+  margin-left:-20px;background:rgba(255,255,255,.22);color:#fff;
   display:flex;align-items:center;justify-content:center;
-  transform:translateX(-50%);transition:background .15s;will-change:transform;
+  font-size:12px;font-weight:800;will-change:transform;
+  box-shadow:0 4px 14px rgba(0,0,0,.45);
 }
-#player-lock-handle svg{width:15px;height:15px;}
+#player-lock-handle svg{width:18px;height:18px;}
 #player-lock-affordance.locked #player-lock-handle{background:var(--accent);}
-#player-lock-affordance.locked #player-lock-track{border-color:rgba(var(--accent-rgb),.5);}
+#player-lock-affordance.locked #player-lock-target{color:var(--accent);transform:translateX(-50%) scale(1.15);}
+#player-lock-affordance.locked #player-lock-track{border-color:rgba(var(--accent-rgb),.6);}
 #player-lock-hint{
-  font-size:11px;font-weight:600;color:#fff;background:rgba(10,11,18,.65);
-  padding:4px 10px;border-radius:20px;white-space:nowrap;opacity:.85;
+  font-size:11px;font-weight:600;color:#fff;background:rgba(10,11,18,.7);
+  padding:4px 10px;border-radius:20px;white-space:nowrap;
 }
-#player-lock-affordance.locked #player-lock-hint{opacity:0;}
 #player-playpause-feedback{
   /* Antes usava display:none/flex pra mostrar-esconder — só que "display"
      não anima, então o ícone "piscava" em vez de esmaecer de verdade. Agora
@@ -866,8 +879,8 @@ a:focus,
   <video id="video-player" playsinline preload="auto"></video>
   <div id="player-seek-feedback"></div>
   <div id="player-lock-affordance">
-    <div id="player-lock-track"><div id="player-lock-handle"></div></div>
-    <div id="player-lock-hint">Arraste para travar</div>
+    <div id="player-lock-hint">Arraste pra cima para travar</div>
+    <div id="player-lock-track"><div id="player-lock-target"></div><div id="player-lock-handle"></div></div>
   </div>
   <div id="player-playpause-feedback"></div>
   <div id="player-controls-bottom">
@@ -1437,71 +1450,210 @@ function normalizeText(str){
    INDEXEDDB MODULE
    ====================================================================== */
 const IDB = {
-  open(){
-    return new Promise((resolve, reject)=>{
-      const req = indexedDB.open(DB_NAME, DB_VERSION);
-      req.onupgradeneeded = function(e){
-        const db = e.target.result;
-        const tx = e.target.transaction;
-        const oldVersion = e.oldVersion || 0;
-        if(!db.objectStoreNames.contains(STORES.servers)) db.createObjectStore(STORES.servers, { keyPath: 'id' });
-        if(!db.objectStoreNames.contains(STORES.progress)) db.createObjectStore(STORES.progress, { keyPath: 'contentId' });
-        if(!db.objectStoreNames.contains(STORES.settings)) db.createObjectStore(STORES.settings, { keyPath: 'id' });
-        if(!db.objectStoreNames.contains(STORES.favorites)) db.createObjectStore(STORES.favorites, { keyPath: 'id' });
-        // v7 — stores em bloco, sem keyPath (a chave [serverId,...] é
-        // passada explicitamente em cada put/get) e sem índice nenhum.
-        ['rawBlocks','contentBlocks','searchBlocks','seriesBlocks'].forEach(function(n){
-          if(!db.objectStoreNames.contains(STORES[n])) db.createObjectStore(STORES[n]);
-        });
+  // stores sem as quais o app não funciona (checado ao aceitar um banco
+  // criado por uma versão MAIS NOVA do app — ver open)
+  REQUIRED_STORES: ['servers','progress','settings','favorites','rawBlocks','contentBlocks','searchBlocks','seriesBlocks'],
 
-        // Migração pra v8: o formato antigo (1 registro por item + índices)
-        // sai inteiro. Servidores e configurações ficam; o conteúdo volta ao
-        // resincronizar (o app avisa na abertura — ver warnLegacyServers).
-        // (< 8, não < 7: as versões 1.0.20/1.0.21 já tinham subido o banco
-        // pra v7 mantendo as stores antigas.)
-        if(oldVersion > 0 && oldVersion < 8){
-          ['contents','seriesSummary','seriesEpisodes','downloadChunks'].forEach(function(n){
-            if(db.objectStoreNames.contains(n)) db.deleteObjectStore(n);
-          });
-          // Filme/canal/episódio tinham id ALEATÓRIO por import — nenhum
-          // progresso ou favorito deles consegue ser reencontrado no formato
-          // novo (id agora vem da URL). Série inteira usa a mesma chave de
-          // antes ("servidor::nome"), então o favorito de série continua.
-          tx.objectStore(STORES.progress).clear();
-          const favStore = tx.objectStore(STORES.favorites);
-          const cur = favStore.openCursor();
-          cur.onsuccess = function(ev){
-            const c = ev.target.result;
-            if(!c) return;
-            const f = c.value;
-            if(!(f.type === 'series' && String(f.id).indexOf('::') !== -1)) c.delete();
-            c.continue();
-          };
-        }
-      };
-      req.onsuccess = function(e){
-        const db = e.target.result;
-        // Se outra aba (ou uma versão mais nova do app) precisar mudar o
-        // schema do banco, o navegador avisa TODAS as conexões abertas.
-        // Sem fechar essa aqui de boa vontade, a outra aba ficaria travada
-        // pra sempre esperando, e essa conexão pode acabar num estado
-        // inválido (é exatamente o "InvalidStateError: connection is
-        // closing" que acontecia sem isso).
-        db.onversionchange = function(){
-          db.close();
-          State.db = null;
-          showToast('O app foi atualizado em outra aba. Recarregue esta página pra continuar usando.', 'error');
-        };
-        // Se a conexão cair sozinha por qualquer outro motivo (o navegador
-        // pode fazer isso sob pressão de memória, por exemplo), marcamos
-        // como indisponível — assim os métodos abaixo sabem reabrir em vez
-        // de tentar usar uma conexão morta.
-        db.onclose = function(){ State.db = null; };
-        resolve(db);
-      };
-      req.onerror = function(e){ reject(e.target.error); };
+  /**
+   * Abre o banco SEM NUNCA deixar o app em branco:
+   *  - Caminho normal: abre/migra pra DB_VERSION.
+   *  - Banco de uma versão MAIS NOVA do app (VersionError — ex: um HTML
+   *    antigo foi aberto depois do novo): usa o banco como está, se tiver
+   *    tudo que esta versão precisa.
+   *  - Qualquer outra falha (migração que abortou, banco corrompido,
+   *    formato irreconhecível): repara sozinho — guarda servidores,
+   *    configurações e favoritos de série, apaga o banco, recria limpo e
+   *    restaura isso. Só o conteúdo precisa ser baixado de novo
+   *    ("Atualizar Todos"). Antes, o único jeito era limpar os dados do
+   *    app/navegador na mão.
+   */
+  async open(){
+    let lastErr;
+    // Até 3 tentativas: no Android, o WebView às vezes falha a abertura uma
+    // vez só ("UnknownError") e na seguinte funciona — isso NUNCA pode
+    // virar reparo (que apaga o conteúdo baixado).
+    for(let attempt = 0; attempt < 3; attempt++){
+      try{
+        return await this._openVersion(DB_VERSION);
+      }catch(err){
+        lastErr = err;
+        pushDebugLog('Falha ao abrir o banco (' + (err && (err.name || err.message)) + '), tentativa ' + (attempt + 1) + '.', true);
+        if(err && err.name === 'VersionError') break; // não é transitório
+        await new Promise(r => setTimeout(r, 400));
+      }
+    }
+    if(lastErr && lastErr.name === 'VersionError'){
+      // Banco de uma versão MAIS NOVA do app: usa como está, se tiver tudo.
+      try{
+        const db = await this._openVersion(undefined);
+        if(this.REQUIRED_STORES.every(n => db.objectStoreNames.contains(n))) return db;
+        db.close();
+      }catch(e){}
+    }
+    return await this.repair(lastErr);
+  },
+
+  /** Reconexão no meio do uso (conexão caiu): só reabre, NUNCA repara. */
+  reopen(){
+    return this._openVersion(DB_VERSION).catch(err => {
+      if(err && err.name === 'VersionError') return this._openVersion(undefined);
+      throw err;
     });
   },
+
+  _openVersion(version){
+    return new Promise((resolve, reject)=>{
+      let req;
+      try{ req = version === undefined ? indexedDB.open(DB_NAME) : indexedDB.open(DB_NAME, version); }
+      catch(err){ reject(err); return; }
+      let blockedToastShown = false;
+      req.onblocked = function(){
+        // Outra conexão (outra aba/janela do app aberta) segura a versão
+        // antiga do banco. Ela recebe 'versionchange' e fecha sozinha nas
+        // versões recentes; se não fechar, avisa em vez de ficar em branco.
+        if(!blockedToastShown){
+          blockedToastShown = true;
+          showToast('Outra janela do app está usando o banco de dados — feche-a para continuar.', 'error');
+        }
+      };
+      req.onupgradeneeded = function(e){
+        try{
+          const db = e.target.result;
+          const tx = e.target.transaction;
+          const oldVersion = e.oldVersion || 0;
+          if(!db.objectStoreNames.contains(STORES.servers)) db.createObjectStore(STORES.servers, { keyPath: 'id' });
+          if(!db.objectStoreNames.contains(STORES.progress)) db.createObjectStore(STORES.progress, { keyPath: 'contentId' });
+          if(!db.objectStoreNames.contains(STORES.settings)) db.createObjectStore(STORES.settings, { keyPath: 'id' });
+          if(!db.objectStoreNames.contains(STORES.favorites)) db.createObjectStore(STORES.favorites, { keyPath: 'id' });
+          // v7 — stores em bloco, sem keyPath (a chave [serverId,...] é
+          // passada explicitamente em cada put/get) e sem índice nenhum.
+          ['rawBlocks','contentBlocks','searchBlocks','seriesBlocks'].forEach(function(n){
+            if(!db.objectStoreNames.contains(STORES[n])) db.createObjectStore(STORES[n]);
+          });
+
+          // Migração pra v8: o formato antigo (1 registro por item + índices)
+          // sai inteiro. Servidores e configurações ficam; o conteúdo volta ao
+          // resincronizar (a tela de Servidores marca "Precisa atualizar").
+          // (< 8, não < 7: as versões 1.0.20/1.0.21 já tinham subido o banco
+          // pra v7 mantendo as stores antigas.)
+          if(oldVersion > 0 && oldVersion < 8){
+            ['contents','seriesSummary','seriesEpisodes','downloadChunks'].forEach(function(n){
+              if(db.objectStoreNames.contains(n)) db.deleteObjectStore(n);
+            });
+            // Filme/canal/episódio tinham id ALEATÓRIO por import — nenhum
+            // progresso ou favorito deles consegue ser reencontrado no formato
+            // novo (id agora vem da URL). Série inteira usa a mesma chave de
+            // antes ("servidor::nome"), então o favorito de série continua.
+            tx.objectStore(STORES.progress).clear();
+            // Marca os servidores que existiam no formato antigo — a tela de
+            // Servidores mostra "Precisa atualizar" só pra esses.
+            const srvCur = tx.objectStore(STORES.servers).openCursor();
+            srvCur.onsuccess = function(ev){
+              const c = ev.target.result;
+              if(!c) return;
+              const v = c.value;
+              v.legacyFormat = true;
+              delete v.blocos;
+              c.update(v);
+              c.continue();
+            };
+            const favStore = tx.objectStore(STORES.favorites);
+            const cur = favStore.openCursor();
+            cur.onsuccess = function(ev){
+              const c = ev.target.result;
+              if(!c) return;
+              const f = c.value;
+              if(!(f.type === 'series' && String(f.id).indexOf('::') !== -1)) c.delete();
+              c.continue();
+            };
+          }
+        }catch(err){
+          // Migração falhou no meio: aborta a transação de upgrade (o banco
+          // fica como estava) e o open() cai no repair().
+          try{ e.target.transaction.abort(); }catch(x){}
+        }
+      };
+      req.onsuccess = (e) => {
+        const db = e.target.result;
+        IDB._attachConnectionHandlers(db);
+        resolve(db);
+      };
+      req.onerror = function(e){
+        if(e && e.preventDefault) e.preventDefault(); // não deixa o erro "vazar" como exceção global
+        reject(req.error || (e.target && e.target.error));
+      };
+    });
+  },
+
+  _attachConnectionHandlers(db){
+    // Se outra aba (ou uma versão mais nova do app) precisar mudar o
+    // schema do banco, o navegador avisa TODAS as conexões abertas.
+    // Sem fechar essa aqui de boa vontade, a outra aba ficaria travada
+    // pra sempre esperando.
+    db.onversionchange = function(){
+      db.close();
+      State.db = null;
+      showToast('O app foi atualizado em outra aba. Recarregue esta página pra continuar usando.', 'error');
+    };
+    // Conexão caiu sozinha (pressão de memória etc.) — marca como
+    // indisponível pros métodos abaixo reabrirem.
+    db.onclose = function(){ State.db = null; };
+  },
+
+  /** Recria o banco do zero preservando o que não dá pra baixar de novo
+   * (servidores, configurações, favoritos de série). Também exposto na
+   * tela de erro fatal (ver initApp). */
+  async repair(cause){
+    let servers = [], settings = [], favs = [];
+    try{
+      const old = await new Promise((resolve, reject) => {
+        const r = indexedDB.open(DB_NAME); // sem versão: abre como estiver, sem migrar
+        r.onsuccess = () => resolve(r.result);
+        r.onerror = (e) => { if(e && e.preventDefault) e.preventDefault(); reject(r.error); };
+        r.onblocked = () => {};
+      });
+      const readAll = (n) => new Promise((res) => {
+        if(!old.objectStoreNames.contains(n)) return res([]);
+        try{
+          const q = old.transaction(n).objectStore(n).getAll();
+          q.onsuccess = () => res(q.result || []);
+          q.onerror = (e) => { if(e && e.preventDefault) e.preventDefault(); res([]); };
+        }catch(e){ res([]); }
+      });
+      [servers, settings, favs] = await Promise.all([readAll('servers'), readAll('settings'), readAll('favorites')]);
+      old.close();
+    }catch(e){ /* banco ilegível — recria sem restaurar nada */ }
+
+    await new Promise((resolve) => {
+      let d;
+      try{ d = indexedDB.deleteDatabase(DB_NAME); }catch(e){ resolve(); return; }
+      d.onsuccess = () => resolve();
+      d.onerror = (e) => { if(e && e.preventDefault) e.preventDefault(); resolve(); };
+      d.onblocked = () => showToast('Feche outras janelas do app para concluir o reparo do banco de dados.', 'error');
+    });
+
+    const db = await this._openVersion(DB_VERSION);
+    await new Promise((resolve) => {
+      try{
+        const tx = db.transaction([STORES.servers, STORES.settings, STORES.favorites], 'readwrite');
+        const blockFields = ['blocos','blocosSeries','blocosCrus','counts','seriesCount','movieCategories','liveCategories','seriesCategories','movieCategoryCounts','liveCategoryCounts','seriesCategoryCounts','urlPrefixes','logoPrefixes'];
+        for(const sv of servers){
+          if(!sv || !sv.id) continue;
+          for(const f of blockFields) delete sv[f];
+          sv.legacyFormat = true; // "Precisa atualizar" na tela de Servidores
+          tx.objectStore(STORES.servers).put(sv);
+        }
+        for(const st of settings){ if(st && st.id) tx.objectStore(STORES.settings).put(st); }
+        for(const f of favs){ if(f && f.type === 'series' && String(f.id).indexOf('::') !== -1) tx.objectStore(STORES.favorites).put(f); }
+        tx.oncomplete = () => resolve();
+        tx.onerror = tx.onabort = () => resolve();
+      }catch(e){ resolve(); }
+    });
+    State.dbWasRepaired = true;
+    pushDebugLog('Banco recriado (' + (cause && (cause.name || cause.message)) + '). ' + servers.length + ' servidor(es) preservado(s).', true);
+    return db;
+  },
+
   tx(storeNames, mode, options){
     // `options` (e.g. { durability: 'relaxed' }) is supported by modern
     // browsers for the readwrite transactions used in bulk imports — it
@@ -2671,7 +2823,7 @@ const ServerModule = {
         lastError: null
       });
       // campos do formato antigo (compactação por prefixo) — não existem mais
-      delete server.urlPrefixes; delete server.logoPrefixes;
+      delete server.urlPrefixes; delete server.logoPrefixes; delete server.legacyFormat;
       try{ await IDB.put(STORES.servers, server); }catch(e){}
 
       QueryModule.invalidateCaches();
@@ -3058,6 +3210,7 @@ const PlayerModule = {
     pause: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>',
     seekBack5: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-9.36L1 10"/></svg><span>5</span>',
     seekFwd5: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.49-9.36L23 10"/></svg><span>5</span>',
+    chevronUp: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 14 12 8 18 14"/></svg>',
     lockOpen: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.35-2.2"/></svg>',
     lockClosed: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
     volumeOn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="10.5 4.5 5.5 8.5 2 8.5 2 15.5 5.5 15.5 10.5 19.5 10.5 4.5" fill="currentColor" stroke="none"/><path d="M15.3 8.3a5 5 0 0 1 0 7.4"/><path d="M18.6 5a9.5 9.5 0 0 1 0 14"/></svg>',
@@ -3492,13 +3645,15 @@ const PlayerModule = {
     const video = qs('#video-player');
     const HOLD_THRESHOLD = 380; // ms segurando antes de virar "2x"
     const TAP_GAP = 300;        // janela pra um 2º toque contar como duplo
-    const LOCK_DRAG_PX = 56;    // arrasto pra cima (px) pra travar o 2x
+    const LOCK_DRAG_PX = 84;    // arrasto pra cima (px) até a alça chegar no cadeado (= curso da alça no trilho, ver CSS)
 
     let holdTimer = null;
     let holdEngaged = false;
     let downInSide = false;
     let downIsLeft = false;
     let downY = 0;
+    let lastX = 0, lastY = 0;   // última posição do dedo (engata o 2x exatamente onde ele está)
+    let dragBaseY = 0;          // Y do dedo no momento em que o 2x engatou — base do arrasto pra travar
     let pendingTapTimer = null;
     let pendingTapSide = null; // 'left' | 'right' | null
 
@@ -3535,13 +3690,14 @@ const PlayerModule = {
     const attachWindowTracking = () => {
       const moveEvt = window.PointerEvent ? 'pointermove' : 'mousemove';
       winMoveHandler = (e) => {
-        const dy = downY - e.clientY; // positivo = arrastou pra cima
+        if(e.cancelable) e.preventDefault(); // nada de rolagem/seleção durante o arrasto
+        const dy = dragBaseY - e.clientY; // positivo = arrastou pra cima
         this._updateLockDragUI(Math.max(0, dy), LOCK_DRAG_PX);
         if(!this._sideHoldLocked && dy >= LOCK_DRAG_PX){
           this._lockSideHold();
         }
       };
-      window.addEventListener(moveEvt, winMoveHandler);
+      window.addEventListener(moveEvt, winMoveHandler, { passive: false });
 
       const upEvt = window.PointerEvent ? 'pointerup' : 'mouseup';
       winUpHandler = () => finishHold(false);
@@ -3561,16 +3717,28 @@ const PlayerModule = {
       if(zone === null){ downInSide = false; return; } // faixa do meio: continua sendo só mostrar/esconder controles
       downInSide = true;
       downIsLeft = (zone === 'left');
-      downY = e.clientY;
+      downY = lastY = e.clientY;
+      lastX = e.clientX;
       this._sideGestureOwnsNextClick = true;
+      // Garante que move/up desse dedo continuam chegando aqui mesmo se ele
+      // sair da área do vídeo durante o arrasto pra cima.
+      if(e.pointerId !== undefined && video.setPointerCapture){ try{ video.setPointerCapture(e.pointerId); }catch(err){} }
       holdEngaged = false;
       clearHoldTimer();
       holdTimer = setTimeout(() => {
         holdEngaged = true;
+        dragBaseY = lastY;
         this._startSideHold(downIsLeft);
-        this._showLockAffordance();
+        this._showLockAffordance(lastX, lastY);
         attachWindowTracking();
       }, HOLD_THRESHOLD);
+    };
+
+    // Acompanha o dedo ANTES do 2x engatar, só pra saber onde ele está no
+    // instante em que engata (o controle de travar aparece ali).
+    const onMoveBeforeHold = (e) => {
+      if(!downInSide || holdEngaged) return;
+      lastX = e.clientX; lastY = e.clientY;
     };
 
     const onUp = () => {
@@ -3609,48 +3777,67 @@ const PlayerModule = {
 
     if(window.PointerEvent){
       video.addEventListener('pointerdown', onDown);
+      video.addEventListener('pointermove', onMoveBeforeHold);
       video.addEventListener('pointerup', onUp);
       video.addEventListener('pointercancel', onCancel);
       video.addEventListener('pointerleave', onCancel);
     } else {
       video.addEventListener('mousedown', onDown);
+      video.addEventListener('mousemove', onMoveBeforeHold);
       video.addEventListener('mouseup', onUp);
       video.addEventListener('mouseleave', onCancel);
     }
   },
 
-  /** Mostra o trilho/alça de "arraste pra travar" ao engatar o segurar. */
-  _showLockAffordance(){
+  /** Mostra o controle de "arraste pra travar" com a alça EMBAIXO DO DEDO
+   * (x/y = posição do dedo na tela, clientX/clientY). */
+  _showLockAffordance(x, y){
     const affordance = qs('#player-lock-affordance');
-    affordance.classList.remove('locked');
-    affordance.classList.add('show');
+    const overlay = qs('#player-overlay');
+    const r = overlay.getBoundingClientRect();
+    // O trilho fica EXATAMENTE sob o dedo (só encosta na borda se o dedo
+    // estiver a menos de meia largura dela); a dica, que é mais larga, é
+    // que se desloca pra dentro da tela quando não cabe.
+    const px = Math.min(Math.max(x - r.left, 30), r.width - 30);
+    const py = Math.min(Math.max(y - r.top, 190), r.height - 30);
+    affordance.style.left = px + 'px';
+    affordance.style.top = py + 'px';
+    qs('#player-lock-target').innerHTML = this.ICONS.lockOpen;
+    qs('#player-lock-handle').innerHTML = this.ICONS.chevronUp;
     const hint = qs('#player-lock-hint');
-    hint.textContent = 'Arraste para travar';
+    hint.textContent = 'Arraste pra cima para travar';
+    hint.style.transform = '';
+    affordance.classList.remove('locked');
     this._updateLockDragUI(0, 1);
+    affordance.classList.add('show');
+    const hr = hint.getBoundingClientRect();
+    const overRight = hr.right - (r.right - 8), overLeft = (r.left + 8) - hr.left;
+    if(overRight > 0) hint.style.transform = 'translateX(' + (-overRight) + 'px)';
+    else if(overLeft > 0) hint.style.transform = 'translateX(' + overLeft + 'px)';
   },
 
-  /** Esconde o trilho/alça (chamado sempre que solta o dedo, travado ou não). */
+  /** Esconde o controle (sempre que solta o dedo, travado ou não). */
   _hideLockAffordance(){
     const affordance = qs('#player-lock-affordance');
     affordance.classList.remove('show');
     affordance.classList.remove('locked');
-    const handle = qs('#player-lock-handle');
-    handle.style.transform = '';
+    qs('#player-lock-handle').style.transform = '';
   },
 
-  /** Move a alcinha dentro do trilho conforme o arrasto pra cima (0..maxDrag). */
+  /** A alça acompanha o dedo pra cima, 1:1, até o cadeado (maxDrag px). */
   _updateLockDragUI(dy, maxDrag){
     const handle = qs('#player-lock-handle');
-    const progress = Math.min(dy / maxDrag, 1);
-    const trackTravel = 56; // px que a alça percorre dentro do trilho
-    handle.style.transform = `translate(-50%, ${-progress * trackTravel}px)`;
+    handle.style.transform = 'translateY(' + (-Math.min(dy, maxDrag)) + 'px)';
   },
 
   /** Trava o "2x" — a partir daqui ele continua mesmo depois de soltar o dedo. */
   _lockSideHold(){
     this._sideHoldLocked = true;
     qs('#player-lock-affordance').classList.add('locked');
-    qs('#player-lock-hint').textContent = 'Travado';
+    qs('#player-lock-target').innerHTML = this.ICONS.lockClosed;
+    qs('#player-lock-handle').innerHTML = '2x';
+    qs('#player-lock-hint').textContent = 'Travado — pode soltar';
+    if(navigator.vibrate){ try{ navigator.vibrate(15); }catch(e){} } // "clique" tátil ao travar, onde existir
   },
 
   /** Badge central passa a mostrar um cadeado fechado junto do "2x". */
@@ -3698,6 +3885,7 @@ const PlayerModule = {
   _startSideHold(isLeft){
     const video = qs('#video-player');
     this._sideHoldActive = true;
+    this._rewindTarget = null; // só o retroceder usa (ver abaixo)
     this._sideHoldWasPlaying = !video.paused;
     this._sideHoldOriginalRate = video.playbackRate || 1;
 
@@ -3709,27 +3897,39 @@ const PlayerModule = {
     indicator.classList.add('show');
 
     if(isLeft){
-      // "Retroceder 2x": não existe playbackRate negativo pra vídeo, então
-      // simula puxando currentTime pra trás — mas em vez de um passo fixo
-      // a cada 50ms (~20 atualizações/s, ficava "picotado"), agora usa
-      // requestAnimationFrame: atualiza a cada frame de tela (até 60x/s)
-      // com o passo calculado pelo tempo REAL decorrido entre frames
-      // (dt * REWIND_RATE), então a velocidade continua exatos 2x mas com
-      // bem mais frames renderizados no caminho.
+      // "Retroceder 2x": vídeo não toca de trás pra frente (não existe
+      // playbackRate negativo), então simulamos com uma sequência de seeks
+      // pra trás com o vídeo pausado — cada seek concluído PINTA o quadro
+      // daquele instante, e a sequência vira o vídeo "andando pra trás".
+      //
+      // O pulo do gato: só pedir o PRÓXIMO seek quando o anterior já
+      // terminou (video.seeking === false). Antes a gente mudava
+      // currentTime a cada frame de tela (~60x/s) — e cada seek novo
+      // CANCELA o que ainda estava decodificando, então nenhum chegava a
+      // ser pintado: a imagem ficava parada e só "pulava" no fim. Agora o
+      // "alvo" anda pra trás a 2x em tempo real, e o vídeo vai buscando o
+      // alvo na velocidade que o aparelho consegue decodificar: aparelho
+      // rápido = rebobinar fluido; aparelho fraco = menos quadros, mas
+      // sempre mostrando imagem de verdade e na velocidade certa.
       const REWIND_RATE = 2; // 2x
       video.pause();
+      let target = video.currentTime;
+      this._rewindTarget = target;
       let lastTs = null;
       const step = (ts) => {
         if(lastTs === null) lastTs = ts;
         const dt = Math.min((ts - lastTs) / 1000, 0.25); // trava dt se a aba ficou em background
         lastTs = ts;
-        const isLive = this.currentContent && this.currentContent.tipo === 'live';
         let minTime = 0;
-        if(isLive){
+        if(this.currentContent && this.currentContent.tipo === 'live'){
           const range = this._getLiveWindowRange(video);
           if(range) minTime = range[0];
         }
-        video.currentTime = Math.max(minTime, video.currentTime - dt * REWIND_RATE);
+        target = Math.max(minTime, target - dt * REWIND_RATE);
+        this._rewindTarget = target;
+        if(!video.seeking && Math.abs(video.currentTime - target) > 0.04){
+          video.currentTime = target;
+        }
         this._updateSeekUI();
         this._sideHoldRAF = requestAnimationFrame(step);
       };
@@ -3748,6 +3948,12 @@ const PlayerModule = {
     this._sideHoldActive = false;
     this._sideHoldLocked = false; // defensivo — se fechou/trocou de vídeo travado, não deixa "preso" em 2x
     if(this._sideHoldRAF){ cancelAnimationFrame(this._sideHoldRAF); this._sideHoldRAF = null; }
+    // Retrocedendo: termina exatamente no ponto onde o "alvo" chegou (o
+    // último seek pedido pode ter ficado um pouquinho atrás dele).
+    if(typeof this._rewindTarget === 'number' && isFinite(this._rewindTarget)){
+      try{ video.currentTime = this._rewindTarget; }catch(e){}
+    }
+    this._rewindTarget = null;
     video.playbackRate = this._sideHoldOriginalRate || 1;
     if(this._sideHoldWasPlaying){
       if(video.paused) video.play().catch(()=>{});
@@ -4240,6 +4446,7 @@ const PlayerModule = {
     if(this._sideHoldActive){ try{ video.playbackRate = this._sideHoldOriginalRate || 1; }catch(e){} }
     this._sideHoldActive = false;
     this._sideHoldLocked = false;
+    this._rewindTarget = null;
     try{ this._hideLockAffordance(); }catch(e){}
     try{ qs('#player-seek-feedback').classList.remove('locked'); }catch(e){}
     if(this.hls){ try{ this.hls.destroy(); }catch(e){} this.hls = null; }
@@ -5217,7 +5424,9 @@ function renderServerItem(s){
   }
   if(isError){
     statsChildren.push(el('span', { style:'color:var(--danger);' }, ['Erro: ' + (s.lastError || 'falha na última atualização')]));
-  } else if(!serverHasBlocks(s) && !isUpdating){
+  } else if(s.legacyFormat && !isUpdating){
+    // Só servidor que a migração de banco converteu (ver IDB.open) — não
+    // servidor cujo download simplesmente falhou (esse mostra o erro acima).
     statsChildren.push(el('span', { style:'color:var(--danger);' }, ['Precisa atualizar (formato antigo)']));
   }
   sinfo.appendChild(el('div', { class:'sstats' }, statsChildren));
@@ -5980,11 +6189,47 @@ function setupEventListeners(){
 /* ======================================================================
    APP INITIALIZATION
    ====================================================================== */
+/** Último recurso se nem o reparo automático conseguiu abrir o banco
+ * (ex: armazenamento do aparelho cheio/bloqueado): em vez de tela em
+ * branco, mostra o erro e um botão pra apagar os dados do app e recomeçar. */
+function showFatalDbScreen(err){
+  const box = document.createElement('div');
+  box.id = 'fatal-db-screen';
+  box.style.cssText = 'position:fixed;inset:0;z-index:9999;background:#0a0b12;color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;text-align:center;font-family:system-ui,sans-serif;';
+  const detail = (err && ((err.name ? err.name + ': ' : '') + (err.message || ''))) || String(err);
+  const title = document.createElement('div');
+  title.style.cssText = 'font-size:20px;font-weight:800;';
+  title.textContent = 'Não foi possível abrir o banco de dados do app';
+  const txt = document.createElement('div');
+  txt.style.cssText = 'max-width:520px;color:#aab;font-size:14px;';
+  txt.textContent = 'Isso pode acontecer se o armazenamento do aparelho estiver cheio. Tente de novo ou apague os dados do app e recomece (os servidores precisarão ser cadastrados de novo).';
+  const det = document.createElement('div');
+  det.style.cssText = 'max-width:520px;color:#778;font-size:12px;word-break:break-all;';
+  det.textContent = detail;
+  const row = document.createElement('div');
+  row.style.cssText = 'display:flex;gap:10px;flex-wrap:wrap;justify-content:center;';
+  const btnRetry = document.createElement('button');
+  btnRetry.textContent = 'Tentar de novo';
+  btnRetry.style.cssText = 'padding:12px 18px;border-radius:10px;border:1px solid #445;background:#1a1c2a;color:#fff;font-size:15px;';
+  btnRetry.onclick = () => location.reload();
+  const btnWipe = document.createElement('button');
+  btnWipe.textContent = 'Apagar dados do app e recomeçar';
+  btnWipe.style.cssText = 'padding:12px 18px;border-radius:10px;border:0;background:#d9534f;color:#fff;font-size:15px;';
+  btnWipe.onclick = () => {
+    const d = indexedDB.deleteDatabase(DB_NAME);
+    d.onsuccess = d.onerror = d.onblocked = () => location.reload();
+  };
+  row.appendChild(btnRetry); row.appendChild(btnWipe);
+  box.appendChild(title); box.appendChild(txt); box.appendChild(det); box.appendChild(row);
+  document.body.appendChild(box);
+}
+
 async function initApp(){
   try{
     State.db = await IDB.open();
   }catch(err){
-    showToast('Erro ao abrir IndexedDB. Verifique as permissões do navegador.', 'error');
+    pushDebugLog('Banco inacessível mesmo após reparo: ' + (err && (err.message || err.name)), true);
+    showFatalDbScreen(err);
     return;
   }
 
@@ -6014,20 +6259,13 @@ async function initApp(){
   const versionLabel = qs('#app-version-label');
   if(versionLabel) versionLabel.textContent = 'v' + APP_VERSION;
   Router.render();
-  warnLegacyServers();
+  if(State.dbWasRepaired){
+    showToast('O banco de dados do app estava incompatível e foi recriado. Seus servidores foram mantidos — vá em Servidores e toque em "Atualizar Todos".', 'error');
+  }
 
   // Pré-carrega a página 1 de Filmes/Séries/Ao Vivo em segundo plano (fica
   // no cache), então ao trocar de aba pela primeira vez já está pronto.
   prefetchFirstPages();
-}
-
-/** Servidor cadastrado antes da v7 ainda não tem conteúdo no formato em
- * bloco (a migração apaga o formato antigo) — avisa uma vez por abertura
- * pra resincronizar, senão as listas aparecem vazias sem explicação. */
-function warnLegacyServers(){
-  const pending = Array.from(State.servers.values()).filter(s => !serverHasBlocks(s));
-  if(!pending.length) return;
-  showToast(pending.length + ' servidor(es) precisam ser atualizados pro novo formato de armazenamento — vá em Servidores e toque em "Atualizar Todos".', 'error');
 }
 
 async function prefetchFirstPages(){
@@ -6119,7 +6357,7 @@ window.addEventListener('unhandledrejection', function(e){
   if(State.db){ try{ State.db.close(); }catch(err){} }
   State.db = null;
   showToast('A conexão com o banco foi interrompida. Tentando reconectar...', 'error');
-  IDB.open().then(function(db){
+  IDB.reopen().then(function(db){
     State.db = db;
     pushDebugLog('Reconectado ao banco com sucesso.');
     showToast('Reconectado — pode tentar novamente.', 'success');
