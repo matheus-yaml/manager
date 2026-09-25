@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>const APP_VERSION = '1.0.39';</script>
+<script>const APP_VERSION = '1.0.40';</script>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -672,6 +672,10 @@ html.native-pip #player-topbar,html.native-pip #player-controls-bottom,html.nati
 html.native-pip #player-playpause-feedback,html.native-pip #player-lock-affordance,html.native-pip #player-buffering,
 html.native-pip #debug-panel,html.native-pip #toast-wrap,html.native-pip #boot-progress{display:none !important;}
 html.native-pip #video-player{width:100vw !important;height:100vh !important;object-fit:contain;}
+#player-zoom-badge{position:absolute;top:18px;left:50%;transform:translateX(-50%);z-index:6;padding:6px 12px;border-radius:20px;
+  background:rgba(10,11,18,.75);color:#fff;font-size:13px;font-weight:700;opacity:0;transition:opacity .2s;pointer-events:none;}
+#player-zoom-badge.show{opacity:1;}
+#player-overlay{overflow:hidden;} /* vídeo ampliado não vaza pra fora */
 #player-seek-track:hover,#player-seek-track.dragging{height:7px;}
 /* Área de toque bem maior que a barra fininha (fica invisível): dá pra
    pegar a bolinha com o dedo sem precisar acertar os 5px da barra. */
@@ -3756,6 +3760,7 @@ const PlayerModule = {
       // (ver onDown em _ensureSideGestures), então esse clique nativo
       // sempre chega aqui livre pra servir de "toque pra destravar".
       if(this._sideHoldLocked){ this._unlockSideHold(); return; }
+      if(this._pinching || Date.now() < (this._suppressClickUntil || 0)) return; // acabou de fazer zoom com pinça
       // Gesto de lateral (segurar ou clique duplo) já tratou esse clique
       // sozinho via pointerdown/up — não deixa o clique nativo, que
       // dispara em seguida de qualquer forma, mostrar/esconder de novo.
@@ -3771,6 +3776,7 @@ const PlayerModule = {
       this.toggleFullscreen();
     });
     this._ensureSideGestures();
+    this._ensurePinchZoom();
 
     playPauseBtn.addEventListener('click', (e) => { e.stopPropagation(); this.togglePlayPause(); });
 
@@ -3821,6 +3827,7 @@ const PlayerModule = {
       this.toggleFullscreen();
     });
     document.addEventListener('fullscreenchange', () => {
+      if(!document.fullscreenElement) this._unlockOrientation(); // saiu da tela cheia (botão, voltar, gesto): libera a rotação
       fullscreenBtn.innerHTML = document.fullscreenElement ? this.ICONS.fullscreenExit : this.ICONS.fullscreenEnter;
     });
 
@@ -4029,8 +4036,32 @@ const PlayerModule = {
     if(document.fullscreenElement){
       document.exitFullscreen().catch(()=>{});
     } else if(overlay.requestFullscreen){
-      overlay.requestFullscreen().catch(()=>{});
+      overlay.requestFullscreen().then(() => this._lockLandscapeIfPhone()).catch(()=>{});
     }
+  },
+
+  /** Celular/tablet: ao entrar em tela cheia, gira pra horizontal (se o
+   * vídeo for "deitado", que é quase sempre). No computador não faz nada.
+   * Navegador: screen.orientation.lock (só funciona em tela cheia).
+   * APK: o mesmo comando, via plugin cordova-plugin-screen-orientation. */
+  _lockLandscapeIfPhone(){
+    const touch = (navigator.maxTouchPoints || 0) > 0 || 'ontouchstart' in window;
+    if(!touch) return;
+    const v = qs('#video-player');
+    if(v.videoWidth && v.videoHeight && v.videoHeight > v.videoWidth) return; // vídeo "em pé": deixa como está
+    try{
+      const o = screen.orientation;
+      if(o && o.lock){
+        const r = o.lock('landscape');
+        if(r && r.catch) r.catch(err => pushDebugLog('Girar tela: ' + (err && (err.name + ' ' + err.message)), true));
+        this._orientationLocked = true;
+      }
+    }catch(err){ pushDebugLog('Girar tela: ' + (err && err.message), true); }
+  },
+  _unlockOrientation(){
+    if(!this._orientationLocked) return;
+    this._orientationLocked = false;
+    try{ if(screen.orientation && screen.orientation.unlock) screen.orientation.unlock(); }catch(e){}
   },
 
   /**
@@ -4318,6 +4349,14 @@ const PlayerModule = {
       clearHoldTimer();
     };
 
+    // Pinça com 2 dedos cancela qualquer gesto de 1 dedo que tinha começado.
+    this._cancelSideGesture = () => {
+      clearTimeout(pendingTapTimer); pendingTapTimer = null; pendingTapSide = null;
+      if(holdEngaged) finishHold(true);
+      downInSide = false;
+      clearHoldTimer();
+    };
+
     if(window.PointerEvent){
       video.addEventListener('pointerdown', onDown);
       video.addEventListener('pointermove', onMoveBeforeHold);
@@ -4330,6 +4369,87 @@ const PlayerModule = {
       video.addEventListener('mouseup', onUp);
       video.addEventListener('mouseleave', onCancel);
     }
+  },
+
+  /* ------------------ Zoom com pinça (celular) ------------------
+   * 2 dedos afastando/aproximando = zoom (1x a 4x), e arrastando os 2
+   * dedos juntos = move a imagem ampliada. Soltar perto de 1x volta ao
+   * normal (pra desfazer o zoom é só fazer a pinça ao contrário). Zoom
+   * zera ao trocar de vídeo/fechar. */
+  _zoom: { s: 1, x: 0, y: 0 },
+  _applyZoom(animate){
+    const v = qs('#video-player');
+    const z = this._zoom;
+    v.style.transition = animate ? 'transform .22s ease' : 'none';
+    v.style.transform = (z.s === 1 && !z.x && !z.y) ? '' : 'translate(' + z.x + 'px,' + z.y + 'px) scale(' + z.s + ')';
+  },
+  resetZoom(){
+    this._zoom = { s: 1, x: 0, y: 0 };
+    this._applyZoom(false);
+    const b = qs('#player-zoom-badge'); if(b) b.classList.remove('show');
+  },
+  _clampZoomPan(){
+    const v = qs('#video-player'), z = this._zoom;
+    const maxX = v.clientWidth * (z.s - 1) / 2, maxY = v.clientHeight * (z.s - 1) / 2;
+    z.x = Math.max(-maxX, Math.min(maxX, z.x));
+    z.y = Math.max(-maxY, Math.min(maxY, z.y));
+  },
+  _showZoomBadge(){
+    let b = qs('#player-zoom-badge');
+    if(!b){ b = el('div', { id:'player-zoom-badge' }); qs('#player-overlay').appendChild(b); }
+    b.textContent = 'Zoom ' + this._zoom.s.toFixed(1).replace('.', ',') + 'x';
+    b.classList.add('show');
+    clearTimeout(this._zoomBadgeTimer);
+    this._zoomBadgeTimer = setTimeout(() => b.classList.remove('show'), 900);
+  },
+  _ensurePinchZoom(){
+    if(this._pinchReady) return;
+    this._pinchReady = true;
+    const v = qs('#video-player');
+    const overlay = qs('#player-overlay');
+    let start = null; // { dist, midX, midY, s, x, y }
+    const info = (t) => {
+      const a = t[0], b = t[1];
+      return { dist: Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY), midX: (a.clientX + b.clientX) / 2, midY: (a.clientY + b.clientY) / 2 };
+    };
+    overlay.addEventListener('touchstart', (e) => {
+      if(e.touches.length !== 2) return;
+      if(e.target.closest && e.target.closest('#player-controls-bottom, #player-topbar')) return;
+      const i = info(e.touches);
+      const r = v.getBoundingClientRect();
+      // centro do vídeo SEM o deslocamento atual (o scale é em torno do centro)
+      const cx = r.left + r.width / 2 - this._zoom.x, cy = r.top + r.height / 2 - this._zoom.y;
+      start = { dist: i.dist || 1, midX: i.midX, midY: i.midY, s: this._zoom.s, x: this._zoom.x, y: this._zoom.y, cx, cy };
+      this._pinching = true;
+      if(this._cancelSideGesture) this._cancelSideGesture();
+      e.preventDefault();
+    }, { passive: false });
+    overlay.addEventListener('touchmove', (e) => {
+      if(!start || e.touches.length !== 2) return;
+      e.preventDefault();
+      const i = info(e.touches);
+      const z = this._zoom;
+      const ns = Math.max(1, Math.min(4, start.s * i.dist / start.dist));
+      // O ponto do vídeo que estava entre os dedos continua entre os dedos
+      // (zoom "onde você pinçou", e arrastar os 2 dedos move a imagem).
+      const k = ns / start.s;
+      z.s = ns;
+      z.x = i.midX - start.cx - k * (start.midX - start.cx - start.x);
+      z.y = i.midY - start.cy - k * (start.midY - start.cy - start.y);
+      this._clampZoomPan();
+      this._applyZoom(false);
+      this._showZoomBadge();
+    }, { passive: false });
+    const end = (e) => {
+      if(!start) return;
+      if(e.touches && e.touches.length >= 2) return;
+      start = null;
+      this._suppressClickUntil = Date.now() + 450; // o "click" que pode vir depois da pinça não pausa/mostra controles
+      setTimeout(() => { this._pinching = false; }, 350);
+      if(this._zoom.s < 1.08){ this._zoom = { s: 1, x: 0, y: 0 }; this._applyZoom(true); }
+    };
+    overlay.addEventListener('touchend', end);
+    overlay.addEventListener('touchcancel', end);
   },
 
   /** Mostra o controle de "arraste pra travar" com a alça EMBAIXO DO DEDO
@@ -4984,6 +5104,7 @@ const PlayerModule = {
   },
 
   cleanup(){
+    this.resetZoom(); // trocou de vídeo/fechou: sem zoom
     if(this.retryTimer){ clearTimeout(this.retryTimer); this.retryTimer = null; }
     if(this.stallWatchdog){ clearInterval(this.stallWatchdog); this.stallWatchdog = null; }
     if(this._hideControlsTimer){ clearTimeout(this._hideControlsTimer); this._hideControlsTimer = null; }
@@ -5017,6 +5138,7 @@ const PlayerModule = {
   close(){
     this.playToken++; // invalidate any pending retries/callbacks
     if(document.fullscreenElement) document.exitFullscreen().catch(()=>{});
+    this._unlockOrientation();
     const video = qs('#video-player');
     if(this.currentContent && this.currentContent.tipo !== 'live' && video.duration && !isNaN(video.duration)){
       ProgressModule.saveProgress(this.currentContent.id, video.currentTime, video.duration, this.currentContent.seriesKey, this.currentContent._loc);
