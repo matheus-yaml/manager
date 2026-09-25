@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>const APP_VERSION = '1.0.54';</script>
+<script>const APP_VERSION = '1.0.55';</script>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -427,6 +427,21 @@ html.tv .content-card:focus{outline:3px solid #fff;outline-offset:0;transform:sc
 html.tv .nav-item:focus{outline:2px solid #fff;outline-offset:-2px;background:rgba(var(--accent-rgb),.35);color:#fff;}
 html.tv button:focus, html.tv select:focus, html.tv .chip:focus, html.tv .episode-row:focus, html.tv [tabindex]:focus{outline:3px solid #fff;outline-offset:2px;}
 html.tv .episode-row:focus{background:rgba(var(--accent-rgb),.22);}
+/* caixa de marcar com foco do controle: a caixa e a linha inteira acendem */
+html.tv input[type=checkbox]:focus, html.tv input[type=radio]:focus{outline:3px solid #fff;outline-offset:3px;box-shadow:0 0 0 7px rgba(var(--accent-rgb),.55);}
+html.tv label:focus-within{background:rgba(var(--accent-rgb),.22);border-radius:8px;box-shadow:0 0 0 2px rgba(255,255,255,.6);}
+html.tv input[type=color]:focus{outline:3px solid #fff;outline-offset:2px;}
+/* Sugira-me no projetor: destaque compacto (a tela tem só 540px de altura) */
+html.tv .suggest-lead{display:none;}
+html.tv .suggest-hero{padding:10px;gap:14px;}
+html.tv .suggest-hero .sh-poster{flex:0 0 104px;width:104px;height:156px;}
+html.tv .suggest-hero .sh-poster .ph{font-size:30px;}
+html.tv .suggest-hero .sh-info{gap:5px;}
+html.tv .suggest-hero .sh-kicker{font-size:10px;}
+html.tv .suggest-hero .sh-title{font-size:16px;}
+html.tv .suggest-hero .sh-meta, html.tv .suggest-hero .sh-why{font-size:11.5px;}
+html.tv .suggest-hero .sh-actions{gap:8px;margin-top:2px;}
+html.tv .suggest-roll .dice{font-size:13px;}
 html.tv .car-track{padding:12px 12px 14px;}
 /* campo de texto "trancado" (focado pelo controle, sem teclado): OK pra digitar */
 html.tv input.tv-locked:focus{outline:3px dashed #fff;outline-offset:2px;}
@@ -8331,7 +8346,7 @@ const TvNav = {
     root.querySelectorAll(this.CLICKABLE).forEach(e => list.push(e));
     for(const e of list){
       if(e.hasAttribute('tabindex') || /^(BUTTON|A|INPUT|SELECT|TEXTAREA)$/.test(e.tagName)) continue;
-      if(e.querySelector('input, select, textarea') && e.tagName !== 'LABEL') continue; // é só um contêiner
+      if(e.querySelector('input, select, textarea, button')) continue; // é só um contêiner (o campo dentro é que recebe o foco)
       e.setAttribute('tabindex', '0');
       e.setAttribute('role', 'button');
     }
@@ -8407,6 +8422,13 @@ const TvNav = {
           return;
         }
         PlayerModule._showControls(); PlayerModule._scheduleHideControls();
+      }
+
+      // ---- caixa de marcar: OK marca/desmarca (o Enter nativo não faz isso) ----
+      if(k === 'Enter' && a && a.tagName === 'INPUT' && /^(checkbox|radio)$/i.test(a.type)){
+        e.preventDefault(); e.stopPropagation();
+        a.click();
+        return;
       }
 
       // ---- "botão" que não é <button> (ex: × de fechar): OK = clique ----
