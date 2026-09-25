@@ -147,6 +147,10 @@ docker run --network host --rm -it \
     echo '🖼️ Adicionando PiP nativo...'
     cordova plugin add /workspace/cordova-plugin-manager-pip
 
+    # girar a tela pra horizontal ao entrar em tela cheia (screen.orientation.lock)
+    echo '🔄 Adicionando rotação de tela...'
+    cordova plugin add cordova-plugin-screen-orientation
+
     cp -rf /workspace/config.xml ./
     # o config.xml aponta pra esse arquivo (resource-file) — ele precisa
     # estar na raiz do projeto Cordova, senão: 'Source path does not exist'

@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>const APP_VERSION = '1.0.40';</script>
+<script>const APP_VERSION = '1.0.41';</script>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -538,18 +538,16 @@ a:focus,
 .episode-row .estatus.done{color:var(--accent-3);}
 .episode-row .eprog{width:80px;height:4px;background:var(--bg-3);border-radius:4px;overflow:hidden;flex-shrink:0;}
 .episode-row .eprog .f{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent-2));}
-.episode-row .emain{flex:1;min-width:0;display:flex;align-items:center;gap:12px;}
+.episode-row .eline{flex:1;min-width:0;display:flex;align-items:center;gap:12px;}
 .episode-row .eside{display:flex;align-items:center;gap:12px;flex-shrink:0;}
-/* Celular: capa em cima do nome (antes a capa + status + barra espremiam o
-   nome até sumir). Nome pode quebrar em até 2 linhas. */
+/* Celular: só a capa sobe (mesmo tamanho) e o resto fica numa linha embaixo:
+   nome | status | barra | baixar. */
 @media (max-width:700px){
-  .episode-row{align-items:stretch;gap:10px;padding:10px;}
-  .episode-row .emain{flex-direction:column;align-items:stretch;gap:7px;}
-  .episode-row .eth{width:100%;height:auto;aspect-ratio:16/9;max-width:260px;}
+  .episode-row{flex-direction:column;align-items:flex-start;gap:8px;padding:10px 12px;}
+  .episode-row .eline{width:100%;gap:10px;}
   .episode-row .ename{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;line-height:1.35;}
-  .episode-row .eside{flex-direction:column;justify-content:center;align-items:center;gap:8px;width:76px;}
-  .episode-row .eside .estatus{white-space:normal;text-align:center;}
-  .episode-row .eprog{width:64px;}
+  .episode-row .eside{gap:8px;}
+  .episode-row .eprog{width:48px;}
 }
 
 /* player */
@@ -5735,8 +5733,11 @@ async function renderSeriesDetailView(container){
       eth.appendChild(img);
     }
     const episodeName = resolveContentName(content, entry.name);
-    // capa + nome juntos: no celular a capa fica EM CIMA do nome (ver CSS)
-    row.appendChild(el('div', { class:'emain' }, [eth, el('div', { class:'ename' }, [episodeName])]));
+    // capa | linha com nome + status + barra + baixar. No celular a capa
+    // fica sozinha EM CIMA (mesmo tamanho) e a linha inteira vai embaixo (ver CSS).
+    row.appendChild(eth);
+    const line = el('div', { class:'eline' }, [el('div', { class:'ename' }, [episodeName])]);
+    row.appendChild(line);
     let statusText = 'Não iniciado';
     let statusClass = '';
     if(prog){
@@ -5744,9 +5745,9 @@ async function renderSeriesDetailView(container){
       else if(prog.porcentagem > 0){ statusText = Math.round(prog.porcentagem) + '%'; }
     }
     const side = el('div', { class:'eside' });
+    line.appendChild(side);
     side.appendChild(el('div', { class:'estatus'+(statusClass?' '+statusClass:'') }, [statusText]));
     side.appendChild(el('div', { class:'eprog' }, [el('div',{class:'f', style:'width:'+(prog?Math.min(100,prog.porcentagem):0)+'%'})]));
-    row.appendChild(side);
     const dlBtn = el('button', {
       style:'width:28px;height:28px;border-radius:50%;background:var(--bg-3);display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0;margin-left:4px;',
       title:'Baixar episódio'
