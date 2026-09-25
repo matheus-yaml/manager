@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>const APP_VERSION = '1.0.29';</script>
+<script>const APP_VERSION = '1.0.39';</script>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -343,8 +343,47 @@ a:focus,
   position:absolute;bottom:0;left:0;right:0;height:4px;background:rgba(255,255,255,.18);z-index:1;
 }
 .content-card .progress-bar-mini .fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent-2));}
-.content-card .next-ep-badge{position:absolute;left:6px;bottom:6px;padding:3px 7px;border-radius:6px;font-size:10.5px;font-weight:700;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent-2));box-shadow:0 2px 6px rgba(0,0,0,.4);}
+.content-card .next-ep-badges{position:absolute;left:6px;bottom:6px;display:flex;flex-direction:column;align-items:flex-start;gap:4px;z-index:1;}
+.content-card .next-ep-badge{padding:3px 7px;border-radius:6px;font-size:10.5px;font-weight:700;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent-2));box-shadow:0 2px 6px rgba(0,0,0,.4);}
+.content-card .next-ep-badge.live{background:linear-gradient(135deg,#e5484d,#b4232a);}
 
+.xs-list{display:flex;flex-direction:column;gap:8px;}
+.xs-row{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:var(--radius-sm);background:var(--bg-2);border:1px solid var(--border);}
+.xs-row.current{border-color:rgba(var(--accent-rgb),.6);}
+.xs-info{flex:1;min-width:0;}
+.xs-server{font-size:11px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--accent);}
+.xs-name{font-size:13.5px;font-weight:700;overflow-wrap:anywhere;}
+.xs-sub{font-size:11.5px;color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+/* ---------- carrossel (Dashboard: Adicionados Recentemente) ---------- */
+.carousel{position:relative;margin:0 -4px 10px;}
+.car-measure{position:absolute;left:4px;right:4px;top:0;height:0;overflow:hidden;visibility:hidden;pointer-events:none;}
+.car-track{
+  display:flex;gap:var(--car-gap,18px);overflow-x:auto;overflow-y:hidden;padding:12px 4px 14px;
+  scroll-snap-type:x proximity;scroll-behavior:smooth;-webkit-overflow-scrolling:touch;
+  overscroll-behavior-x:contain;scrollbar-width:none;
+}
+.car-track::-webkit-scrollbar{display:none;}
+.car-item{flex:0 0 var(--car-w,164px);scroll-snap-align:start;}
+.car-server{font-size:12px;font-weight:800;padding:4px 10px;border-radius:20px;color:#fff;
+  background:linear-gradient(135deg,var(--accent),var(--accent-2));margin-right:auto;}
+.car-server:empty{display:none;}
+.car-server.swap{animation:car-server-swap .35s ease;}
+@keyframes car-server-swap{from{opacity:0;transform:translateY(-5px);}to{opacity:1;transform:none;}}
+.car-item > .content-card{height:100%;}
+.car-item.enter{animation:car-in .3s ease both;}
+@keyframes car-in{from{opacity:0;}to{opacity:1;}} /* só aparece (fade) — sem deslizar */
+.car-sentinel{flex:0 0 80px;display:flex;align-items:center;justify-content:center;}
+.car-nav{
+  position:absolute;top:50%;transform:translateY(-50%);z-index:3;width:36px;height:36px;border-radius:50%;
+  background:rgba(10,11,18,.72);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
+  border:1px solid rgba(255,255,255,.28);color:#fff;font-size:24px;font-weight:700;line-height:1;padding-bottom:3px;
+  display:flex;align-items:center;justify-content:center;opacity:.85;transition:opacity .2s, transform .15s;
+  box-shadow:0 4px 14px -4px rgba(0,0,0,.7);
+}
+.car-nav.prev{left:6px;} .car-nav.next{right:6px;}
+.carousel:hover .car-nav{opacity:1;}
+.car-nav:hover{transform:translateY(-50%) scale(1.08);}
+.car-nav.hidden-nav{opacity:0 !important;pointer-events:none;}
 /* ---------- Sugira-me ---------- */
 .suggest-lead{color:var(--text-2);font-size:13.5px;margin:-8px 0 16px;}
 .suggest-roll .dice{display:inline-block;font-size:16px;line-height:1;}
@@ -499,6 +538,19 @@ a:focus,
 .episode-row .estatus.done{color:var(--accent-3);}
 .episode-row .eprog{width:80px;height:4px;background:var(--bg-3);border-radius:4px;overflow:hidden;flex-shrink:0;}
 .episode-row .eprog .f{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent-2));}
+.episode-row .emain{flex:1;min-width:0;display:flex;align-items:center;gap:12px;}
+.episode-row .eside{display:flex;align-items:center;gap:12px;flex-shrink:0;}
+/* Celular: capa em cima do nome (antes a capa + status + barra espremiam o
+   nome até sumir). Nome pode quebrar em até 2 linhas. */
+@media (max-width:700px){
+  .episode-row{align-items:stretch;gap:10px;padding:10px;}
+  .episode-row .emain{flex-direction:column;align-items:stretch;gap:7px;}
+  .episode-row .eth{width:100%;height:auto;aspect-ratio:16/9;max-width:260px;}
+  .episode-row .ename{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;line-height:1.35;}
+  .episode-row .eside{flex-direction:column;justify-content:center;align-items:center;gap:8px;width:76px;}
+  .episode-row .eside .estatus{white-space:normal;text-align:center;}
+  .episode-row .eprog{width:64px;}
+}
 
 /* player */
 #player-overlay{
@@ -1273,7 +1325,7 @@ const State = {
   settings: { ...DEFAULT_SETTINGS },
   pageCache: new Map(), // cache em memória: chave -> {items,total,catOptions,serverIds}
   pageFetchesInFlight: new Map(), // chave -> Promise já em andamento (evita refazer a mesma busca 2x se o usuário clicar enquanto o pré-carregamento ainda roda)
-  dashboardCache: null, // {continueList, recentGroups}
+  dashboardCache: null, // {continueList, recentFeed}
   favoritesCache: null, // {favMovies, favLive, favSeries}
   continueCache: null,  // array retornado por getContinueWatchingList()
   ui: {
@@ -1530,6 +1582,140 @@ const BootProgress = {
     this._el = null;
     el.style.opacity = '0';
     setTimeout(() => el.remove(), 220);
+  }
+};
+
+/* ======================================================================
+   GRUPOS DE CATEGORIA (Filmes e Séries)
+   ------------------------------------------------------------------
+   Cada servidor dá nome diferente pra mesma coisa ("Filmes: Terror",
+   "Lançamentos | Terror", "TERROR 4K"...). Aqui cada categoria original é
+   encaixada em gêneros/plataformas por regex (sobre o texto sem acento e
+   minúsculo). A lista de categorias mostra primeiro os GRUPOS e depois só
+   as categorias que não encaixaram em nenhum. Uma categoria pode cair em
+   mais de um grupo ("Terror e Suspense" → Terror E Suspense).
+   Filtro por grupo = valor '@@Nome' em filters.category.
+   ====================================================================== */
+const CategoryGroups = {
+  GENRES: [
+    ['Lançamentos',     /lancamento|estreia|releases?\b|novidade|recem|\bcinema\b/],
+    ['Ação',            /\bac(ao|oes)\b|\baction\b/],
+    ['Aventura',        /aventura|adventure/],
+    ['Animação',        /animac|\banimad|\bdesenhos?\b|cartoon/],
+    ['Animes',          /\banimes?\b/],
+    ['Comédia',         /comedia|comedy|humor|stand ?up/],
+    ['Documentários',   /document/],
+    ['Doramas',         /dorama|k-?drama|\bcorean|\bcoreia|\bkorea/],
+    ['Drama',           /\bdramas?\b/],
+    ['Família',         /familia|family/],
+    ['Fantasia',        /fantasia|fantasy/],
+    ['Ficção',          /ficcao|sci-?fi|science fiction/],
+    ['Guerra',          /guerra|\bwar\b|militar/],
+    ['Infantis',        /infant|\bkids?\b|crianca/],
+    ['Bíblicos',        /biblic|religi|gospel|evangel|cristao|cristaos/],
+    ['Nacional',        /naciona|brasil|brazil/],
+    ['Natalinos',       /natal|christmas/],
+    ['Novelas',         /novela/],
+    ['Policial',        /policia|\bcrimes?\b|criminal|investiga/],
+    ['Romance',         /romance|romantic|romantico/],
+    ['Suspense',        /suspense|misterio|mystery/],
+    ['Thriller',        /thri?ller|triller/],
+    ['Terror',          /terror|horror/],
+    ['Faroeste',        /faroeste|western|velho oeste/],
+    ['Super-heróis',    /marvel|\bdc\b|super ?hero|super-?heroi|super ?heroi|\bherois\b/],
+    ['Musicais e Shows',/\bmusica|musical|\bshows?\b|concert|karaoke/],
+    ['Esportes',        /esporte|sport|futebol|\bufc\b|\bluta/],
+    ['Reality Shows',   /reality/],
+    ['Clássicos',       /classico|classic/],
+    ['Premiados',       /oscar|premiad|award/],
+    ['Legendados',      /legendad|\bleg\b|subtitled/],
+    ['Dublados',        /dublad|\bdub\b/],
+    ['4K / UHD',        /\b4k\b|\buhd\b/],
+    ['Árabes',          /\barabe|\barabic|\barab\b/],
+    ['Mexicanas',       /mexic/],
+    ['Turcas',          /\bturc|\bturk/],
+    ['Indianas',        /indian|bollywood|\bhindi/],
+    ['Asiáticos',       /asiatic|\basian|japon|japan|chines|chinese|tailand/]
+  ],
+  PLATFORMS: [
+    ['Netflix',         /netflix/],
+    ['Prime Video',     /amazon|prime ?video/],
+    ['Disney+',         /disney/],
+    ['HBO / Max',       /\bhbo\b|hbo ?max/],
+    ['Apple TV+',       /apple/],
+    ['Paramount+',      /paramount/],
+    ['Star+',           /star ?\+|star ?plus/],
+    ['Globoplay',       /globo/],
+    ['Crunchyroll',     /crunchyroll/],
+    ['Discovery+',      /discovery/]
+  ],
+  // Ao Vivo tem grupos próprios (canais não têm "gênero" de filme).
+  LIVE: [
+    ['Abertos',          /\babert|\bglobo\b|\bsbt\b|\brecord\b|\bband\b|redetv|\bcultura\b|tv brasil/],
+    ['Esportes',         /esporte|sport|espn|premiere|combate|futebol|\bufc\b|dazn|\bnba\b|\bnfl\b|\bf1\b|formula ?1|\bppv\b|campeonato|libertadores|brasileirao|\bcopa\b/],
+    ['Notícias',         /noticia|\bnews\b|jornal|\bcnn\b/],
+    ['Filmes',           /\bfilmes?\b|\bmovies?\b|cinema|telecine|\bhbo\b|megapix|paramount|\btnt\b|\bspace\b|\bamc\b|studio universal|\bcine/],
+    ['Séries',           /\bseries?\b|warner|\bsony\b|\baxn\b|universal tv|\bfx\b/],
+    ['Infantis',         /infant|\bkids?\b|crianc|cartoon|disney|\bnick|gloob|desenho/],
+    ['Documentários',    /document|discovery|history|nat ?geo|national geographic|animal planet/],
+    ['Variedades',       /variedad|entretenimento|lifestyle|culinaria|\bgnt\b|multishow|\bviva\b/],
+    ['Música',           /musica|\bmusic|\bmtv\b|\bvh1\b|clipe/],
+    ['Rádios',           /\bradios?\b|\bfm\b/],
+    ['Religiosos',       /religi|gospel|evangel|catolic|cancao nova|aparecida|\bigreja/],
+    ['Reality Shows',    /reality|\bbbb\b|big brother|a fazenda/],
+    ['24 Horas',         /\b24 ?h\b|24 ?horas/],
+    ['Novelas',          /novela/],
+    ['Animes',           /\banimes?\b/],
+    ['4K / UHD',         /\b4k\b|\buhd\b/],
+    ['Internacionais',   /internac|\busa\b|\beua\b|\buk\b|portugal|espanha|latino|mexic|argentin|\bchile|colombia/]
+  ],
+  _cache: new Map(),
+  /** Grupos de uma categoria original. kind 'vod' (Filmes/Séries: gêneros
+   * + plataformas) ou 'live' (Ao Vivo). */
+  groupsOf(raw, kind){
+    const ck = (kind === 'live' ? 'L|' : 'V|') + raw;
+    if(this._cache.has(ck)) return this._cache.get(ck);
+    const n = normalizeText(raw || '');
+    let out = [];
+    if(!ADULT_CAT_RE.test(n)){
+      const lists = kind === 'live' ? [this.LIVE] : [this.GENRES, this.PLATFORMS];
+      for(const list of lists) for(const [name, re] of list) if(re.test(n)) out.push(name);
+    }
+    this._cache.set(ck, out);
+    return out;
+  },
+  isToken(v){ return typeof v === 'string' && v.indexOf('@@') === 0; },
+  token(name){ return '@@' + name; },
+  label(v){ return this.isToken(v) ? v.slice(2) : v; },
+  /** Função "essa categoria original passa no filtro?" (null = sem filtro). */
+  matcher(filterCat, kind){
+    if(!filterCat || filterCat === 'all') return null;
+    if(this.isToken(filterCat)){
+      const g = filterCat.slice(2);
+      return (raw) => this.groupsOf(raw, kind).indexOf(g) !== -1;
+    }
+    return (raw) => raw === filterCat;
+  },
+  /** Divide uma lista de categorias originais em {genres, platforms, other}
+   * (Ao Vivo: os grupos de canal vêm em `genres`). `members` = grupo → categorias originais. */
+  build(rawList, kind){
+    const present = new Set(), other = [], members = new Map();
+    for(const raw of rawList){
+      const gs = this.groupsOf(raw, kind);
+      if(!gs.length){ other.push(raw); continue; }
+      for(const g of gs){
+        present.add(g);
+        if(!members.has(g)) members.set(g, []);
+        members.get(g).push(raw);
+      }
+    }
+    const names = (list) => list.map(g => g[0]).filter(n => present.has(n));
+    return {
+      genres: kind === 'live' ? names(this.LIVE) : names(this.GENRES),
+      platforms: kind === 'live' ? [] : names(this.PLATFORMS),
+      other: other,
+      members: members
+    };
   }
 };
 
@@ -1916,7 +2102,7 @@ const QueryModule = {
   async _seriesCounts(serverId){
     if(this._seriesCountCache.has(serverId)) return this._seriesCountCache.get(serverId);
     const srv = State.servers.get(serverId);
-    const perCat = Object.create(null);
+    const perCat = Object.create(null), perGroup = Object.create(null);
     let total = 0;
     for(let b = 0; b < ((srv && srv.blocosSeries) || 0); b++){
       const bloco = await IDB.getByKey(STORES.seriesBlocks, [serverId, b]);
@@ -1924,10 +2110,16 @@ const QueryModule = {
       for(const t of bloco){
         total++;
         const cats = Array.isArray(t[5]) ? t[5] : [t[5]];
-        for(const c of cats){ if(c) perCat[c] = (perCat[c] || 0) + 1; }
+        const gs = new Set();
+        for(const c of cats){
+          if(!c) continue;
+          perCat[c] = (perCat[c] || 0) + 1;
+          for(const g of CategoryGroups.groupsOf(c)) gs.add(g);
+        }
+        for(const g of gs) perGroup[g] = (perGroup[g] || 0) + 1; // série conta 1x por grupo
       }
     }
-    const out = { total, perCat };
+    const out = { total, perCat, perGroup };
     this._seriesCountCache.set(serverId, out);
     const stored = srv && srv.seriesCategoryCounts;
     if(srv && (srv.seriesCount !== total || !stored)){
@@ -1988,13 +2180,16 @@ const QueryModule = {
     if(filters.favoritesOnly) return undefined;
     const hasCat = filters.category && filters.category !== 'all';
     const field = type === 'movie' ? 'movieCategoryCounts' : 'liveCategoryCounts';
+    const match = CategoryGroups.matcher(filters.category, type === 'live' ? 'live' : 'vod');
     let sum = 0;
     for(const id of serverIds){
       const srv = State.servers.get(id);
       if(!srv) return undefined;
       if(hasCat){
         if(!srv[field]) return undefined;
-        sum += srv[field][filters.category] || 0;
+        if(CategoryGroups.isToken(filters.category)){
+          for(const cat in srv[field]) if(match(cat)) sum += srv[field][cat] || 0;
+        } else sum += srv[field][filters.category] || 0;
       } else {
         if(!srv.counts || typeof srv.counts[type] !== 'number') return undefined;
         sum += srv.counts[type];
@@ -2010,6 +2205,7 @@ const QueryModule = {
     const serverIds = this._relevantServerIds(filters, tipoInt);
     const fastTotal = this._fastTotal(type, filters, serverIds);
     const hasCat = !!(filters.category && filters.category !== 'all');
+    const catMatch = CategoryGroups.matcher(filters.category, type === 'live' ? 'live' : 'vod');
 
     const collected = [];
     let matched = 0;
@@ -2024,7 +2220,7 @@ const QueryModule = {
         if(!bloco) continue;
         for(let i = 0; i < bloco.length; i++){
           const t = bloco[i];
-          if(hasCat && t[2] !== filters.category) continue;
+          if(hasCat && !catMatch(t[2])) continue;
           const isFav = favSet.has(t[0]);
           if(filters.favoritesOnly && !isFav) continue;
           if(matched >= targetStart && collected.length < pageSize){
@@ -2078,6 +2274,7 @@ const QueryModule = {
     const favIds = await this._favoriteIdSet('series');
     const targetStart = (page - 1) * pageSize;
     const hasCat = !!(filters.category && filters.category !== 'all');
+    const seriesCatMatch = CategoryGroups.matcher(filters.category);
     const serverIds = this._relevantSeriesServerIds(filters);
 
     let fastTotal;
@@ -2085,7 +2282,9 @@ const QueryModule = {
       fastTotal = 0;
       for(const id of serverIds){
         const c = await this._seriesCounts(id);
-        fastTotal += hasCat ? (c.perCat[filters.category] || 0) : c.total;
+        fastTotal += !hasCat ? c.total
+          : CategoryGroups.isToken(filters.category) ? (c.perGroup[CategoryGroups.label(filters.category)] || 0)
+          : (c.perCat[filters.category] || 0);
       }
     }
 
@@ -2101,7 +2300,7 @@ const QueryModule = {
         if(!bloco) continue;
         for(let i = 0; i < bloco.length; i++){
           const t = bloco[i];
-          if(hasCat && (Array.isArray(t[5]) ? t[5] : [t[5]]).indexOf(filters.category) === -1) continue;
+          if(hasCat && !(Array.isArray(t[5]) ? t[5] : [t[5]]).some(seriesCatMatch)) continue;
           const isFav = favIds.has(t[0]);
           if(filters.favoritesOnly && !isFav) continue;
           if(matched >= targetStart && collected.length < pageSize){
@@ -2187,37 +2386,50 @@ const QueryModule = {
   // servidor (a ordem do arquivo M3U) — os painéis IPTV costumam
   // acrescentar conteúdo novo no final.
 
-  async getRecentForServer(type, serverId, limit){
+  /** `offset` = quantos dos mais recentes pular (paginação do carrossel). */
+  async getRecentForServer(type, serverId, limit, offset){
+    offset = offset || 0;
     const tipoInt = TIPO_INT[type];
     const srv = State.servers.get(serverId);
     if(!serverHasBlocks(srv)) return [];
     const favSet = await this._favoriteIdSet(type);
     const items = [];
+    let skip = offset;
     for(let b = (srv.blocos[tipoInt] || 0) - 1; b >= 0 && items.length < limit; b--){
-      const bloco = await IDB.getByKey(STORES.contentBlocks, [serverId, tipoInt, b]);
-      if(!bloco) continue;
-      for(let i = bloco.length - 1; i >= 0 && items.length < limit; i--){
-        const c = this.tupleToContent(bloco[i], tipoInt, serverId, b, i);
-        c.favorito = favSet.has(c.id);
-        items.push(c);
-      }
+      const len = await (async () => {
+        // pula blocos inteiros sem montar os itens enquanto ainda está no "offset"
+        const bloco = await IDB.getByKey(STORES.contentBlocks, [serverId, tipoInt, b]);
+        if(!bloco) return 0;
+        if(skip >= bloco.length){ skip -= bloco.length; return bloco.length; }
+        for(let i = bloco.length - 1 - skip; i >= 0 && items.length < limit; i--){
+          const c = this.tupleToContent(bloco[i], tipoInt, serverId, b, i);
+          c.favorito = favSet.has(c.id);
+          items.push(c);
+        }
+        skip = 0;
+        return bloco.length;
+      })();
+      if(!len) continue;
     }
     return items;
   },
 
-  async getRecentSeriesForServer(serverId, limit){
+  async getRecentSeriesForServer(serverId, limit, offset){
+    offset = offset || 0;
     const srv = State.servers.get(serverId);
     if(!serverHasBlocks(srv)) return [];
-    const keys = [];
+    let keys = [];
     const seen = new Set();
-    for(let b = (srv.blocos[2] || 0) - 1; b >= 0 && keys.length < limit; b--){
+    const want = offset + limit;
+    for(let b = (srv.blocos[2] || 0) - 1; b >= 0 && keys.length < want; b--){
       const bloco = await IDB.getByKey(STORES.contentBlocks, [serverId, 2, b]);
       if(!bloco) continue;
-      for(let i = bloco.length - 1; i >= 0 && keys.length < limit; i--){
+      for(let i = bloco.length - 1; i >= 0 && keys.length < want; i--){
         const k = bloco[i][5];
         if(!seen.has(k)){ seen.add(k); keys.push(k); }
       }
     }
+    keys = keys.slice(offset);
     const favIds = await this._favoriteIdSet('series');
     const out = [];
     for(const k of keys){
@@ -2557,10 +2769,10 @@ function openSearchPopup(term, initialFilters){
    PARSER MODULE - M3U/M3U8 parsing & classification
    ====================================================================== */
 const VIDEO_EXTENSIONS = ['.mp4','.mkv','.avi','.mov','.webm','.m4v','.mpg','.mpeg','.flv','.wmv'];
+// "episódio"/"episode" NÃO entram mais: tem filme com essa palavra no nome
+// (ex: "Star Wars: Episódio IV") e ele ia parar em Séries.
 const SERIES_PATTERNS = [
   /s\d{1,2}\s?e\d{1,3}/i,
-  /epis[oó]dio/i,
-  /episode/i,
   /season/i
 ];
 
@@ -2612,7 +2824,7 @@ const ParserModule = {
 
   /**
    * Classification order:
-   *   1. Séries — padrões no nome (SxxExx, "episódio", "episode", "season").
+   *   1. Séries — padrões no nome (SxxExx, "season").
    *   2. Filmes — URL termina em extensão de vídeo conhecida.
    *   3. Ao Vivo — URL termina em "/ts", contém "m3u8", ou termina em ".ts".
    *   4. Ao Vivo — group-title contém alguma palavra-chave de canal ao vivo.
@@ -3110,6 +3322,28 @@ const ProgressModule = {
     try{ localStorage.setItem('sm_next_ep_backfill_v1', '1'); }catch(e){}
     return added;
   },
+  /** Canal ao vivo aberto: entra no Continuar Assistindo (sem progresso —
+   * é ao vivo). Só os 5 canais mais recentes ficam, pra zapear não lotar a lista. */
+  async markLiveWatched(content){
+    if(!content || !content.id) return;
+    const entry = {
+      contentId: content.id, currentTime: 0, duration: 0, porcentagem: 0,
+      dataUltimaReproducao: Date.now(), concluido: false, live: true,
+      loc: content._loc || null
+    };
+    State.progress.set(content.id, entry);
+    const lives = Array.from(State.progress.values()).filter(p => p.live)
+      .sort((a, b) => b.dataUltimaReproducao - a.dataUltimaReproducao);
+    const drop = lives.slice(5);
+    for(const d of drop) State.progress.delete(d.contentId);
+    State.dashboardCache = null;
+    State.continueCache = null;
+    try{
+      await IDB.put(STORES.progress, entry);
+      for(const d of drop) await IDB.delete(STORES.progress, d.contentId);
+    }catch(e){}
+    try{ updateSidebarCounts(); }catch(e){}
+  },
   getProgress(contentId){
     return State.progress.get(contentId) || null;
   },
@@ -3123,14 +3357,14 @@ const ProgressModule = {
   },
   getContinueWatchingCount(){
     let count = 0;
-    for(const [, prog] of State.progress){ if(!prog.concluido && (prog.porcentagem > 0 || prog.naoIniciado)) count++; }
+    for(const [, prog] of State.progress){ if(!prog.concluido && (prog.porcentagem > 0 || prog.naoIniciado || prog.live)) count++; }
     return count;
   },
   async getContinueWatchingList(limit){
     const entries = [];
     for(const [contentId, prog] of State.progress){
       if(prog.concluido) continue;
-      if(prog.porcentagem <= 0 && !prog.naoIniciado) continue;
+      if(prog.porcentagem <= 0 && !prog.naoIniciado && !prog.live) continue;
       entries.push({ contentId, prog });
     }
     entries.sort((a,b)=> b.prog.dataUltimaReproducao - a.prog.dataUltimaReproducao);
@@ -3139,7 +3373,8 @@ const ProgressModule = {
     const blockCache = new Map(); // vários itens no mesmo bloco = 1 leitura só
     for(const { contentId, prog } of limited){
       const content = await QueryModule.resolveContentById(contentId, prog.loc, blockCache).catch(()=>null);
-      if(!content || content.tipo === 'live') continue;
+      if(!content) continue;
+      if(content.tipo === 'live' && !prog.live) continue;
       // Posição mudou (lista do servidor reordenada)? Atualiza a dica.
       if(JSON.stringify(content._loc) !== JSON.stringify(prog.loc)){
         prog.loc = content._loc;
@@ -3348,6 +3583,7 @@ const PlayerModule = {
     // vezes só pra sair, uma por episódio trocado).
     const wasClosed = overlay.style.display !== 'flex';
     this.currentContent = content;
+    if(content && content.tipo === 'live') ProgressModule.markLiveWatched(content).catch(()=>{});
     this.retryCount = 0;
     this.isUserPaused = false;
     this._skipNativeAttempt = false;
@@ -4815,65 +5051,70 @@ let categorySearchDebounceTimer = null;
  */
 function renderCategorySelectWithFilter(viewKey, filters, allCategories){
   const wrap = el('div', { style:'display:flex;flex-direction:column;gap:6px;min-width:200px;' });
-  const searchText = State.ui.categoryFilterText[viewKey] || '';
+  const kind = viewKey === 'live' ? 'live' : 'vod';
+  // Grupos primeiro (Terror, Ação... / no Ao Vivo: Esportes, Notícias...),
+  // plataformas (só Filmes/Séries) e por último o que não agrupou.
+  const g = CategoryGroups.build(allCategories, kind);
+  const sections = [
+    [kind === 'live' ? 'Grupos' : 'Gêneros', g.genres.map(n => ({ v: CategoryGroups.token(n), l: n, members: g.members.get(n) || [] }))],
+    ['Plataformas', g.platforms.map(n => ({ v: CategoryGroups.token(n), l: n, members: g.members.get(n) || [] }))],
+    ['Outras categorias', g.other.map(c => ({ v: c, l: c, members: [] }))]
+  ];
 
   const searchInput = el('input', {
     type:'text',
     placeholder:'Filtrar categorias...',
-    value: searchText,
+    value: State.ui.categoryFilterText[viewKey] || '',
     'data-cat-search': viewKey,
     style:'font-size:12.5px;padding:7px 10px;'
   });
-  searchInput.addEventListener('input', function(e){
-    const val = e.target.value;
-    const cursorPos = e.target.selectionStart;
-    clearTimeout(categorySearchDebounceTimer);
-    categorySearchDebounceTimer = setTimeout(function(){
-      State.ui.categoryFilterText[viewKey] = val;
-      Router.render();
-      // Router.render() rebuilds #content-area from scratch, which destroys
-      // and recreates this input — without this, the field loses focus on
-      // every keystroke and you'd have to click back into it each time.
-      const newInput = document.querySelector('[data-cat-search="'+viewKey+'"]');
-      if(newInput){
-        newInput.focus();
-        if(newInput.setSelectionRange){
-          try{ newInput.setSelectionRange(cursorPos, cursorPos); }catch(err){}
-        }
-      }
-    }, 150);
-  });
-  wrap.appendChild(searchInput);
-
-  const normSearch = normalizeText(searchText);
-  let visibleCats = allCategories;
-  if(normSearch){
-    visibleCats = allCategories.filter(c => normalizeText(c).indexOf(normSearch) !== -1);
-    // Always keep the currently-selected category in the list even if it
-    // doesn't match the current search text, so the select never silently
-    // "loses" the active selection from view.
-    if(filters.category !== 'all' && visibleCats.indexOf(filters.category) === -1 && allCategories.indexOf(filters.category) !== -1){
-      visibleCats = [filters.category].concat(visibleCats);
-    }
-  }
-
   const catSelect = el('select', { onchange:function(e){ filters.category = e.target.value; filters.page=1; Router.render(); } });
-  catSelect.appendChild(el('option', { value:'all' }, ['Todas as categorias']));
-  for(const c of visibleCats){
-    const opt = el('option', { value:c }, [c]);
-    if(filters.category === c) opt.setAttribute('selected','true');
-    catSelect.appendChild(opt);
+  const emptyMsg = el('div', { style:'font-size:11px;color:var(--text-2);display:none;' }, ['Nenhuma categoria encontrada']);
+
+  // Refaz SÓ as opções do <select> — o campo de texto nunca é recriado,
+  // então o foco e o teclado do celular continuam abertos enquanto digita.
+  // (Antes a tela inteira era redesenhada a cada letra: o campo sumia e
+  // voltava, e no celular o teclado fechava toda vez.)
+  function fillOptions(){
+    const normSearch = normalizeText(searchInput.value);
+    const hit = (txt) => !normSearch || normalizeText(txt).indexOf(normSearch) !== -1;
+    catSelect.innerHTML = '';
+    catSelect.appendChild(el('option', { value:'all' }, ['Todas as categorias']));
+    let count = 0;
+    for(const [title, items] of sections){
+      // grupo aparece se o nome dele OU alguma categoria dentro dele bater com o texto
+      const visible = items.filter(it => it.v === filters.category || hit(it.l) || it.members.some(hit));
+      if(!visible.length) continue;
+      const og = el('optgroup', { label:title });
+      for(const it of visible){
+        const opt = el('option', { value:it.v }, [it.l]);
+        if(filters.category === it.v) opt.setAttribute('selected','true');
+        og.appendChild(opt);
+        count++;
+      }
+      catSelect.appendChild(og);
+    }
+    // categoria original escolhida antes (e que hoje está dentro de um grupo): continua visível
+    if(filters.category !== 'all' && !catSelect.querySelector('option[value="' + CSS.escape(filters.category) + '"]')){
+      const opt = el('option', { value:filters.category }, [CategoryGroups.label(filters.category)]);
+      opt.setAttribute('selected','true');
+      catSelect.insertBefore(opt, catSelect.children[1] || null);
+    }
+    catSelect.value = filters.category || 'all';
+    emptyMsg.style.display = (normSearch && count === 0) ? '' : 'none';
   }
-  if(filters.category === 'all') catSelect.value = 'all';
+
+  searchInput.addEventListener('input', function(){
+    State.ui.categoryFilterText[viewKey] = searchInput.value;
+    clearTimeout(categorySearchDebounceTimer);
+    categorySearchDebounceTimer = setTimeout(fillOptions, 120);
+  });
+  fillOptions();
+  wrap.appendChild(searchInput);
   wrap.appendChild(catSelect);
-
-  if(normSearch && visibleCats.length === 0){
-    wrap.appendChild(el('div', { style:'font-size:11px;color:var(--text-2);' }, ['Nenhuma categoria encontrada']));
-  }
-
+  wrap.appendChild(emptyMsg);
   return wrap;
 }
-
 
 
 function renderContentCard(content, options){
@@ -4914,7 +5155,8 @@ function renderContentCard(content, options){
     }).catch(()=>{});
   }
   if(content.tipo === 'live'){
-    thumb.appendChild(el('div', { class:'live-badge' }, ['AO VIVO']));
+    // No Continuar Assistindo o canto de cima é do botão ✕ — lá o selo vai embaixo (ver abaixo).
+    if(!options.showRemoveFromContinue) thumb.appendChild(el('div', { class:'live-badge' }, ['AO VIVO']));
   }
 
   const topRightWrap = el('div', { style:'position:absolute;top:8px;right:8px;display:flex;gap:6px;z-index:2;' });
@@ -4966,8 +5208,13 @@ function renderContentCard(content, options){
       const pbar = el('div', { class:'progress-bar-mini' }, [el('div',{class:'fill', style:'width:'+Math.min(100,prog.porcentagem)+'%'})]);
       thumb.appendChild(pbar);
     } else if(prog && prog.naoIniciado){
-      thumb.appendChild(el('div', { class:'next-ep-badge' }, ['Próximo episódio']));
+      thumb.appendChild(el('div', { class:'next-ep-badges' }, [
+        el('div', { class:'next-ep-badge' }, ['Não assistido']),
+        el('div', { class:'next-ep-badge' }, ['Próximo episódio'])
+      ]));
     }
+  } else if(options.showRemoveFromContinue){
+    thumb.appendChild(el('div', { class:'next-ep-badges' }, [el('div', { class:'next-ep-badge live' }, ['● AO VIVO'])]));
   }
 
   card.appendChild(thumb);
@@ -5039,7 +5286,8 @@ function renderSeriesCard(entry){
       State.ui.returnTo = { type:'search', term: activeSearchOverlay.input.value, activeType: f.activeType, activeServer: f.activeServer };
       activeSearchOverlay.close(true);
     } else {
-      State.ui.returnTo = null;
+      // Aberta pelo Sugira-me ("Também pode curtir"): voltar leva pra lá.
+      State.ui.returnTo = State.ui.currentView === 'suggest' ? { type:'suggest' } : null;
     }
     State.ui.activeSeriesKey = entry.key;
     State.ui.currentView = 'series-detail';
@@ -5248,7 +5496,7 @@ async function renderSeriesListView(container){
 function goBackFromSeriesDetail(){
   const returnTo = State.ui.returnTo;
   State.ui.returnTo = null;
-  State.ui.currentView = 'series';
+  State.ui.currentView = (returnTo && returnTo.type === 'suggest') ? 'suggest' : 'series';
   Router.render();
   if(returnTo && returnTo.type === 'search'){
     openSearchPopup(returnTo.term, { activeType: returnTo.activeType, activeServer: returnTo.activeServer });
@@ -5364,17 +5612,19 @@ async function renderSeriesDetailView(container){
       const img = el('img'); img.src = episodeLogo; img.onerror=()=>img.remove();
       eth.appendChild(img);
     }
-    row.appendChild(eth);
     const episodeName = resolveContentName(content, entry.name);
-    row.appendChild(el('div', { class:'ename' }, [episodeName]));
+    // capa + nome juntos: no celular a capa fica EM CIMA do nome (ver CSS)
+    row.appendChild(el('div', { class:'emain' }, [eth, el('div', { class:'ename' }, [episodeName])]));
     let statusText = 'Não iniciado';
     let statusClass = '';
     if(prog){
       if(prog.concluido){ statusText = 'Assistido ✓'; statusClass='done'; }
       else if(prog.porcentagem > 0){ statusText = Math.round(prog.porcentagem) + '%'; }
     }
-    row.appendChild(el('div', { class:'estatus'+(statusClass?' '+statusClass:'') }, [statusText]));
-    row.appendChild(el('div', { class:'eprog' }, [el('div',{class:'f', style:'width:'+(prog?Math.min(100,prog.porcentagem):0)+'%'})]));
+    const side = el('div', { class:'eside' });
+    side.appendChild(el('div', { class:'estatus'+(statusClass?' '+statusClass:'') }, [statusText]));
+    side.appendChild(el('div', { class:'eprog' }, [el('div',{class:'f', style:'width:'+(prog?Math.min(100,prog.porcentagem):0)+'%'})]));
+    row.appendChild(side);
     const dlBtn = el('button', {
       style:'width:28px;height:28px;border-radius:50%;background:var(--bg-3);display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0;margin-left:4px;',
       title:'Baixar episódio'
@@ -5383,7 +5633,7 @@ async function renderSeriesDetailView(container){
       e.stopPropagation();
       downloadContentUrl(resolveContentUrl(content), episodeName);
     });
-    row.appendChild(dlBtn);
+    side.appendChild(dlBtn);
     return row;
   }
 
@@ -5446,8 +5696,8 @@ async function loadDashboardData(){
 
   const promise = (async () => {
     const continueList = await ProgressModule.getContinueWatchingList(12);
-    const recentGroups = await getRecentlyAddedGroupedForDashboard(6, 8);
-    const result = { continueList, recentGroups };
+    const recentFeed = await getRecentlyAddedForDashboard(20);
+    const result = { continueList, recentFeed };
     State.dashboardCache = result;
     return result;
   })();
@@ -5474,12 +5724,23 @@ async function renderDashboardView(container){
     loading = el('div', { class:'loader-inline' }, [el('div',{class:'spinner'}), 'Carregando...']);
     container.appendChild(loading);
   }
-  const { continueList, recentGroups } = await loadDashboardData();
+  const { continueList, recentFeed } = await loadDashboardData();
+  const hasRecent = recentFeed.items.length > 0;
   if(State.ui.currentView !== 'dashboard') return;
   if(loading) loading.remove();
 
+  // 1º Adicionados Recentemente (carrossel por servidor), depois Continuar Assistindo
+  if(hasRecent){
+    const serverLabel = el('span', { class:'car-server' }, ['']);
+    container.appendChild(el('div', { class:'section-header', style:'margin-bottom:6px;' }, [
+      el('h2', { style:'font-size:15px;margin-right:0;' }, ['Adicionados Recentemente']),
+      serverLabel
+    ]));
+    container.appendChild(renderRecentCarousel(recentFeed, serverLabel));
+  }
+
   if(continueList.length > 0){
-    container.appendChild(el('div', { class:'section-header' }, [
+    container.appendChild(el('div', { class:'section-header', style: hasRecent ? 'margin-top:14px;' : '' }, [
       el('h2', { style:'font-size:15px;' }, ['Continuar Assistindo']),
       el('button', { class:'btn small', onclick:()=>Router.goTo('continue') }, ['Ver tudo'])
     ]));
@@ -5488,44 +5749,177 @@ async function renderDashboardView(container){
     container.appendChild(grid2);
   }
 
-  if(recentGroups.length > 0){
-    container.appendChild(el('div', { class:'section-header', style: continueList.length > 0 ? 'margin-top:8px;' : '' }, [
-      el('h2', { style:'font-size:15px;' }, ['Adicionados Recentemente'])
-    ]));
-    for(const group of recentGroups){
-      container.appendChild(el('div', { style:'font-size:12.5px;font-weight:700;color:var(--text-2);margin:10px 0 8px;' }, [group.serverName]));
-      const g = el('div', { class:'card-grid' });
-      for(const item of group.items){
-        if(item.kind === 'series') g.appendChild(renderSeriesCard(item.data));
-        else g.appendChild(renderContentCard(item.data, { hideDownload:true }));
-      }
-      container.appendChild(g);
-    }
-  }
-
-  if(continueList.length === 0 && recentGroups.length === 0){
+  if(continueList.length === 0 && !hasRecent){
     container.appendChild(renderEmptyState('📭', 'Nada por aqui ainda', 'Assista a algo ou importe conteúdo para ver novidades no Dashboard.'));
   }
 }
 
-async function getRecentlyAddedGroupedForDashboard(maxServers, perServerLimit){
-  const servers = Array.from(State.servers.values()).slice(0, maxServers);
-  const groups = [];
-  for(const server of servers){
-    const [movies, live, series] = await Promise.all([
-      QueryModule.getRecentForServer('movie', server.id, perServerLimit),
-      QueryModule.getRecentForServer('live', server.id, perServerLimit),
-      QueryModule.getRecentSeriesForServer(server.id, perServerLimit)
-    ]);
-    const items = [];
-    for(const c of movies) items.push({ kind:'content', data:c });
-    for(const c of live) items.push({ kind:'content', data:c });
-    for(const s of series) items.push({ kind:'series', data:s });
-    if(items.length > 0){
-      groups.push({ serverId: server.id, serverName: server.nome, items: items.slice(0, perServerLimit) });
+/** "Adicionados recentemente" de UM servidor, em páginas (carrossel):
+ * mistura filme, série e ao vivo intercalados, e cada chamada de
+ * next(20) devolve os próximos 20 — só lê do banco o necessário. */
+function makeRecentFeed(serverId){
+  const st = { off:{ movie:0, series:0, live:0 }, done:{ movie:false, series:false, live:false }, buf:[] };
+  const allDone = () => st.done.movie && st.done.series && st.done.live;
+  async function fetchType(t){
+    if(st.done[t]) return [];
+    const got = t === 'series'
+      ? await QueryModule.getRecentSeriesForServer(serverId, 20, st.off.series)
+      : await QueryModule.getRecentForServer(t, serverId, 20, st.off[t]);
+    st.off[t] += got.length;
+    if(got.length < 20) st.done[t] = true;
+    return got.map(d => ({ kind: t === 'series' ? 'series' : 'content', data: d }));
+  }
+  async function refill(){
+    const [m, se, l] = await Promise.all([fetchType('movie'), fetchType('series'), fetchType('live')]);
+    const n = Math.max(m.length, se.length, l.length);
+    for(let i = 0; i < n; i++){ if(m[i]) st.buf.push(m[i]); if(se[i]) st.buf.push(se[i]); if(l[i]) st.buf.push(l[i]); }
+  }
+  return {
+    items: [], // tudo que já foi mostrado (re-render do Dashboard não recomeça do zero)
+    async next(count){
+      while(st.buf.length < count && !allDone()) await refill();
+      const page = st.buf.splice(0, count);
+      this.items = this.items.concat(page);
+      return page;
+    },
+    get finished(){ return st.buf.length === 0 && allDone(); }
+  };
+}
+
+/** Um feed só com TODOS os servidores, um depois do outro: esgota os
+ * recentes do 1º servidor, segue pro 2º, etc. Cada item leva o serverId
+ * (o carrossel mostra o nome do servidor que está na tela). */
+function makeAllServersRecentFeed(){
+  // Rodízio entre servidores: 20 de cada servidor; depois de passar por
+  // todos, volta pro 1º e segue com mais 20 de cada.
+  // Servidor que acabou os itens sai do rodízio.
+  const servers = Array.from(State.servers.values()).filter(serverHasBlocks);
+  const feeds = servers.map(sv => ({ serverId: sv.id, feed: makeRecentFeed(sv.id) }));
+  let cur = 0, round = 0, taken = 0;
+  const alive = () => feeds.some(f => !f.feed.finished);
+  const advance = () => { taken = 0; cur++; if(cur >= feeds.length){ cur = 0; round++; } };
+  return {
+    items: [],
+    async next(count){
+      const out = [];
+      let guard = 0;
+      while(out.length < count && alive() && guard++ < 1000){
+        const f = feeds[cur];
+        if(f.feed.finished){ advance(); continue; }
+        const chunk = 20;
+        const page = await f.feed.next(Math.min(count - out.length, chunk - taken));
+        for(const it of page){ it.serverId = f.serverId; out.push(it); }
+        taken += page.length;
+        if(taken >= chunk || f.feed.finished || !page.length) advance();
+      }
+      this.items = this.items.concat(out);
+      return out;
+    },
+    get finished(){ return !alive(); }
+  };
+}
+
+async function getRecentlyAddedForDashboard(perPage){
+  const feed = makeAllServersRecentFeed();
+  await feed.next(perPage);
+  return feed;
+}
+
+/** Carrossel horizontal: arrasta/rola pro lado (fluido, com "snap"), setas
+ * no computador, e quando chega perto do fim carrega mais 20 sozinho. */
+function renderRecentCarousel(feed, serverLabel){
+  const wrap = el('div', { class:'carousel' });
+  // Card com a MESMA largura do card do "Continuar Assistindo": mede uma
+  // coluna de uma .card-grid invisível do mesmo tamanho (mesmas regras de
+  // CSS, inclusive no celular) e usa essa largura aqui.
+  const measure = el('div', { class:'card-grid car-measure' }, [el('div')]);
+  wrap.appendChild(measure);
+  let lastW = 0;
+  const fitWidth = () => {
+    const w = measure.firstChild.getBoundingClientRect().width;
+    if(w > 0 && Math.abs(w - lastW) > 0.5){
+      lastW = w;
+      wrap.style.setProperty('--car-w', w + 'px');
+      wrap.style.setProperty('--car-gap', getComputedStyle(measure).columnGap || '18px');
+    }
+  };
+  // mede no próximo quadro (evita o aviso "ResizeObserver loop" do navegador)
+  if('ResizeObserver' in window) new ResizeObserver(() => requestAnimationFrame(fitWidth)).observe(measure);
+  else window.addEventListener('resize', fitWidth);
+  requestAnimationFrame(fitWidth);
+  const track = el('div', { class:'car-track' });
+  const prev = el('button', { class:'car-nav prev', title:'Voltar' }, ['‹']);
+  const next = el('button', { class:'car-nav next', title:'Mais' }, ['›']);
+  wrap.appendChild(prev); wrap.appendChild(track); wrap.appendChild(next);
+
+  const makeCard = (item) => {
+    const cell = el('div', { class:'car-item' });
+    if(item.serverId) cell.setAttribute('data-server', item.serverId);
+    cell.appendChild(item.kind === 'series' ? renderSeriesCard(item.data) : renderContentCard(item.data, { hideDownload:true }));
+    return cell;
+  };
+  const addItems = (items, animate) => {
+    items.forEach((item, i) => {
+      const cell = makeCard(item);
+      if(animate){ cell.classList.add('enter'); cell.style.animationDelay = Math.min(i, 12) * 35 + 'ms'; }
+      track.insertBefore(cell, sentinel);
+    });
+  };
+  const sentinel = el('div', { class:'car-item car-sentinel' }, [el('div', { class:'spinner' })]);
+  track.appendChild(sentinel);
+  addItems(feed.items, false); // ao abrir: cards já parados no lugar, sem animação
+
+  let loading = false;
+  async function loadMore(){
+    if(loading || feed.finished) return;
+    loading = true;
+    try{
+      const page = await feed.next(20);
+      addItems(page, true);
+    }catch(e){}
+    loading = false;
+    if(feed.finished){ sentinel.remove(); io && io.disconnect(); }
+    updateNav();
+  }
+  let io = null;
+  if(feed.finished) sentinel.remove();
+  else if('IntersectionObserver' in window){
+    // dispara um pouco ANTES do fim (400px), pra ninguém ver o spinner
+    io = new IntersectionObserver((ents) => { if(ents.some(e => e.isIntersecting)) loadMore(); }, { root: track, rootMargin: '0px 400px 0px 0px' });
+    io.observe(sentinel);
+  } else {
+    track.addEventListener('scroll', () => { if(track.scrollLeft + track.clientWidth > track.scrollWidth - 400) loadMore(); }, { passive:true });
+  }
+
+  // Nome do servidor dos itens que estão na tela agora (troca ao rolar)
+  let shownServer = null;
+  function updateServerLabel(){
+    if(!serverLabel) return;
+    const left = track.getBoundingClientRect().left;
+    let sid = null;
+    for(const cell of track.children){
+      if(!cell.hasAttribute('data-server')) continue;
+      if(cell.getBoundingClientRect().right > left + 20){ sid = cell.getAttribute('data-server'); break; }
+    }
+    if(sid && sid !== shownServer){
+      shownServer = sid;
+      serverLabel.textContent = getServerName(sid);
+      serverLabel.classList.remove('swap'); void serverLabel.offsetWidth; serverLabel.classList.add('swap');
     }
   }
-  return groups;
+  function updateNav(){
+    updateServerLabel();
+    prev.classList.toggle('hidden-nav', track.scrollLeft <= 4);
+    next.classList.toggle('hidden-nav', track.scrollLeft + track.clientWidth >= track.scrollWidth - 4 && feed.finished);
+  }
+  let raf = 0;
+  track.addEventListener('scroll', () => { if(!raf) raf = requestAnimationFrame(() => { raf = 0; updateNav(); }); }, { passive:true });
+  const page = (dir) => track.scrollBy({ left: dir * Math.max(200, track.clientWidth * 0.85), behavior: 'smooth' });
+  prev.addEventListener('click', (e) => { e.stopPropagation(); page(-1); });
+  next.addEventListener('click', (e) => { e.stopPropagation(); page(1); });
+  requestAnimationFrame(updateNav);
+
+  return wrap;
 }
 
 /* ======================================================================
@@ -5659,7 +6053,7 @@ async function renderContinueView(container){
   if(loading) loading.remove();
 
   if(list.length===0){
-    container.appendChild(renderEmptyState('⏱️','Nada por aqui ainda','Assista a filmes ou episódios para retomá-los depois.'));
+    container.appendChild(renderEmptyState('⏱️','Nada por aqui ainda','Assista a filmes, episódios ou canais ao vivo para retomá-los depois.'));
     return;
   }
   const grid = el('div', { class:'card-grid' });
@@ -5667,7 +6061,7 @@ async function renderContinueView(container){
     grid.appendChild(renderContentCard(content, { showRemoveFromContinue:true, onRemoved: ()=>{
       if(grid.children.length === 0){
         grid.remove();
-        container.appendChild(renderEmptyState('⏱️','Nada por aqui ainda','Assista a filmes ou episódios para retomá-los depois.'));
+        container.appendChild(renderEmptyState('⏱️','Nada por aqui ainda','Assista a filmes, episódios ou canais ao vivo para retomá-los depois.'));
       }
     }}));
   }
@@ -6376,8 +6770,8 @@ const SuggestModule = {
   hasMovies(){ return Array.from(State.servers.values()).some(s => serverHasBlocks(s) && s.blocos[1] > 0); },
   hasSeries(){ return Array.from(State.servers.values()).some(s => serverHasBlocks(s) && s.blocosSeries > 0); },
 
-  /** Categorias disponíveis pro tipo ('all' = filmes + séries). */
-  categories(type){
+  /** Categorias originais disponíveis pro tipo ('all' = filmes + séries). */
+  rawCategories(type){
     const set = new Set();
     for(const s of State.servers.values()){
       if(!serverHasBlocks(s)) continue;
@@ -6385,6 +6779,12 @@ const SuggestModule = {
       if(type !== 'movie') for(const c of (s.seriesCategories || [])) set.add(c);
     }
     return Array.from(set).sort((a, b) => a.localeCompare(b));
+  },
+  /** Opções de categoria já agrupadas: grupos ('@@Terror'...) + as que
+   * não encaixaram em grupo nenhum. */
+  categories(type){
+    const g = CategoryGroups.build(this.rawCategories(type));
+    return g.genres.concat(g.platforms).map(n => CategoryGroups.token(n)).concat(g.other);
   },
 
   /** Categorias do que o usuário tem assistido, com peso (mais recente e
@@ -6400,7 +6800,9 @@ const SuggestModule = {
       const c = await QueryModule.resolveContentById(p.contentId, p.loc, blockCache).catch(() => null);
       if(!c || c.tipo === 'live' || !c.categoria) continue;
       const w = 1 + (entries.length - i) / entries.length; // recente pesa até 2x
-      weights.set(c.categoria, (weights.get(c.categoria) || 0) + w);
+      const gs = CategoryGroups.groupsOf(c.categoria);
+      const keys = gs.length ? gs.map(n => CategoryGroups.token(n)) : [c.categoria];
+      for(const k of keys) weights.set(k, (weights.get(k) || 0) + w);
     }
     this._forYou = Array.from(weights.entries());
     this._forYouSize = State.progress.size;
@@ -6415,10 +6817,13 @@ const SuggestModule = {
 
   /** Um filme não visto (categoria opcional). */
   async pickMovie(category, avoid){
+    const match = CategoryGroups.matcher(category) || (() => true);
     const servers = [];
     for(const s of State.servers.values()){
       if(!serverHasBlocks(s) || !(s.blocos[1] > 0)) continue;
-      const w = category ? ((s.movieCategoryCounts && s.movieCategoryCounts[category]) || 0) : ((s.counts && s.counts.movie) || 0);
+      let w = 0;
+      if(!category) w = (s.counts && s.counts.movie) || 0;
+      else if(s.movieCategoryCounts) for(const c in s.movieCategoryCounts) if(match(c)) w += s.movieCategoryCounts[c] || 0;
       if(w > 0) servers.push([s, w]);
     }
     for(let tries = 0; tries < 3 && servers.length; tries++){
@@ -6431,7 +6836,7 @@ const SuggestModule = {
         const idx = [];
         for(let i = 0; i < bloco.length; i++){
           const t = bloco[i];
-          if(category && t[2] !== category) continue;
+          if(category && !match(t[2])) continue;
           if(!category && ADULT_CAT_RE.test(t[2] || '')) continue;
           if(State.progress.has(t[0]) || avoid.has(t[0])) continue;
           idx.push(i);
@@ -6446,12 +6851,15 @@ const SuggestModule = {
 
   /** Uma série que o usuário ainda não começou (categoria opcional). */
   async pickSeries(category, avoid){
+    const match = CategoryGroups.matcher(category) || (() => true);
     const watched = this._watchedSeriesKeys();
     const servers = [];
     for(const s of State.servers.values()){
       if(!serverHasBlocks(s) || !(s.blocosSeries > 0)) continue;
       const c = await QueryModule._seriesCounts(s.id);
-      const w = category ? (c.perCat[category] || 0) : c.total;
+      const w = !category ? c.total
+        : CategoryGroups.isToken(category) ? (c.perGroup[CategoryGroups.label(category)] || 0)
+        : (c.perCat[category] || 0);
       if(w > 0) servers.push([s, w]);
     }
     for(let tries = 0; tries < 3 && servers.length; tries++){
@@ -6465,7 +6873,7 @@ const SuggestModule = {
         for(let i = 0; i < bloco.length; i++){
           const t = bloco[i];
           const cats = Array.isArray(t[5]) ? t[5] : [t[5]];
-          if(category && cats.indexOf(category) === -1) continue;
+          if(category && !cats.some(match)) continue;
           if(!category && cats.some(c => ADULT_CAT_RE.test(c || ''))) continue;
           if(watched.has(t[0]) || avoid.has(t[0])) continue;
           idx.push(i);
@@ -6491,24 +6899,24 @@ const SuggestModule = {
         const inMovies = wantMovie && this.categories('movie').indexOf(category) !== -1;
         const inSeries = wantSeries && this.categories('series').indexOf(category) !== -1;
         const t = (inMovies && inSeries) ? pickType() : (inMovies ? 'movie' : 'series');
-        return { category, type: t, why: 'Você tem assistido bastante "' + category + '" — escolhi algo de lá que você ainda não viu.' };
+        return { category, type: t, why: 'Você tem assistido bastante "' + CategoryGroups.label(category) + '" — escolhi algo de lá que você ainda não viu.' };
       }
       mode = '__random'; // sem histórico ainda: vira surpresa
       const r = await this._resolveMode(type, mode);
-      r.why = 'Ainda não sei do que você gosta (assista algumas coisas!) — então foi surpresa: "' + r.category + '".';
+      r.why = 'Ainda não sei do que você gosta (assista algumas coisas!) — então escolhi uma surpresa: "' + CategoryGroups.label(r.category) + '".';
       return r;
     }
     if(mode === '__random'){
       const t = pickType();
-      const cats = this.categories(t).filter(c => !ADULT_CAT_RE.test(c));
+      const cats = this.categories(t).filter(c => !ADULT_CAT_RE.test(normalizeText(c)));
       const category = cats.length ? cats[this._rand(cats.length)] : null;
-      return { category, type: t, why: category ? 'Sorteei a categoria "' + category + '" pra você sair da rotina.' : 'Sorteado entre tudo o que você tem.' };
+      return { category, type: t, why: category ? 'Escolhi a categoria "' + CategoryGroups.label(category) + '" pra você sair da rotina.' : 'Escolhi entre tudo o que você tem.' };
     }
     // categoria escolhida
     const inMovies = wantMovie && this.categories('movie').indexOf(mode) !== -1;
     const inSeries = wantSeries && this.categories('series').indexOf(mode) !== -1;
     const t = (inMovies && inSeries) ? pickType() : (inMovies ? 'movie' : 'series');
-    return { category: mode, type: t, why: 'Da categoria "' + mode + '", que você escolheu.' };
+    return { category: mode, type: t, why: 'Da categoria "' + CategoryGroups.label(mode) + '", que você escolheu.' };
   },
 
   /** Uma sugestão completa: { kind:'movie'|'series', data, why, category }. */
@@ -6528,6 +6936,130 @@ const SuggestModule = {
     return null;
   }
 };
+
+/* ======================================================================
+   MESMO TÍTULO EM OUTROS SERVIDORES
+   ------------------------------------------------------------------
+   Servidor fora do ar é comum, e quase sempre o mesmo filme/série existe
+   em outro. Pra cruzar os nomes, cada título vira uma "chave" sem o que
+   varia entre servidores: acentos, ano ("2013: Filme", "Filme (2013)",
+   "Filme - 2013"), qualidade/áudio ([4K], FHD, Dublado, Leg...) e
+   pontuação. Mesma chave = mesmo título.
+   ====================================================================== */
+function titleKey(name){
+  let n = normalizeText(name || '');
+  n = n.replace(/\[[^\]]*\]|\([^)]*\)|\{[^}]*\}/g, ' ');
+  n = n.replace(/^\s*(19|20)\d{2}\s*[:\-–|.]+\s*/, ' ');
+  n = n.replace(/[\s\-–:|.]+(19|20)\d{2}\s*$/, ' ');
+  n = n.replace(/\b(4k|uhd|fhd|full ?hd|hd|sd|hdr10|hdr|2160p|1080p|720p|480p|dublado|dub|legendado|leg|dual audio|dual|cam|hdcam|web-?dl|webrip|bluray|brrip|x264|x265|h264|h265|hevc|3d|imax|remux)\b/g, ' ');
+  n = n.replace(/[^a-z0-9]+/g, ' ').trim();
+  return n;
+}
+
+const CrossServer = {
+  /** Filmes com o mesmo título em todos os servidores (inclui o próprio). */
+  async findMovie(content){
+    const key = titleKey(content.nome || resolveContentName(content));
+    if(!key) return [];
+    const probe = key.split(' ').sort((a, b) => b.length - a.length)[0]; // filtro rápido antes da chave completa
+    const out = [];
+    for(const srv of State.servers.values()){
+      if(!serverHasBlocks(srv)) continue;
+      for(let b = 0; b < (srv.blocos[1] || 0); b++){
+        const txt = await IDB.getByKey(STORES.searchBlocks, [srv.id, 1, b]).catch(() => null);
+        if(typeof txt !== 'string') continue;
+        const lines = txt.split('\n');
+        const hits = [];
+        for(let i = 0; i < lines.length; i++){
+          const tab = lines[i].indexOf('\t');
+          const nm = tab < 0 ? lines[i] : lines[i].slice(0, tab);
+          if(nm.indexOf(probe) === -1) continue;
+          if(titleKey(nm) === key) hits.push(i);
+        }
+        if(!hits.length) continue;
+        const bloco = await IDB.getByKey(STORES.contentBlocks, [srv.id, 1, b]).catch(() => null);
+        if(!bloco) continue;
+        for(const i of hits) if(bloco[i]) out.push(QueryModule.tupleToContent(bloco[i], 1, srv.id, b, i));
+      }
+    }
+    return out;
+  },
+  /** Séries com o mesmo nome em todos os servidores (inclui a própria). */
+  async findSeries(summary){
+    const key = titleKey(summary.name);
+    if(!key) return [];
+    const out = [];
+    for(const srv of State.servers.values()){
+      if(!serverHasBlocks(srv)) continue;
+      for(let b = 0; b < (srv.blocosSeries || 0); b++){
+        const bloco = await IDB.getByKey(STORES.seriesBlocks, [srv.id, b]).catch(() => null);
+        if(!bloco) continue;
+        for(const t of bloco){
+          if(titleKey(t[1]) !== key) continue;
+          const s = QueryModule.seriesTupleToSummary(t, srv.id);
+          QueryModule._seriesCache.set(s.key, s);
+          out.push(s);
+        }
+      }
+    }
+    return out;
+  }
+};
+
+function openCrossServerModal(kind, data){
+  const overlay = el('div', { class:'modal-overlay' });
+  overlay.addEventListener('click', (e) => { if(e.target === overlay) overlay.remove(); });
+  const box = el('div', { class:'modal-box' });
+  const title = kind === 'movie' ? resolveContentName(data) : data.name;
+  box.appendChild(el('h3', {}, ['Em outros servidores', el('span', { class:'modal-close-x', onclick:() => overlay.remove() }, ['×'])]));
+  box.appendChild(el('p', { style:'font-size:13px;color:var(--text-2);margin:-4px 0 14px;' }, ['"' + title + '" — se não abrir em um servidor, tente outro.']));
+  const body = el('div', {}, [el('div', { class:'loader-inline' }, [el('div', { class:'spinner' }), 'Procurando nos servidores...'])]);
+  box.appendChild(body);
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+
+  (kind === 'movie' ? CrossServer.findMovie(data) : CrossServer.findSeries(data)).then((list) => {
+    body.innerHTML = '';
+    const currentId = kind === 'movie' ? data.id : data.key;
+    // o que já estava aberto primeiro
+    list.sort((a, b) => ((kind === 'movie' ? b.id : b.key) === currentId) - ((kind === 'movie' ? a.id : a.key) === currentId));
+    if(!list.length){
+      body.appendChild(el('div', { style:'font-size:13px;color:var(--text-2);' }, ['Não achei esse título em nenhum outro servidor.']));
+      return;
+    }
+    const servers = new Set(list.map(x => x.serverId));
+    body.appendChild(el('div', { style:'font-size:12.5px;font-weight:700;color:var(--text-1);margin-bottom:10px;' }, [
+      'Disponível em ' + servers.size + (servers.size === 1 ? ' servidor' : ' servidores') + (list.length > servers.size ? ' (' + list.length + ' versões)' : '')
+    ]));
+    const ul = el('div', { class:'xs-list' });
+    for(const item of list){
+      const isCurrent = (kind === 'movie' ? item.id : item.key) === currentId;
+      const name = kind === 'movie' ? resolveContentName(item) : item.name;
+      const sub = kind === 'movie' ? (item.categoria || '') : ((item.episodeCount || 0) + ' ep. • ' + (item.categorias || []).join(', '));
+      ul.appendChild(el('div', { class:'xs-row' + (isCurrent ? ' current' : '') }, [
+        el('div', { class:'xs-info' }, [
+          el('div', { class:'xs-server' }, [getServerName(item.serverId) + (isCurrent ? ' · sugerido' : '')]),
+          el('div', { class:'xs-name' }, [name]),
+          el('div', { class:'xs-sub' }, [sub])
+        ]),
+        el('button', { class:'btn small primary', onclick:() => {
+          overlay.remove();
+          // Veio do Sugira-me: o "voltar" da série volta pra lá.
+          State.ui.returnTo = State.ui.currentView === 'suggest' ? { type:'suggest' } : null;
+          if(kind === 'movie'){ PlayerModule.open(item); return; }
+          State.ui.activeSeriesKey = item.key;
+          State.ui.currentView = 'series-detail';
+          Router.render();
+          pushNavState('series-detail');
+        } }, [kind === 'movie' ? '▶ Assistir' : 'Ver série'])
+      ]));
+    }
+    body.appendChild(ul);
+  }).catch((err) => {
+    body.innerHTML = '';
+    body.appendChild(el('div', { style:'color:var(--danger);font-size:13px;' }, ['Erro ao procurar: ' + (err && err.message)]));
+  });
+}
 
 async function rollSuggestions(){
   const st = State.ui.suggest;
@@ -6587,9 +7119,17 @@ function renderSuggestView(container){
   const sel = el('select', { onchange:(e) => { st.mode = e.target.value; rollSuggestions(); } });
   sel.appendChild(el('option', { value:'__foryou' }, ['✨ Pra você (pelo que você assiste)']));
   sel.appendChild(el('option', { value:'__random' }, ['🎲 Categoria surpresa']));
-  const grp = el('optgroup', { label:'Escolher categoria' });
-  for(const c of SuggestModule.categories(st.type)) grp.appendChild(el('option', { value:c }, [c]));
-  sel.appendChild(grp);
+  const gb = CategoryGroups.build(SuggestModule.rawCategories(st.type));
+  for(const [title, items] of [
+    ['Gêneros', gb.genres.map(n => [CategoryGroups.token(n), n])],
+    ['Plataformas', gb.platforms.map(n => [CategoryGroups.token(n), n])],
+    ['Outras categorias', gb.other.map(c => [c, c])]
+  ]){
+    if(!items.length) continue;
+    const grp = el('optgroup', { label:title });
+    for(const [v, l] of items) grp.appendChild(el('option', { value:v }, [l]));
+    sel.appendChild(grp);
+  }
   sel.value = st.mode;
   modeRow.appendChild(sel);
   const rollBtn = el('button', { class:'btn primary suggest-roll' + (st.loading ? ' rolling' : ''), onclick:() => { if(!st.loading) rollSuggestions(); } }, [
@@ -6629,7 +7169,7 @@ function renderSuggestView(container){
   info.appendChild(el('div', { class:'sh-kicker' }, [(isMovie ? 'Filme' : 'Série') + ' · ' + getServerName(s.data.serverId)]));
   info.appendChild(el('h3', { class:'sh-title' }, [name]));
   const metaBits = [];
-  if(s.category) metaBits.push(s.category);
+  if(s.category) metaBits.push(CategoryGroups.label(s.category));
   if(!isMovie){
     metaBits.push((s.data.seasonCount || 1) + (s.data.seasonCount > 1 ? ' temporadas' : ' temporada'));
     metaBits.push((s.data.episodeCount || 0) + ' episódios');
@@ -6639,7 +7179,7 @@ function renderSuggestView(container){
 
   const actions = el('div', { class:'sh-actions' });
   actions.appendChild(el('button', { class:'btn primary', onclick:() => {
-    State.ui.returnTo = null;
+    State.ui.returnTo = isMovie ? null : { type:'suggest' }; // voltar da série → Sugira-me
     if(isMovie){ PlayerModule.open(s.data); return; }
     State.ui.activeSeriesKey = s.data.key;
     State.ui.currentView = 'series-detail';
@@ -6654,6 +7194,7 @@ function renderSuggestView(container){
     updateSidebarCounts();
   });
   actions.appendChild(favBtn);
+  actions.appendChild(el('button', { class:'btn', onclick:() => openCrossServerModal(s.kind, s.data) }, ['🖥 Ver em mais servidores']));
   info.appendChild(actions);
   hero.appendChild(info);
   container.appendChild(hero);
@@ -6714,6 +7255,7 @@ const Router = {
 
   goTo(view){
     State.ui.currentView = view;
+    State.ui.returnTo = null; // navegou pelo menu: "voltar" de uma série aberta depois não herda a origem antiga
     if(view !== 'series-detail') State.ui.activeSeriesKey = null;
     // Restaura os contadores globais ao navegar — se a tela pra onde foi
     // (filme/série/ao vivo) tiver um filtro de servidor ativo, ela mesma
@@ -6824,7 +7366,7 @@ function setupEventListeners(){
     // mas ainda respeita a origem: se veio da busca global, reabre a busca.
     const content = PlayerModule.currentContent;
     const returnTo = State.ui.returnTo;
-    State.ui.returnTo = null;
+    if(!(content && content.tipo === 'series')) State.ui.returnTo = null;
     PlayerModule.close();
     if(!(content && content.tipo === 'series') && returnTo && returnTo.type === 'search'){
       openSearchPopup(returnTo.term, { activeType: returnTo.activeType, activeServer: returnTo.activeServer });
@@ -7003,6 +7545,8 @@ async function prefetchFirstPages(){
 // de saber o que realmente quebrou quando algo falha silenciosamente.
 window.addEventListener('error', function(e){
   const msg = (e && e.message) ? e.message : 'Erro desconhecido';
+  // Aviso inofensivo do navegador (não é erro do app) — não assusta ninguém.
+  if(/ResizeObserver loop/i.test(msg)){ if(e.stopImmediatePropagation) e.stopImmediatePropagation(); return; }
   const loc = (e && e.filename) ? (' (linha ' + e.lineno + ')') : '';
   pushDebugLog('Erro de script: ' + msg + loc, true);
   showToast('Erro inesperado: ' + msg + loc, 'error');
