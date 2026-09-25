@@ -6,16 +6,116 @@ rm -rf app
 mkdir -p app
 cp -rf config.xml index.html network_security_config.xml app
 
-# Plugin de PiP nativo: acha a pasta que tem o plugin.xml (funciona mesmo se o
-# zip foi extraído numa pasta com o mesmo nome, ex: pasta/pasta/plugin.xml).
-# (procura pelo package.json: pasta antiga extraída sem ele é ignorada)
-PIP_XML="$(find . -path ./app -prune -o -name package.json -path '*cordova-plugin-manager-pip*' -print | head -1)"
-if [ -n "$PIP_XML" ]; then
-  cp -rf "$(dirname "$PIP_XML")" app/cordova-plugin-manager-pip
-  echo "🖼️ Plugin de PiP encontrado em: $(dirname "$PIP_XML")"
-else
-  echo "⚠️ Plugin de PiP não encontrado (cordova-plugin-manager-pip/plugin.xml) — o APK sai sem PiP nativo."
-fi
+# ----------------------------------------------------------------------
+# Plugin de PiP nativo: os arquivos ficam AQUI DENTRO do build.sh (não
+# precisa mais baixar/extrair zip nenhum). Ele é recriado a cada build.
+# ----------------------------------------------------------------------
+PIP=app/cordova-plugin-manager-pip
+mkdir -p "$PIP/src/android"
+cat > "$PIP/package.json" <<'PIPEOF'
+{
+  "name": "cordova-plugin-manager-pip",
+  "version": "1.0.0",
+  "description": "Picture-in-Picture nativo do Android para o APK do Manager",
+  "cordova": {
+    "id": "cordova-plugin-manager-pip",
+    "platforms": ["android"]
+  },
+  "keywords": ["ecosystem:cordova", "cordova-android"],
+  "license": "MIT"
+}
+PIPEOF
+cat > "$PIP/plugin.xml" <<'PIPEOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- PiP nativo do Android pro APK do Manager. O WebView não tem o
+     Picture-in-Picture da web, então o botão de PiP chama este plugin, que
+     coloca o app inteiro na janelinha flutuante do Android (8.0+). -->
+<plugin xmlns="http://apache.org/cordova/ns/plugins/1.0"
+        xmlns:android="http://schemas.android.com/apk/res/android"
+        id="cordova-plugin-manager-pip" version="1.0.0">
+  <name>ManagerPip</name>
+  <platform name="android">
+    <config-file target="res/xml/config.xml" parent="/*">
+      <feature name="ManagerPip">
+        <param name="android-package" value="com.manager.pip.ManagerPip" />
+      </feature>
+    </config-file>
+    <edit-config file="AndroidManifest.xml" target="/manifest/application/activity[@android:name='MainActivity']" mode="merge">
+      <activity android:supportsPictureInPicture="true" android:resizeableActivity="true" />
+    </edit-config>
+    <source-file src="src/android/ManagerPip.java" target-dir="src/com/manager/pip" />
+  </platform>
+</plugin>
+PIPEOF
+cat > "$PIP/src/android/ManagerPip.java" <<'PIPEOF'
+package com.manager.pip;
+
+import android.annotation.TargetApi;
+import android.app.Activity;
+import android.app.PictureInPictureParams;
+import android.content.pm.PackageManager;
+import android.os.Build;
+import android.util.Rational;
+
+import org.apache.cordova.CallbackContext;
+import org.apache.cordova.CordovaPlugin;
+import org.json.JSONArray;
+import org.json.JSONException;
+
+public class ManagerPip extends CordovaPlugin {
+
+    @Override
+    public boolean execute(String action, JSONArray args, final CallbackContext callback) throws JSONException {
+        if ("isSupported".equals(action)) {
+            callback.success(isSupported() ? 1 : 0);
+            return true;
+        }
+        if ("enter".equals(action)) {
+            final int w = args.optInt(0, 16);
+            final int h = args.optInt(1, 9);
+            cordova.getActivity().runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        if (!isSupported()) {
+                            callback.error("PiP nao suportado neste aparelho (precisa Android 8.0+ com PiP liberado)");
+                            return;
+                        }
+                        if (enterPip(w, h)) callback.success();
+                        else callback.error("O Android recusou o PiP (confira se o PiP esta permitido pro app nas configuracoes)");
+                    } catch (Throwable t) {
+                        callback.error(t.getClass().getSimpleName() + ": " + t.getMessage());
+                    }
+                }
+            });
+            return true;
+        }
+        return false;
+    }
+
+    private boolean isSupported() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false;
+        return cordova.getActivity().getPackageManager().hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE);
+    }
+
+    @TargetApi(Build.VERSION_CODES.O)
+    private boolean enterPip(int w, int h) {
+        Activity activity = cordova.getActivity();
+        w = Math.max(1, w);
+        h = Math.max(1, h);
+        // O Android só aceita proporções entre 1:2.39 e 2.39:1.
+        float ratio = (float) w / (float) h;
+        Rational r;
+        if (ratio > 2.39f) r = new Rational(239, 100);
+        else if (ratio < 1f / 2.39f) r = new Rational(100, 239);
+        else r = new Rational(w, h);
+        PictureInPictureParams params = new PictureInPictureParams.Builder().setAspectRatio(r).build();
+        return activity.enterPictureInPictureMode(params);
+    }
+}
+PIPEOF
+echo "🖼️ Plugin de PiP preparado."
+
 PROJECT_NAME="Manager"
 APP_ID="com.Manager.Manager"
 WORKDIR="$(pwd)/app"
@@ -39,15 +139,18 @@ docker run --network host --rm -it \
     cordova create app $APP_ID $PROJECT_NAME
 
     cd app
-    
-    cordova plugin add cordova-plugin-whitelist
+
+    # cordova-plugin-whitelist NÃO é mais adicionado: desde o cordova-android
+    # 10 ele já vem embutido, e o plugin antigo quebra a compilação nas
+    # versões novas (o Docker agora usa cordova-android 15).
 
     echo '🖼️ Adicionando PiP nativo...'
-    if [ -f /workspace/cordova-plugin-manager-pip/plugin.xml ]; then
-      cordova plugin add /workspace/cordova-plugin-manager-pip
-    fi
+    cordova plugin add /workspace/cordova-plugin-manager-pip
 
     cp -rf /workspace/config.xml ./
+    # o config.xml aponta pra esse arquivo (resource-file) — ele precisa
+    # estar na raiz do projeto Cordova, senão: 'Source path does not exist'
+    cp -rf /workspace/network_security_config.xml ./
 
     sed -i 's|<name>.*</name>|<name>$PROJECT_NAME</name>|g' config.xml
 
