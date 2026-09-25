@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>const APP_VERSION = '1.0.41';</script>
+<script>const APP_VERSION = '1.0.42';</script>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -540,14 +540,15 @@ a:focus,
 .episode-row .eprog .f{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent-2));}
 .episode-row .eline{flex:1;min-width:0;display:flex;align-items:center;gap:12px;}
 .episode-row .eside{display:flex;align-items:center;gap:12px;flex-shrink:0;}
-/* Celular: só a capa sobe (mesmo tamanho) e o resto fica numa linha embaixo:
-   nome | status | barra | baixar. */
+/* Celular: 1ª linha = capa (mesmo tamanho) + status + barra + baixar;
+   2ª linha = nome do episódio, ocupando a largura toda. */
 @media (max-width:700px){
-  .episode-row{flex-direction:column;align-items:flex-start;gap:8px;padding:10px 12px;}
-  .episode-row .eline{width:100%;gap:10px;}
-  .episode-row .ename{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;line-height:1.35;}
-  .episode-row .eside{gap:8px;}
-  .episode-row .eprog{width:48px;}
+  .episode-row{display:grid;grid-template-columns:auto 1fr;align-items:center;column-gap:12px;row-gap:8px;padding:10px 12px;}
+  .episode-row .eline{display:contents;}
+  .episode-row .eth{grid-column:1;grid-row:1;}
+  .episode-row .eside{grid-column:2;grid-row:1;justify-self:end;gap:10px;}
+  .episode-row .ename{grid-column:1 / -1;grid-row:2;white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;line-height:1.35;}
+  .episode-row .eprog{width:56px;}
 }
 
 /* player */
