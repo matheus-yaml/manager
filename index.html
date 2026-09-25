@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>const APP_VERSION = '1.0.43';</script>
+<script>const APP_VERSION = '1.0.44';</script>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -384,6 +384,20 @@ a:focus,
 .carousel:hover .car-nav{opacity:1;}
 .car-nav:hover{transform:translateY(-50%) scale(1.08);}
 .car-nav.hidden-nav{opacity:0 !important;pointer-events:none;}
+/* ---------- Modo leve (TV/projetor) — ver PerfMode ---------- */
+html.lite *, html.lite *::before, html.lite *::after{
+  -webkit-backdrop-filter:none !important;backdrop-filter:none !important;
+  transition:none !important;animation:none !important;
+}
+html.lite .spinner{animation:spin .8s linear infinite !important;}
+html.lite body{background-image:none !important;background-attachment:scroll !important;}
+html.lite{--bg-1:#141725;--bg-2:#1b1f2e;--bg-3:#252a3b;}
+html.lite .content-card, html.lite .btn.primary, html.lite .chip.active, html.lite .suggest-hero .sh-poster,
+html.lite .car-nav, html.lite .series-header .cover{box-shadow:none !important;}
+html.lite .content-card:hover{transform:none !important;}
+html.lite .content-card:hover .thumb img{transform:none !important;}
+html.lite .content-card::after{display:none !important;}
+html.lite .modal-box{background:#141622 !important;}
 /* ---------- Sugira-me ---------- */
 .suggest-lead{color:var(--text-2);font-size:13.5px;margin:-8px 0 16px;}
 .suggest-roll .dice{display:inline-block;font-size:16px;line-height:1;}
@@ -1292,7 +1306,8 @@ const DEFAULT_SETTINGS = {
   // processamento + gravação juntos, memória liberada no fim de cada um).
   // Em TV/projetor com pouca RAM, use 1 (estritamente um por vez).
   performance: {
-    maxConcurrentProcessing: 3 // quantos servidores importam ao mesmo tempo
+    maxConcurrentProcessing: 3, // quantos servidores importam ao mesmo tempo
+    liteMode: 'auto'            // 'auto' | 'on' | 'off' — ver PerfMode
   }
 
 };
@@ -1585,6 +1600,58 @@ const BootProgress = {
     this._el = null;
     el.style.opacity = '0';
     setTimeout(() => el.remove(), 220);
+  }
+};
+
+/* ======================================================================
+   MODO LEVE + MEDIÇÃO DE DESEMPENHO (TV/projetor fraco)
+   ------------------------------------------------------------------
+   O visual usa desfoque de fundo (vidro fosco) em ~35 lugares, fundo fixo
+   com gradientes e sombras/animações — de graça num celular bom, caro numa
+   GPU de projetor (ex: HY320, chip Allwinner + Mali fraca). O modo leve
+   (classe html.lite) desliga tudo isso. 'auto' liga sozinho em aparelho
+   Android sem tela de toque (TV/projetor) ou com ≤2 GB de RAM.
+   ====================================================================== */
+const PerfMode = {
+  isWeakDevice(){
+    const ua = navigator.userAgent || '';
+    const android = /Android/i.test(ua);
+    const touch = (navigator.maxTouchPoints || 0) > 0;
+    const mem = navigator.deviceMemory; // GB (aproximado); não existe em todo navegador
+    if(mem && mem <= 2) return true;
+    if(android && !touch) return true; // TV / projetor (controle remoto)
+    if(/\b(TV|Projector|AFT\w*|BRAVIA|MiTV|HY\d{3})\b/i.test(ua)) return true;
+    return false;
+  },
+  setting(){ return ((State.settings && State.settings.performance) || {}).liteMode || 'auto'; },
+  isLite(){
+    const m = this.setting();
+    return m === 'on' || (m === 'auto' && this.isWeakDevice());
+  },
+  apply(){ document.documentElement.classList.toggle('lite', this.isLite()); },
+  deviceSummary(){
+    const ua = navigator.userAgent || '';
+    const chrome = (/Chrome\/([\d.]+)/.exec(ua) || [])[1] || '?';
+    const wv = /; wv\)/.test(ua) ? 'WebView' : 'navegador';
+    return 'Chrome ' + chrome + ' (' + wv + ') • ' + (navigator.hardwareConcurrency || '?') + ' núcleos • ' +
+      (navigator.deviceMemory ? navigator.deviceMemory + ' GB' : 'RAM ?') + ' • tela ' + screen.width + 'x' + screen.height +
+      ' • modo leve ' + (this.isLite() ? 'LIGADO' : 'desligado') + ' (' + this.setting() + ')';
+  },
+  /** Mede quanto um trecho levou e registra no painel de diagnóstico. */
+  async time(label, fn){
+    const t0 = performance.now();
+    try{ return await fn(); }
+    finally{ pushDebugLog('⏱ ' + label + ': ' + Math.round(performance.now() - t0) + ' ms'); }
+  },
+  watchLongTasks(){
+    // "Travadas" do JavaScript (> 200ms sem responder) — o que se sente como lentidão.
+    try{
+      new PerformanceObserver((list) => {
+        for(const e of list.getEntries()){
+          if(e.duration >= 200) pushDebugLog('🐢 Travada de ' + Math.round(e.duration) + ' ms (tela: ' + (State.ui && State.ui.currentView) + ')', e.duration >= 600);
+        }
+      }).observe({ type:'longtask', buffered:true });
+    }catch(e){}
   }
 };
 
@@ -3116,6 +3183,7 @@ const ServerModule = {
 
   async importServerContent(server, statusCallback){
     const report = (patch) => { if(statusCallback) statusCallback(patch); };
+    const tStart = performance.now();
     try{
       report({ phase:'download', status:'processing', downloaded:0, total:null, speed:0 });
       let lastBytes = 0, lastTime = Date.now(), speed = 0;
@@ -3125,6 +3193,8 @@ const ServerModule = {
         report({ phase:'download', status:'processing', downloaded: bytes, total: total, speed: speed });
       });
       report({ phase:'download', status:'done', downloaded: raw.bytes, total: raw.bytes });
+      const tDownloaded = performance.now();
+      pushDebugLog('⏱ "' + server.nome + '": download ' + Math.round(tDownloaded - tStart) + ' ms (' + formatBytes(raw.bytes) + ')');
 
       let latestCounts = { movie:0, series:0, live:0 };
       report({ phase:'process', status:'processing', processed:0, total:0, counts: latestCounts, seriesCount: 0 });
@@ -3139,6 +3209,8 @@ const ServerModule = {
         report({ phase:'process', status:'processing', processed: done, total: Math.max(done, est), counts: d.counts, seriesCount: d.seriesCount });
       });
       result.bytes = raw.bytes;
+      pushDebugLog('⏱ "' + server.nome + '": processar e gravar ' + Math.round(performance.now() - tDownloaded) + ' ms (' +
+        (result.counts.movie + result.counts.series + result.counts.live) + ' itens)');
 
       const total = result.counts.movie + result.counts.series + result.counts.live;
       Object.assign(server, {
@@ -5497,6 +5569,7 @@ async function loadTypePageData(type, filters, pageSize){
   }
 
   const promise = (async () => {
+    const tPage = performance.now();
     const metaPromise = cachedMeta ? Promise.resolve(cachedMeta) : (
       type === 'series'
         ? Promise.all([QueryModule.getServersForSeries(), QueryModule.getCategoriesForSeries(filters.server)]).then(([s,c]) => ({ serverIds:s, catOptions:c }))
@@ -5508,6 +5581,7 @@ async function loadTypePageData(type, filters, pageSize){
     const [meta, pageResult] = await Promise.all([metaPromise, pagePromise]);
     State.pageCache.set(metaKey, meta);
     State.pageCache.set(pageKey, pageResult);
+    pushDebugLog('⏱ Página ' + type + ' (servidor ' + filters.server + ', categoria ' + CategoryGroups.label(filters.category) + ', pág. ' + filters.page + '): ' + Math.round(performance.now() - tPage) + ' ms');
     return { serverIds: meta.serverIds, catOptions: meta.catOptions, pageResult };
   })();
 
@@ -6642,7 +6716,10 @@ async function runImportWithProgressModal(servers){
   }
 
   try{
-    const configuredMaxProcessing = (State.settings.performance && State.settings.performance.maxConcurrentProcessing) || DEFAULT_SETTINGS.performance.maxConcurrentProcessing;
+    let configuredMaxProcessing = (State.settings.performance && State.settings.performance.maxConcurrentProcessing) || DEFAULT_SETTINGS.performance.maxConcurrentProcessing;
+    // Aparelho fraco com o valor padrão (3): importa 1 servidor por vez (menos memória, menos travadas).
+    if(PerfMode.isLite() && configuredMaxProcessing === DEFAULT_SETTINGS.performance.maxConcurrentProcessing) configuredMaxProcessing = 1;
+    pushDebugLog('Importação: ' + configuredMaxProcessing + ' servidor(es) ao mesmo tempo.');
     await ServerModule.importManyServersPipelined(servers, configuredMaxProcessing, updateServerUI, updateOverallUI, onFirstSuccess);
   }catch(err){
     showToast('Erro durante importação.', 'error');
@@ -6760,6 +6837,7 @@ async function renderSettingsView(container){
     State.ui.debugPanelEnabled = debugCheckbox.checked;
     if(State.ui.debugPanelEnabled){
       // Nunca abre vazio: registra a ativação + um resumo do ambiente.
+      pushDebugLog('Aparelho: ' + PerfMode.deviceSummary());
       pushDebugLog('Painel ativado — v' + APP_VERSION + ' • ' + location.protocol + ' • PiP ' +
         ((document.pictureInPictureEnabled && HTMLVideoElement.prototype.requestPictureInPicture) ? 'suportado' : 'NÃO suportado') +
         ' • ' + State.servers.size + ' servidor(es).');
@@ -6800,6 +6878,25 @@ async function renderSettingsView(container){
 
   const perfRow = el('div', { class:'form-row' });
   perfRow.appendChild(makePerfField('Servidores importando ao mesmo tempo', 'maxConcurrentProcessing', 'Mínimo 1 — use 1 em aparelhos fracos', 1));
+  // Modo leve: sem desfoque/sombras/animações (TV e projetor ficam bem mais leves)
+  const liteGroup = el('div', { class:'form-group' });
+  liteGroup.appendChild(el('label', {}, ['Modo leve (visual simples, mais rápido)']));
+  const liteSel = el('select', {});
+  [['auto','Automático (liga em TV/projetor e aparelho fraco)'],['on','Sempre ligado'],['off','Desligado']].forEach(([v,l]) => liteSel.appendChild(el('option', { value:v }, [l])));
+  liteSel.value = perf.liteMode || 'auto';
+  liteSel.addEventListener('change', async () => {
+    State.settings.performance = Object.assign({}, State.settings.performance || DEFAULT_SETTINGS.performance, { liteMode: liteSel.value });
+    PerfMode.apply();
+    await IDB.put(STORES.settings, State.settings);
+    showToast('Modo leve ' + (PerfMode.isLite() ? 'ligado.' : 'desligado.'), 'success');
+    liteHint.textContent = 'Agora: ' + (PerfMode.isLite() ? 'ligado' : 'desligado') + (liteSel.value === 'auto' ? (PerfMode.isWeakDevice() ? ' (aparelho detectado como TV/projetor/fraco)' : ' (aparelho detectado como normal)') : '');
+  });
+  liteGroup.appendChild(liteSel);
+  const liteHint = el('div', { style:'font-size:11px;color:var(--text-2);margin-top:4px;' }, [
+    'Agora: ' + (PerfMode.isLite() ? 'ligado' : 'desligado') + ((perf.liteMode || 'auto') === 'auto' ? (PerfMode.isWeakDevice() ? ' (aparelho detectado como TV/projetor/fraco)' : ' (aparelho detectado como normal)') : '')
+  ]);
+  liteGroup.appendChild(liteHint);
+  perfRow.appendChild(liteGroup);
   perfBlock.appendChild(perfRow);
   container.appendChild(perfBlock);
 
@@ -7560,9 +7657,13 @@ function showFatalDbScreen(err){
 }
 
 async function initApp(){
+  const tBoot = performance.now();
+  PerfMode.apply(); // antes das configurações (usa 'auto') — evita o 1º quadro pesado
+  PerfMode.watchLongTasks();
   BootProgress.start();
   try{
     State.db = await IDB.open();
+    pushDebugLog('⏱ Abrir banco: ' + Math.round(performance.now() - tBoot) + ' ms');
   }catch(err){
     pushDebugLog('Banco inacessível mesmo após reparo: ' + (err && (err.message || err.name)), true);
     BootProgress.done();
@@ -7584,6 +7685,7 @@ async function initApp(){
     State.settings = { ...DEFAULT_SETTINGS };
   }
   applyThemeColors(State.settings.colors);
+  PerfMode.apply();
 
   // Servidores, progresso e favoritos são pequenos — carregam rápido e
   // eager. O conteúdo (que pode ter milhões de itens) NUNCA é carregado
@@ -7606,6 +7708,8 @@ async function initApp(){
   }
   Router.render();
   BootProgress.done();
+  pushDebugLog('⏱ Abertura do app até a 1ª tela: ' + Math.round(performance.now() - tBoot) + ' ms');
+  pushDebugLog('Aparelho: ' + PerfMode.deviceSummary());
   if(State.dbWasRepaired){
     showToast('O banco de dados do app estava incompatível e foi recriado. Seus servidores foram mantidos — vá em Servidores e toque em "Atualizar Todos".', 'error');
   }
@@ -7614,7 +7718,7 @@ async function initApp(){
   // no cache), então ao trocar de aba pela primeira vez já está pronto.
   prefetchFirstPages();
   ProgressModule.backfillNextEpisodes().then((added) => {
-    if(added && State.ui.currentView === 'dashboard' || State.ui.currentView === 'continue') Router.render();
+    if(added && (State.ui.currentView === 'dashboard' || State.ui.currentView === 'continue')) Router.render();
   }).catch(()=>{});
 }
 
