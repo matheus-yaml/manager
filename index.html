@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>const APP_VERSION = '1.0.15';</script>
+<script>const APP_VERSION = '1.0.17';</script>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -865,7 +865,7 @@ a:focus,
 'use strict';
 
 const DB_NAME = 'StreamManagerDB';
-const DB_VERSION = 5;
+const DB_VERSION = 6; // v6: remove o índice morto 'seriesKey' de STORES.contents (ver onupgradeneeded)
 const STORES = {
   servers: 'servers',
   contents: 'contents',
@@ -1328,7 +1328,12 @@ const IDB = {
         // precisar de índices próprios pra cada um.
         if(cs.indexNames.contains('tipo')) cs.deleteIndex('tipo');
         if(cs.indexNames.contains('serverId')) cs.deleteIndex('serverId');
-        if(!cs.indexNames.contains('seriesKey')) cs.createIndex('seriesKey', 'seriesKey', { unique:false });
+        // v6: 'seriesKey' removido — desde a v4 (episódios de série viraram
+        // parte do resumo, não registros soltos na store `contents`), nada
+        // em `contents` tem mais `seriesKey` de verdade e NADA no código
+        // consulta esse índice — era peso puro em toda gravação (mais uma
+        // árvore pra atualizar a cada put()) sem servir pra nada.
+        if(cs.indexNames.contains('seriesKey')) cs.deleteIndex('seriesKey');
         if(!cs.indexNames.contains('tipo_serverId')) cs.createIndex('tipo_serverId', ['tipo','serverId'], { unique:false });
         if(!cs.indexNames.contains('tipo_categoria')) cs.createIndex('tipo_categoria', ['tipo','categoria'], { unique:false });
 
@@ -1819,6 +1824,22 @@ const QueryModule = {
     const needsExtraCategoryFilter = extraCategory && filters.category && filters.category !== 'all';
     const canUseFastCount = !favSet && !needsExtraServerFilter && !needsExtraCategoryFilter;
 
+    // Servidor + categoria ao mesmo tempo (needsExtraCategoryFilter) era o
+    // único caso que sobrava sem contagem rápida — tinha que andar pelo
+    // índice até o fim só pra saber o total. Só que essa contagem por
+    // categoria já foi calculada de graça durante a importação (ver
+    // compactItemIncremental) e guardada no próprio servidor — então dá
+    // pra usar ela direto aqui, O(1), em vez de escanear tudo de novo.
+    // Servidor importado antes dessa otimização não tem esse campo ainda
+    // (undefined) — nesse caso cai pro caminho lento de sempre, sem quebrar.
+    let precomputedTotal;
+    if(!favSet && needsExtraCategoryFilter && !needsExtraServerFilter){
+      const srv = State.servers.get(filters.server);
+      const countsField = type === 'movie' ? 'movieCategoryCounts' : 'liveCategoryCounts';
+      const cached = srv && srv[countsField] ? srv[countsField][filters.category] : undefined;
+      if(typeof cached === 'number') precomputedTotal = cached;
+    }
+
     return new Promise((resolve, reject) => {
       try{
         const store = IDB.tx([STORES.contents]).objectStore(STORES.contents);
@@ -1857,6 +1878,8 @@ const QueryModule = {
           const countReq = idx.count(range);
           countReq.onsuccess = () => collectPage(countReq.result);
           countReq.onerror = (e) => reject(e.target.error);
+        } else if(precomputedTotal !== undefined){
+          collectPage(precomputedTotal);
         } else {
           collectPage(undefined);
         }
@@ -2889,8 +2912,14 @@ function createCompactionState(){
     // na prática (o cursor 'nextunique' nem sempre pula duplicados de
     // verdade dependendo do navegador), então evitamos fazer essa consulta
     // toda vez que a tela de Filmes/Ao Vivo abre.
-    movieCategories: new Set(),
-    liveCategories: new Set()
+    // Viraram Map (categoria -> quantos itens) em vez de Set: além da
+    // lista de categorias distintas (as chaves), guarda de graça a
+    // CONTAGEM de cada uma — usada depois pra responder na hora "quantos
+    // itens tem filtrando por este servidor + esta categoria" sem
+    // precisar varrer o índice até o fim só pra contar (ver
+    // QueryModule.getContentPage / server.movieCategoryCounts).
+    movieCategories: new Map(),
+    liveCategories: new Map()
   };
 }
 
@@ -2968,8 +2997,8 @@ function compactItemIncremental(c, state){
   // Filme/ao vivo continuam indo pro lote normal (store `contents`), com a
   // mesma compressão de capa/URL de sempre.
   if(c.categoria){
-    if(c.tipo === 'movie') state.movieCategories.add(c.categoria);
-    else if(c.tipo === 'live') state.liveCategories.add(c.categoria);
+    if(c.tipo === 'movie') state.movieCategories.set(c.categoria, (state.movieCategories.get(c.categoria) || 0) + 1);
+    else if(c.tipo === 'live') state.liveCategories.set(c.categoria, (state.liveCategories.get(c.categoria) || 0) + 1);
   }
   compactSingleFieldIncremental(c, 'logo', 'logoPrefixId', 'logoSuffix', state.logoPrefixToId, state.logoPrefixList);
   compactSingleFieldIncremental(c, 'url', 'urlPrefixId', 'urlSuffix', state.urlPrefixToId, state.urlPrefixList);
@@ -3511,8 +3540,13 @@ const ServerModule = {
           counts: counts,
           urlPrefixes: state.urlPrefixList,
           logoPrefixes: state.logoPrefixList,
-          movieCategories: Array.from(state.movieCategories),
-          liveCategories: Array.from(state.liveCategories),
+          movieCategories: Array.from(state.movieCategories.keys()),
+          liveCategories: Array.from(state.liveCategories.keys()),
+          // Contagem por categoria (pra pular o cursor-count lento quando
+          // servidor+categoria são filtrados ao mesmo tempo — ver
+          // QueryModule.getContentPage).
+          movieCategoryCounts: Object.fromEntries(state.movieCategories),
+          liveCategoryCounts: Object.fromEntries(state.liveCategories),
           seriesKeys: writtenSeriesKeys
         };
       }
@@ -3657,6 +3691,8 @@ const ServerModule = {
       server.logoPrefixes = result.logoPrefixes;
       server.movieCategories = result.movieCategories;
       server.liveCategories = result.liveCategories;
+      server.movieCategoryCounts = result.movieCategoryCounts;
+      server.liveCategoryCounts = result.liveCategoryCounts;
       server.counts = result.counts;
       server.lastStatus = 'ok';
       server.lastError = null;
@@ -3915,6 +3951,8 @@ const ServerModule = {
           server.logoPrefixes = result.logoPrefixes;
           server.movieCategories = result.movieCategories;
           server.liveCategories = result.liveCategories;
+          server.movieCategoryCounts = result.movieCategoryCounts;
+          server.liveCategoryCounts = result.liveCategoryCounts;
           server.counts = result.counts;
           server.lastStatus = 'ok';
           server.lastError = null;
@@ -4394,9 +4432,21 @@ const PlayerModule = {
 
     // Clique no vídeo: comportamento depende de 4 estados (pausado/tocando
     // × controles visíveis/escondidos) — ver _handlePlayerClick. DUPLO
-    // clique entra/sai da tela cheia.
-    video.addEventListener('click', (e) => { this._handlePlayerClick(e); });
-    video.addEventListener('dblclick', () => { this.toggleFullscreen(); });
+    // clique entra/sai da tela cheia — mas só no CENTRO: nas laterais,
+    // duplo clique agora é avançar/retroceder progressivo (ver
+    // _ensureSideGestures), então aqui a gente ignora fora do centro.
+    video.addEventListener('click', (e) => {
+      // Gesto de lateral (segurar ou clique duplo) já tratou esse clique
+      // sozinho via pointerdown/up — não deixa o clique nativo, que
+      // dispara em seguida de qualquer forma, mostrar/esconder de novo.
+      if(this._sideGestureOwnsNextClick){ this._sideGestureOwnsNextClick = false; return; }
+      this._handlePlayerClick(e);
+    });
+    video.addEventListener('dblclick', (e) => {
+      if(!this._isCenterZone(e)) return;
+      this.toggleFullscreen();
+    });
+    this._ensureSideGestures();
 
     playPauseBtn.addEventListener('click', (e) => { e.stopPropagation(); this.togglePlayPause(); });
 
@@ -4665,6 +4715,187 @@ const PlayerModule = {
     return (dx * dx + dy * dy) <= radius * radius;
   },
 
+  /** true = clique/toque está na metade ESQUERDA do vídeo (fora do
+   * círculo central — ver _isCenterZone, checado antes disso sempre). */
+  _isLeftZone(e){
+    const video = qs('#video-player');
+    const rect = video.getBoundingClientRect();
+    if(!rect.width) return false;
+    return e.clientX < (rect.left + rect.width / 2);
+  },
+
+  /**
+   * Gestos de lateral (fora do círculo central de play/pause):
+   *  - Toque único: mostra/esconde os controles (igual clique de sempre).
+   *  - Toque duplo (2 toques rápidos na MESMA lateral): avança/retrocede
+   *    de forma progressiva — 5s no primeiro par, 10s se continuar
+   *    repetindo rapidinho, depois 15s, até um teto de 20s. Esfria
+   *    (volta pra 5s) depois de 1.5s sem novo toque duplo.
+   *  - Segurar (>380ms sem soltar): entra em "2x" enquanto durar —
+   *    direita toca 2x mais rápido de verdade (playbackRate=2); esquerda
+   *    "retrocede" 2x simulado (não existe playbackRate negativo pra
+   *    vídeo, então a gente vai puxando currentTime pra trás aos
+   *    pouquinhos, num intervalo curto — dá o efeito de rebobinar).
+   *    Solta e volta ao normal (velocidade e play/pause de antes).
+   *
+   * Tudo isso roda por cima de pointerdown/up (mouse E toque, num só
+   * lugar) em vez do 'click'/'dblclick' nativos, porque só assim dá pra
+   * diferenciar toque único de duplo ANTES de agir (o clique nativo já
+   * dispara a ação na hora — não dá pra "cancelar" depois se um segundo
+   * toque aparecer logo em seguida). O clique nativo que ainda dispara
+   * depois é silenciado via _sideGestureOwnsNextClick (ver o listener de
+   * 'click' em _ensurePlayerControls).
+   */
+  _ensureSideGestures(){
+    if(this._sideGesturesReady) return;
+    this._sideGesturesReady = true;
+
+    const video = qs('#video-player');
+    const HOLD_THRESHOLD = 380; // ms segurando antes de virar "2x"
+    const TAP_GAP = 300;        // janela pra um 2º toque contar como duplo
+
+    let holdTimer = null;
+    let holdEngaged = false;
+    let downInSide = false;
+    let downIsLeft = false;
+    let pendingTapTimer = null;
+    let pendingTapSide = null; // 'left' | 'right' | null
+
+    const clearHoldTimer = () => { clearTimeout(holdTimer); holdTimer = null; };
+
+    const onDown = (e) => {
+      if(this._isCenterZone(e)){ downInSide = false; return; } // centro: nada muda aqui
+      downInSide = true;
+      downIsLeft = this._isLeftZone(e);
+      this._sideGestureOwnsNextClick = true;
+      holdEngaged = false;
+      clearHoldTimer();
+      holdTimer = setTimeout(() => {
+        holdEngaged = true;
+        this._startSideHold(downIsLeft);
+      }, HOLD_THRESHOLD);
+    };
+
+    const onUp = () => {
+      if(!downInSide) return;
+      downInSide = false;
+      clearHoldTimer();
+
+      if(holdEngaged){
+        this._endSideHold();
+        holdEngaged = false;
+        return; // segurou e soltou — não conta como toque pra duplo-clique
+      }
+
+      const side = downIsLeft ? 'left' : 'right';
+      if(pendingTapSide === side){
+        // 2º toque na mesma lateral dentro da janela — vira avanço/
+        // retrocesso progressivo, e cancela a ação de toque único
+        // pendente (não mostra/esconde controles nesse caso).
+        clearTimeout(pendingTapTimer);
+        pendingTapTimer = null;
+        pendingTapSide = null;
+        this._handleSideDoubleTap(downIsLeft);
+        return;
+      }
+
+      // 1º toque — espera ver se vem um 2º antes de agir.
+      pendingTapSide = side;
+      clearTimeout(pendingTapTimer);
+      pendingTapTimer = setTimeout(() => {
+        pendingTapSide = null;
+        this._toggleControlsVisibility();
+      }, TAP_GAP);
+    };
+
+    const onCancel = () => {
+      if(holdEngaged){ this._endSideHold(); }
+      downInSide = false;
+      holdEngaged = false;
+      clearHoldTimer();
+    };
+
+    if(window.PointerEvent){
+      video.addEventListener('pointerdown', onDown);
+      video.addEventListener('pointerup', onUp);
+      video.addEventListener('pointercancel', onCancel);
+      video.addEventListener('pointerleave', onCancel);
+    } else {
+      video.addEventListener('mousedown', onDown);
+      video.addEventListener('mouseup', onUp);
+      video.addEventListener('mouseleave', onCancel);
+    }
+  },
+
+  _sideDoubleTapState: { side: null, count: 0, timer: null },
+
+  _handleSideDoubleTap(isLeft){
+    const state = this._sideDoubleTapState;
+    const side = isLeft ? 'left' : 'right';
+    clearTimeout(state.timer);
+    state.count = (state.side === side) ? state.count + 1 : 1;
+    state.side = side;
+
+    const STEPS = [5, 10, 15, 20]; // progressivo, com teto de 20s
+    const amount = STEPS[Math.min(state.count - 1, STEPS.length - 1)];
+    this.seekBy(isLeft ? -amount : amount);
+
+    // Esfria o combo depois de 1.5s sem novo duplo-toque na mesma lateral.
+    state.timer = setTimeout(() => { state.side = null; state.count = 0; }, 1500);
+  },
+
+  /** Liga o modo "2x" (segurando) numa das laterais. */
+  _startSideHold(isLeft){
+    const video = qs('#video-player');
+    this._sideHoldActive = true;
+    this._sideHoldWasPlaying = !video.paused;
+    this._sideHoldOriginalRate = video.playbackRate || 1;
+
+    const indicator = qs('#player-seek-feedback');
+    clearTimeout(this._seekFeedbackTimer); // não deixa um timer de ±5s antigo esconder esse indicador
+    const icon = isLeft ? this.ICONS.seekBack5 : this.ICONS.seekFwd5;
+    indicator.innerHTML = icon.replace('<span>5</span>', '') + '<span>2x</span>';
+    indicator.classList.add('show');
+
+    if(isLeft){
+      // "Retroceder 2x": não existe playbackRate negativo pra vídeo, então
+      // simula puxando currentTime pra trás aos pouquinhos, num intervalo
+      // curto — proporção pequena de propósito (0.1s a cada 50ms ≈ 2x),
+      // pra não ficar "aos pulos".
+      video.pause();
+      this._sideHoldInterval = setInterval(() => {
+        const isLive = this.currentContent && this.currentContent.tipo === 'live';
+        let minTime = 0;
+        if(isLive){
+          const range = this._getLiveWindowRange(video);
+          if(range) minTime = range[0];
+        }
+        video.currentTime = Math.max(minTime, video.currentTime - 0.1);
+        this._updateSeekUI();
+      }, 50);
+    } else {
+      // "Avançar 2x": esse sim é suportado de verdade pelo <video>.
+      video.playbackRate = 2;
+      if(video.paused) video.play().catch(()=>{});
+    }
+  },
+
+  /** Desliga o modo "2x", devolvendo velocidade/estado de play de antes. */
+  _endSideHold(){
+    if(!this._sideHoldActive) return;
+    const video = qs('#video-player');
+    this._sideHoldActive = false;
+    clearInterval(this._sideHoldInterval);
+    video.playbackRate = this._sideHoldOriginalRate || 1;
+    if(this._sideHoldWasPlaying){
+      if(video.paused) video.play().catch(()=>{});
+    } else if(!video.paused){
+      video.pause();
+    }
+    const indicator = qs('#player-seek-feedback');
+    indicator.classList.remove('show');
+  },
+
   /**
    * Clique no vídeo — comportamento com 4 estados (pausado/tocando ×
    * controles visíveis/escondidos), conforme especificado:
@@ -4682,8 +4913,8 @@ const PlayerModule = {
    *   junto, por fazer parte do mesmo grupo de visibilidade).
    */
   _handlePlayerClick(e){
-    const overlay = qs('#player-overlay');
     const inCenter = this._isCenterZone(e);
+    const overlay = qs('#player-overlay');
     const controlsVisible = !overlay.classList.contains('controls-hidden');
 
     if(controlsVisible){
@@ -4691,10 +4922,9 @@ const PlayerModule = {
         // Os listeners de 'play'/'pause' do <video> já cuidam de manter
         // (se pausou) ou reagendar (se despausou) a visibilidade.
         this.togglePlayPause();
-      } else {
-        clearTimeout(this._hideControlsTimer);
-        overlay.classList.add('controls-hidden');
+        return;
       }
+      this._toggleControlsVisibility();
       return;
     }
 
@@ -4707,6 +4937,23 @@ const PlayerModule = {
       // (o de 'play' não revela), então garantimos isso aqui sempre.
       this._showControls();
       this._scheduleHideControls();
+    } else {
+      this._toggleControlsVisibility();
+    }
+  },
+
+  /**
+   * Mostrar/esconder os controles ao clicar nas laterais — extraído de
+   * _handlePlayerClick pra ser reaproveitado também pelo toque simples nas
+   * laterais dentro de _ensureSideGestures (que agora intercepta o clique
+   * nativo ali pra poder diferenciar toque único × duplo × segurar).
+   */
+  _toggleControlsVisibility(){
+    const overlay = qs('#player-overlay');
+    const controlsVisible = !overlay.classList.contains('controls-hidden');
+    if(controlsVisible){
+      clearTimeout(this._hideControlsTimer);
+      overlay.classList.add('controls-hidden');
     } else {
       this._showControls();
       this._scheduleHideControls();
@@ -5121,6 +5368,12 @@ const PlayerModule = {
     if(this.retryTimer){ clearTimeout(this.retryTimer); this.retryTimer = null; }
     if(this.stallWatchdog){ clearInterval(this.stallWatchdog); this.stallWatchdog = null; }
     if(this._hideControlsTimer){ clearTimeout(this._hideControlsTimer); this._hideControlsTimer = null; }
+    // Se o player for fechado NO MEIO de um "segurar pra 2x" (ex: usuário
+    // segurou e apertou voltar), não pode deixar o intervalo do
+    // retrocesso simulado rodando sozinho depois que o vídeo já era.
+    if(this._sideHoldInterval){ clearInterval(this._sideHoldInterval); this._sideHoldInterval = null; }
+    if(this._sideHoldActive){ try{ video.playbackRate = this._sideHoldOriginalRate || 1; }catch(e){} }
+    this._sideHoldActive = false;
     const video = qs('#video-player');
     if(this.hls){ try{ this.hls.destroy(); }catch(e){} this.hls = null; }
     if(this.mpegtsPlayer){
