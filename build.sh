@@ -4,7 +4,18 @@ set -e
 
 rm -rf app
 mkdir -p app
-cp -rf config.xml index.html network_security_config.xml cordova-plugin-manager-pip app
+cp -rf config.xml index.html network_security_config.xml app
+
+# Plugin de PiP nativo: acha a pasta que tem o plugin.xml (funciona mesmo se o
+# zip foi extraído numa pasta com o mesmo nome, ex: pasta/pasta/plugin.xml).
+# (procura pelo package.json: pasta antiga extraída sem ele é ignorada)
+PIP_XML="$(find . -path ./app -prune -o -name package.json -path '*cordova-plugin-manager-pip*' -print | head -1)"
+if [ -n "$PIP_XML" ]; then
+  cp -rf "$(dirname "$PIP_XML")" app/cordova-plugin-manager-pip
+  echo "🖼️ Plugin de PiP encontrado em: $(dirname "$PIP_XML")"
+else
+  echo "⚠️ Plugin de PiP não encontrado (cordova-plugin-manager-pip/plugin.xml) — o APK sai sem PiP nativo."
+fi
 PROJECT_NAME="Manager"
 APP_ID="com.Manager.Manager"
 WORKDIR="$(pwd)/app"
@@ -32,7 +43,9 @@ docker run --network host --rm -it \
     cordova plugin add cordova-plugin-whitelist
 
     echo '🖼️ Adicionando PiP nativo...'
-    cordova plugin add /workspace/cordova-plugin-manager-pip
+    if [ -f /workspace/cordova-plugin-manager-pip/plugin.xml ]; then
+      cordova plugin add /workspace/cordova-plugin-manager-pip
+    fi
 
     cp -rf /workspace/config.xml ./
 
