@@ -4,7 +4,7 @@ set -e
 
 rm -rf app
 mkdir -p app
-cp -rf config.xml index.html network_security_config.xml app
+cp -rf config.xml index.html network_security_config.xml cordova-plugin-manager-pip app
 PROJECT_NAME="Manager"
 APP_ID="com.Manager.Manager"
 WORKDIR="$(pwd)/app"
@@ -30,6 +30,9 @@ docker run --network host --rm -it \
     cd app
     
     cordova plugin add cordova-plugin-whitelist
+
+    echo '🖼️ Adicionando PiP nativo...'
+    cordova plugin add /workspace/cordova-plugin-manager-pip
 
     cp -rf /workspace/config.xml ./
 
