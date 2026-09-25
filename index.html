@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>const APP_VERSION = '1.0.42';</script>
+<script>const APP_VERSION = '1.0.43';</script>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -3826,7 +3826,8 @@ const PlayerModule = {
       this.toggleFullscreen();
     });
     document.addEventListener('fullscreenchange', () => {
-      if(!document.fullscreenElement) this._unlockOrientation(); // saiu da tela cheia (botão, voltar, gesto): libera a rotação
+      if(!document.fullscreenElement){ this._unlockOrientation(); this._setNativeImmersive(false); } // saiu da tela cheia (botão, voltar, gesto): libera rotação e barras
+      else this._setNativeImmersive(true);
       fullscreenBtn.innerHTML = document.fullscreenElement ? this.ICONS.fullscreenExit : this.ICONS.fullscreenEnter;
     });
 
@@ -4036,7 +4037,22 @@ const PlayerModule = {
       document.exitFullscreen().catch(()=>{});
     } else if(overlay.requestFullscreen){
       overlay.requestFullscreen().then(() => this._lockLandscapeIfPhone()).catch(()=>{});
+      this._setNativeImmersive(true);
     }
+  },
+
+  /** APK: esconde de verdade a barra de status/navegação do Android (o
+   * requestFullscreen do WebView sozinho deixa a barra de status aparecendo).
+   * Usa o mesmo plugin do PiP (ação 'immersive' / 'showSystemUI'). No
+   * navegador não faz nada — lá a tela cheia já esconde tudo. */
+  _setNativeImmersive(on){
+    if(!(window.cordova && typeof window.cordova.exec === 'function')) return;
+    if(this._immersiveOn === on) return;
+    this._immersiveOn = on;
+    try{
+      window.cordova.exec(() => {}, (msg) => pushDebugLog('Tela cheia (APK): ' + msg + ' — gere o APK de novo com o build.sh novo.', true),
+        'ManagerPip', on ? 'immersive' : 'showSystemUI', []);
+    }catch(e){}
   },
 
   /** Celular/tablet: ao entrar em tela cheia, gira pra horizontal (se o
@@ -5138,6 +5154,7 @@ const PlayerModule = {
     this.playToken++; // invalidate any pending retries/callbacks
     if(document.fullscreenElement) document.exitFullscreen().catch(()=>{});
     this._unlockOrientation();
+    this._setNativeImmersive(false);
     const video = qs('#video-player');
     if(this.currentContent && this.currentContent.tipo !== 'live' && video.duration && !isNaN(video.duration)){
       ProgressModule.saveProgress(this.currentContent.id, video.currentTime, video.duration, this.currentContent.seriesKey, this.currentContent._loc);

@@ -56,6 +56,10 @@ import android.app.PictureInPictureParams;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.util.Rational;
+import android.view.View;
+import android.view.Window;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 
 import org.apache.cordova.CallbackContext;
 import org.apache.cordova.CordovaPlugin;
@@ -90,7 +94,58 @@ public class ManagerPip extends CordovaPlugin {
             });
             return true;
         }
+        // Tela cheia de verdade no APK: esconde barra de status e de navegação
+        // (o requestFullscreen do WebView sozinho não esconde a barra de status).
+        if ("immersive".equals(action) || "showSystemUI".equals(action)) {
+            final boolean on = "immersive".equals(action);
+            cordova.getActivity().runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        setImmersive(on);
+                        callback.success();
+                    } catch (Throwable t) {
+                        callback.error(t.getClass().getSimpleName() + ": " + t.getMessage());
+                    }
+                }
+            });
+            return true;
+        }
         return false;
+    }
+
+    @SuppressWarnings("deprecation")
+    private void setImmersive(boolean on) {
+        Window w = cordova.getActivity().getWindow();
+        if (Build.VERSION.SDK_INT >= 30) {
+            setImmersiveApi30(w, on);
+            return;
+        }
+        View d = w.getDecorView();
+        if (on) {
+            d.setSystemUiVisibility(View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                    | View.SYSTEM_UI_FLAG_FULLSCREEN
+                    | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                    | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN);
+        } else {
+            d.setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
+        }
+    }
+
+    @TargetApi(30)
+    private void setImmersiveApi30(Window w, boolean on) {
+        WindowInsetsController c = w.getInsetsController();
+        if (c == null) return;
+        int bars = WindowInsets.Type.statusBars() | WindowInsets.Type.navigationBars();
+        if (on) {
+            c.hide(bars);
+            // puxar da borda mostra as barras só por um instante
+            c.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+        } else {
+            c.show(bars);
+        }
     }
 
     private boolean isSupported() {
