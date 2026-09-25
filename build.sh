@@ -52,6 +52,9 @@ package com.manager.pip;
 
 import android.annotation.TargetApi;
 import android.app.Activity;
+import android.app.ActivityManager;
+import android.content.Context;
+import android.os.Debug;
 import android.app.PictureInPictureParams;
 import android.content.pm.PackageManager;
 import android.os.Build;
@@ -65,6 +68,7 @@ import org.apache.cordova.CallbackContext;
 import org.apache.cordova.CordovaPlugin;
 import org.json.JSONArray;
 import org.json.JSONException;
+import org.json.JSONObject;
 
 public class ManagerPip extends CordovaPlugin {
 
@@ -92,6 +96,28 @@ public class ManagerPip extends CordovaPlugin {
                     }
                 }
             });
+            return true;
+        }
+        // Memória RAM do aparelho (pro painel de diagnóstico do app):
+        // total, livre, se o Android está em "pouca memória" e quanto este
+        // app (processo principal) está usando.
+        if ("memInfo".equals(action)) {
+            try {
+                ActivityManager am = (ActivityManager) cordova.getActivity().getSystemService(Context.ACTIVITY_SERVICE);
+                ActivityManager.MemoryInfo mi = new ActivityManager.MemoryInfo();
+                am.getMemoryInfo(mi);
+                JSONObject o = new JSONObject();
+                o.put("total", mi.totalMem);
+                o.put("avail", mi.availMem);
+                o.put("low", mi.lowMemory);
+                o.put("threshold", mi.threshold);
+                Debug.MemoryInfo dm = new Debug.MemoryInfo();
+                Debug.getMemoryInfo(dm);
+                o.put("appPssKb", dm.getTotalPss());
+                callback.success(o);
+            } catch (Throwable t) {
+                callback.error(t.getClass().getSimpleName() + ": " + t.getMessage());
+            }
             return true;
         }
         // Tela cheia de verdade no APK: esconde barra de status e de navegação
