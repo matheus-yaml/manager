@@ -127,6 +127,25 @@ public class ManagerPip extends CordovaPlugin {
             });
             return true;
         }
+        // controles do player híbrido (os botões são do app, o vídeo é nativo)
+        if ("miniPause".equals(action) || "miniResume".equals(action) || "miniVolume".equals(action)) {
+            final String act = action;
+            final float vol = (float) args.optDouble(0, 1.0);
+            cordova.getActivity().runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        if (mView != null) {
+                            if ("miniPause".equals(act)) { mPaused = true; mView.pause(); }
+                            else if ("miniResume".equals(act)) { mPaused = false; mLastMove = System.currentTimeMillis(); mView.start(); }
+                            else { mVol = vol; if (mMp != null) mMp.setVolume(vol, vol); }
+                        }
+                        callback.success();
+                    } catch (Throwable t) { callback.error(t.getClass().getSimpleName() + ": " + t.getMessage()); }
+                }
+            });
+            return true;
+        }
         if ("miniHide".equals(action)) {
             cordova.getActivity().runOnUiThread(new Runnable() {
                 @Override
@@ -460,7 +479,9 @@ public class ManagerPip extends CordovaPlugin {
     private CallbackContext mCb;
     private String mUrl;
     private int mRetries = 0, mLastPos = -1;
-    private boolean mPlayed = false;
+    private boolean mPlayed = false, mPaused = false;
+    private MediaPlayer mMp;
+    private float mVol = 1f;
     private long mLastMove = 0;
     private Runnable mWatch;
     private final Handler mH = new Handler(Looper.getMainLooper());
@@ -490,13 +511,25 @@ public class ManagerPip extends CordovaPlugin {
         }
         if (url.equals(mUrl) && mView != null) return; // já tocando esse canal
         if (mView != null) { try { mView.stopPlayback(); } catch (Throwable ignore) {} mBox.removeView(mView); mView = null; }
-        mUrl = url; mRetries = 0; mPlayed = false; mLastPos = -1; mLastMove = System.currentTimeMillis();
+        mUrl = url; mRetries = 0; mPlayed = false; mPaused = false; mMp = null; mLastPos = -1; mLastMove = System.currentTimeMillis();
         final VideoView v = new VideoView(act);
         v.setFocusable(false);
         mBox.addView(v, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.CENTER));
         mView = v;
         v.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
-            public void onPrepared(MediaPlayer mp) { mPlayed = true; mRetries = 0; mLastMove = System.currentTimeMillis(); mp.start(); mSend("{\"event\":\"playing\"}", true); }
+            public void onPrepared(MediaPlayer mp) {
+                mMp = mp; mPlayed = true; mRetries = 0; mLastMove = System.currentTimeMillis();
+                try { mp.setVolume(mVol, mVol); } catch (Throwable ignore) {}
+                if (!mPaused) mp.start();
+                mSend("{\"event\":\"playing\"}", true);
+            }
+        });
+        v.setOnInfoListener(new MediaPlayer.OnInfoListener() {
+            public boolean onInfo(MediaPlayer mp, int what, int extra) {
+                if (what == MediaPlayer.MEDIA_INFO_BUFFERING_START) mSend("{\"event\":\"buffering\"}", true);
+                else if (what == MediaPlayer.MEDIA_INFO_BUFFERING_END || what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) mSend("{\"event\":\"buffered\"}", true);
+                return false;
+            }
         });
         v.setOnErrorListener(new MediaPlayer.OnErrorListener() {
             public boolean onError(MediaPlayer mp, int what, int extra) {
@@ -517,7 +550,8 @@ public class ManagerPip extends CordovaPlugin {
                     if (mView == null) { mWatch = null; return; }
                     try {
                         int pos = mView.getCurrentPosition();
-                        if (pos != mLastPos) { mLastPos = pos; mLastMove = System.currentTimeMillis(); }
+                        if (mPaused) { mLastMove = System.currentTimeMillis(); }
+                        else if (pos != mLastPos) { mLastPos = pos; mLastMove = System.currentTimeMillis(); }
                         else if (System.currentTimeMillis() - mLastMove > 15000) { mLastMove = System.currentTimeMillis(); miniRetry("vídeo parado"); }
                     } catch (Throwable ignore) {}
                     mH.postDelayed(this, 3000);
@@ -552,6 +586,7 @@ public class ManagerPip extends CordovaPlugin {
             public void run() {
                 if (mView == null) return;
                 try { mView.stopPlayback(); } catch (Throwable ignore) {}
+                mMp = null;
                 mLastMove = System.currentTimeMillis();
                 mView.setVideoURI(Uri.parse(mUrl));
                 mView.start();
@@ -560,6 +595,7 @@ public class ManagerPip extends CordovaPlugin {
     }
 
     private void miniClose(String reason) {
+        mMp = null; mPaused = false;
         mH.removeCallbacksAndMessages(null);
         mWatch = null;
         if (mView != null) { try { mView.stopPlayback(); } catch (Throwable ignore) {} mView = null; }
