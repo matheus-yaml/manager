@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.0.80';
+<script>var APP_VERSION = '1.0.81';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -297,8 +297,10 @@ html.tv .live-grid .content-card .info .name{-webkit-line-clamp:2;line-height:16
 .live-grid .content-card.playing{box-shadow:inset 3px 0 0 #ef4444;background:rgba(239,68,68,.12);}
 .live-grid .content-card.playing .info .name::before{content:"▶ ";color:#ef4444;}
 html.tv .live-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;}
-/* player em tela cheia: a tela de trás não é desenhada (menos trabalho pra GPU/CPU fraca) */
+/* player em tela cheia: a tela de trás não é desenhada (menos trabalho pra GPU/CPU fraca);
+   no modo leve ela sai da tela de vez (display:none solta as camadas/texturas dela da RAM) */
 html.player-full #app{visibility:hidden;}
+html.lite.player-full #app{display:none;}
 html.tv .live-grid .content-card:focus{transform:none !important;}
 /* player "mini" (dentro do Ao Vivo): mesmo player, só que encaixado na tela */
 #player-overlay.mini{z-index:30;cursor:pointer;background:#000;}
@@ -2186,6 +2188,13 @@ const MemMonitor = {
     if(this._storage) lines.push(this._storage);
     lines.push(UpdateLog.statusLine());
     lines.push(NetStatus.statusLine());
+    // quanto as imagens da tela ocupam (bitmap = largura x altura x 4 bytes)
+    try{
+      let n = 0, bytes = 0;
+      for(const im of document.images){ if(im.complete && im.naturalWidth && im.getAttribute('src')){ n++; bytes += im.naturalWidth * im.naturalHeight * 4; } }
+      document.querySelectorAll('canvas.cs-canvas').forEach(c => { n++; bytes += c.width * c.height * 4; });
+      lines.push('Imagens na memória: ' + n + ' (~' + Math.round(bytes / 1048576) + ' MB)');
+    }catch(e){}
     box.textContent = 'Memória (atualiza a cada 3s)\n' + lines.join('\n');
   }
 };
@@ -2407,7 +2416,10 @@ const CoverSharp = {
     });
   },
   async _do(img, url){
-    const dpr = window.devicePixelRatio || 1;
+    // Modo leve: capa na resolução REAL do projetor. O Android desenha em 2x
+    // (1920x1080), mas a lente mostra 1280x720 (~1,34x) — fazer a capa em 2x
+    // gasta 2,2x mais RAM por imagem sem ficar mais nítida na parede.
+    const dpr = Math.min(window.devicePixelRatio || 1, PerfMode.isLite() ? 1.34 : 3);
     const box = img.parentElement || img;
     const W = Math.round((img.clientWidth || box.clientWidth) * dpr), H = Math.round((img.clientHeight || box.clientHeight) * dpr);
     if(W < 8 || H < 8){ img.src = url; return; }
@@ -2502,8 +2514,9 @@ const ImageMem = {
           if(CoverSharp.on()){ if(!img.hasAttribute('src') && !img._csBusy && !img._csCanvas) CoverSharp.render(img, url); }
           else if(img.getAttribute('src') !== url) img.src = url;
         } else if(PerfMode.isLite()){
-          if(img.hasAttribute('src')) img.removeAttribute('src'); // libera o bitmap decodificado
-          if(img._csCanvas){ img._csCanvas.remove(); img._csCanvas = null; }
+          // capa já reduzida (pequena, ~100 KB) fica: soltar e recarregar custa mais
+          // (rede/processador) do que guarda. Só solta imagem grande original.
+          if(img.hasAttribute('src') && !img.dataset.sharp) img.removeAttribute('src'); // libera o bitmap decodificado
         }
       }
     }, { rootMargin: '400px' });
@@ -2540,7 +2553,7 @@ const ImageMem = {
   releaseOffscreen(){
     const vh = window.innerHeight, vw = window.innerWidth;
     let n = 0;
-    document.querySelectorAll('img[data-lazy-src][src]').forEach(img => {
+    document.querySelectorAll('img[data-lazy-src][src]:not([data-sharp])').forEach(img => {
       const r = img.getBoundingClientRect();
       if(r.bottom < -50 || r.top > vh + 50 || r.right < -50 || r.left > vw + 50){ img.removeAttribute('src'); n++; }
     });
@@ -2649,19 +2662,9 @@ const MemGuard = {
     let imgs = ImageMem.releaseOffscreen();
     const extra = [];
     if(deep){
-      // capas afiadas guardadas que não estão na tela
-      try{
-        let n = 0;
-        for(const [k, u] of Array.from(CoverSharp._cache.entries())){
-          if(!document.querySelector('img[src="' + u + '"]')){ URL.revokeObjectURL(u); CoverSharp._cache.delete(k); n++; }
-        }
-        if(n) extra.push(n + ' capas guardadas');
-      }catch(e){}
       try{ if(!activeSearchOverlay) lastSearchState = null; }catch(e){}
       try{ LiveEpg._cache.clear(); }catch(e){}
       try{ if(State.ui.currentView !== 'dashboard') State.dashboardCache = null; }catch(e){}
-      // player em TELA CHEIA: a tela de trás está escondida — solta todas as imagens dela
-      try{ if(PlayerModule.isFullOpen()){ const k = ImageMem.releaseAll(); if(k) extra.push(k + ' imagens escondidas atrás do vídeo'); } }catch(e){}
     }
     if(!pages && !imgs && !extra.length){
       // nada do app pra soltar: a RAM está com o vídeo/WebView (memória do
@@ -5665,8 +5668,17 @@ const PlayerModule = {
   _syncFullClass(){
     const full = this.isFullOpen();
     const was = document.documentElement.classList.contains('player-full');
+    if(full === was) return;
+    const ca = document.getElementById('content-area');
+    const sb = document.querySelector('#sidebar .nav-list'), ls = document.getElementById('live-cat-list');
+    if(full){ this._savedScroll = [ca ? ca.scrollTop : 0, sb ? sb.scrollTop : 0, ls ? ls.scrollTop : 0]; }
     document.documentElement.classList.toggle('player-full', full);
-    if(was && !full) setTimeout(() => { try{ ImageMem.reloadVisible(); }catch(e){} }, 50);
+    if(!full && this._savedScroll){
+      // display:none zera a rolagem: devolve onde estava
+      const [a, b, c] = this._savedScroll;
+      if(ca) ca.scrollTop = a; if(sb) sb.scrollTop = b; if(ls) ls.scrollTop = c;
+      try{ this._syncMini(); }catch(e){}
+    }
   },
   _ensureFullClassObserver(){
     if(this._fullObs) return;
@@ -5724,7 +5736,10 @@ const PlayerModule = {
     pushNavState('player');
     if(this.currentContent && this.currentContent.tipo === 'live') ProgressModule.markLiveWatched(this.currentContent).catch(()=>{});
     this._showControls();
-    if(TvNav.on()) setTimeout(() => { const pp = qs('#player-playpause'); if(pp) TvNav.focus(pp); }, 60);
+    this._scheduleHideControls();
+    // controle remoto: foco FORA dos botões (senão os controles nunca somem);
+    // ↑/↓ mostram os controles quando quiser (ver TvNav)
+    try{ const a = document.activeElement; if(a && a.blur) a.blur(); }catch(e){}
   },
   /** Volta da tela cheia pro quadro do Ao Vivo (sem parar o vídeo). */
   toMini(){
