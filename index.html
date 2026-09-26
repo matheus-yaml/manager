@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.0.89';
+<script>var APP_VERSION = '1.0.90';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -2073,6 +2073,9 @@ function renderDebugPanel(){
       else showToast('Não deu pra copiar automaticamente.', 'error');
     });
     header.appendChild(copyBtn);
+    const speedBtn = el('span', { style:'cursor:pointer;color:#ffd479;font-size:11px;padding:1px 6px;border:1px solid rgba(255,255,255,.2);border-radius:5px;', title:'Testar velocidade' }, ['velocidade']);
+    speedBtn.addEventListener('click', () => SpeedTest.run());
+    header.appendChild(speedBtn);
     const closeBtn = el('span', { style:'cursor:pointer;color:#888;font-size:15px;line-height:1;padding:0 2px;', title:'Fechar (desliga o painel — pode religar em Configurações)' }, ['×']);
     closeBtn.addEventListener('click', () => {
       State.ui.debugPanelEnabled = false;
@@ -2826,6 +2829,71 @@ const UpdateLog = {
   }
 };
 UpdateLog.install();
+
+/* ======================================================================
+   TESTE DE VELOCIDADE (painel de diagnóstico → "velocidade")
+   ------------------------------------------------------------------
+   Responde "a rede deste aparelho aguenta o canal?":
+   1) o canal ao vivo tocando agora (ou o último aberto): o servidor manda
+      o ao vivo no ritmo do vídeo, então a média ≈ quanto o canal PRECISA;
+   2) um filme do MESMO servidor: arquivo é mandado o mais rápido possível,
+      então ≈ quanto a rede do aparelho CONSEGUE puxar desse servidor.
+   Se o que a rede consegue não passa bem do que o canal precisa (folga
+   de ~1,5x), o vídeo vai parar pra "carregar" de vez em quando.
+   ====================================================================== */
+const SpeedTest = {
+  _busy: false,
+  async _measure(url, seconds){
+    const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const t0 = performance.now();
+    let bytes = 0, firstByte = 0;
+    const stopAt = t0 + seconds * 1000;
+    const kill = setTimeout(() => { try{ ctl && ctl.abort(); }catch(e){} }, seconds * 1000 + 4000);
+    try{
+      const r = await fetch(url, { cache: 'no-store', signal: ctl ? ctl.signal : undefined });
+      if(!r.ok) throw new Error('HTTP ' + r.status);
+      const reader = r.body.getReader();
+      for(;;){
+        const { done, value } = await reader.read();
+        if(done) break;
+        if(!firstByte) firstByte = performance.now();
+        bytes += value.byteLength;
+        if(performance.now() >= stopAt) break;
+      }
+      try{ reader.cancel(); }catch(e){}
+    } finally { clearTimeout(kill); try{ ctl && ctl.abort(); }catch(e){} }
+    const secs = Math.max(0.5, (performance.now() - (firstByte || t0)) / 1000);
+    return { mbps: bytes * 8 / secs / 1e6, bytes, ttfb: firstByte ? Math.round(firstByte - t0) : null };
+  },
+  async run(){
+    if(this._busy){ showToast('Teste de velocidade já está rodando…'); return; }
+    const live = PlayerModule.currentContent && PlayerModule.currentContent.tipo === 'live' ? PlayerModule.currentContent : (LiveView._byId && LiveView._byId.values().next().value);
+    if(!live){ showToast('Abra um canal ao vivo primeiro.', 'error'); return; }
+    this._busy = true;
+    try{
+      pushDebugLog('⚡ Teste de velocidade: medindo o canal "' + resolveContentName(live) + '" por 10s…');
+      const a = await this._measure(resolveContentUrl(live), 10);
+      pushDebugLog('⚡ Canal: ~' + a.mbps.toFixed(1) + ' Mbps (primeiro dado em ' + (a.ttfb != null ? a.ttfb + ' ms' : '?') + ') — é mais ou menos quanto o canal precisa.');
+      let b = null;
+      try{
+        const pg = await QueryModule.getContentPage('movie', { server: live.serverId, category: 'all', favoritesOnly: false, page: 1 }, 1, 1);
+        const mv = pg && pg.items && pg.items[0];
+        if(mv){
+          pushDebugLog('⚡ Medindo a velocidade máxima da rede com um filme do mesmo servidor por 8s…');
+          b = await this._measure(resolveContentUrl(mv), 8);
+          pushDebugLog('⚡ Rede → servidor: ~' + b.mbps.toFixed(1) + ' Mbps (máximo que o aparelho consegue puxar).');
+        }
+      }catch(e){ pushDebugLog('⚡ Não deu pra medir a velocidade máxima (' + (e && e.message || e) + ').', true); }
+      if(b){
+        const folga = b.mbps / Math.max(0.1, a.mbps);
+        if(folga < 1.5) pushDebugLog('⚡ RESULTADO: a rede deste aparelho mal dá conta do canal (folga ' + folga.toFixed(1) + 'x). Travadas de "carregando" vêm da REDE (Wi-Fi do aparelho). Tente 5 GHz, mais perto do roteador, cabo, ou a versão HD/SD do canal.', true);
+        else pushDebugLog('⚡ RESULTADO: a rede tem folga (' + folga.toFixed(1) + 'x o que o canal precisa). Se ainda trava, o motivo não é velocidade — pode ser oscilação do Wi-Fi ou o servidor.');
+      }
+    }catch(e){
+      pushDebugLog('⚡ Teste de velocidade falhou: ' + (e && e.message || e), true);
+    }finally{ this._busy = false; }
+  }
+};
 
 /* ======================================================================
    NativeVideo — ao vivo no PLAYER DO PRÓPRIO ANDROID (APK)
