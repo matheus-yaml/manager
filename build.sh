@@ -4,7 +4,23 @@ set -e
 
 rm -rf app
 mkdir -p app
-cp -rf config.xml index.html network_security_config.xml app
+cp -rf config.xml network_security_config.xml app
+# Página do APK = o CARREGADOR (index-apk.html), que baixa o app do GitHub,
+# injeta o cordova.js (ponte com o Android: RAM, player nativo, PiP...) e
+# cuida da atualização automática. Se o index.html do app fosse direto pro
+# APK, ele rodaria SEM a ponte com o Android e sem atualizar sozinho.
+if [ -f index-apk.html ]; then
+  cp index-apk.html app/index.html
+  echo "📄 Página do APK: index-apk.html (carregador)."
+else
+  cp index.html app/index.html
+  echo "⚠️  index-apk.html não encontrado — usando index.html."
+fi
+if grep -q "APP_VERSION" app/index.html; then
+  echo "⚠️  ATENÇÃO: a página do APK é o app inteiro (não o carregador)."
+  echo "    Sem o carregador o APK não terá ponte com o Android nem atualização automática."
+  echo "    Coloque o carregador como index-apk.html nesta pasta."
+fi
 
 # ----------------------------------------------------------------------
 # Plugin de PiP nativo: os arquivos ficam AQUI DENTRO do build.sh (não
