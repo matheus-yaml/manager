@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.0.68';
+<script>var APP_VERSION = '1.0.71';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -1127,6 +1127,9 @@ html.tv .content-card:focus{transform:none !important;outline:3px solid #fff;out
   box-shadow:0 0 0 3px rgba(var(--accent-rgb),.9) !important;}
 html.tv .content-card:hover{transform:none !important;}
 html.tv .content-card .thumb img{transform:none !important;}
+/* capas: degradê escuro por cima da capa só no rodapé e mais fraco
+   (ele "sujava" metade da imagem) — ver CoverSharp */
+html.tv .content-card .thumb::before{height:32%;background:linear-gradient(180deg,transparent,rgba(6,7,12,.6));}
 
 /* ---------- Modo TV: nitidez máxima (v1.0.65) ----------
    1) Fonte do SISTEMA (Roboto/Noto do Android): ela tem "hinting" — o
@@ -2186,6 +2189,126 @@ const PerfMode = {
    tela, e é DESCARREGADA quando sai de perto (volta sozinha ao rolar de
    novo). Fora do modo leve, é só um <img src> normal.
    ====================================================================== */
+/* ======================================================================
+   CoverSharp — capas "no pixel" no modo TV/projetor
+   ------------------------------------------------------------------
+   Capa de filme/série costuma vir em 600x900 (ou maior) e aparece num
+   card de ~136x201. Quem reduzia era o navegador, na hora de desenhar a
+   tela, com filtro rápido — detalhe fino vira "papa" e a capa parece
+   desfocada. Aqui cada capa é reduzida UMA vez, com qualidade alta:
+     1) recorta igual ao object-fit:cover do card;
+     2) reduz pela metade várias vezes (redução em etapas = sem serrilhado
+        nem borrão) até o tamanho EXATO do card em pixels reais;
+     3) aplica um "afiar" leve (unsharp mask) — devolve o contorno que
+        toda redução come;
+     4) vira um JPEG/PNG pequeno em memória, exibido 1:1 (sem reescala).
+   Bônus: a imagem gigante decodificada some da memória — cada capa passa
+   a ocupar ~110 KB em vez de ~2 MB (muito melhor pro projetor de 1 GB).
+   Servidor de imagem sem permissão de leitura (CORS): ainda reduz em
+   etapas, mas desenha num <canvas> no lugar da <img> (sem o afiar).
+   ====================================================================== */
+const CoverSharp = {
+  on(){ return document.documentElement.classList.contains('tv') && !!document.createElement('canvas').getContext; },
+  _cache: new Map(),   // url|WxH -> blob URL (LRU)
+  _queue: [], _running: 0, MAX: 2, CACHE_MAX: 250,
+  render(img, url){
+    img._csBusy = true;
+    this._queue.push([img, url]);
+    this._pump();
+  },
+  _pump(){
+    while(this._running < this.MAX && this._queue.length){
+      const [img, url] = this._queue.shift();
+      if(!img.isConnected){ img._csBusy = false; continue; }
+      this._running++;
+      this._do(img, url).catch((e) => { if(window.__csDebug) console.log('CSERR', e && e.message); if(img.isConnected) img.src = url; })
+        .then(() => { img._csBusy = false; this._running--; this._pump(); });
+    }
+  },
+  _load(url, cors){
+    return new Promise((res, rej) => {
+      const im = new Image();
+      if(cors) im.crossOrigin = 'anonymous';
+      im.decoding = 'async';
+      im.onload = () => res(im);
+      im.onerror = () => rej(new Error('img'));
+      im.src = url;
+    });
+  },
+  async _do(img, url){
+    const dpr = window.devicePixelRatio || 1;
+    const box = img.parentElement || img;
+    const W = Math.round((img.clientWidth || box.clientWidth) * dpr), H = Math.round((img.clientHeight || box.clientHeight) * dpr);
+    if(W < 8 || H < 8){ img.src = url; return; }
+    const key = url + '|' + W + 'x' + H;
+    const hit = this._cache.get(key);
+    if(hit){ this._cache.delete(key); this._cache.set(key, hit); img.src = hit; return; }
+    let im, tainted = false;
+    try{ im = await this._load(url, true); }
+    catch(e){ im = await this._load(url, false); tainted = true; } // sem CORS (ou falhou de vez → catch lá fora usa a <img> normal)
+    if(!img.isConnected) return;
+    // recorte igual ao object-fit:cover
+    const sw = im.naturalWidth, sh = im.naturalHeight;
+    if(!sw || !sh){ img.src = url; return; }
+    const scale = Math.max(W / sw, H / sh);
+    let cw = W / scale, ch = H / scale;
+    let cx = (sw - cw) / 2, cy = (sh - ch) / 2;
+    // redução em etapas (metade por vez)
+    let src = im, sx = cx, sy = cy, sW = cw, sH = ch;
+    while(sW / 2 >= W && sH / 2 >= H){
+      const c = document.createElement('canvas');
+      c.width = Math.round(sW / 2); c.height = Math.round(sH / 2);
+      const g = c.getContext('2d'); g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
+      g.drawImage(src, sx, sy, sW, sH, 0, 0, c.width, c.height);
+      src = c; sx = 0; sy = 0; sW = c.width; sH = c.height;
+    }
+    const out = document.createElement('canvas');
+    out.width = W; out.height = H;
+    const g = out.getContext('2d');
+    g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
+    g.drawImage(src, sx, sy, sW, sH, 0, 0, W, H);
+    im.src = ''; im = null; src = null; // solta a imagem grande
+    if(tainted){
+      // não dá pra ler os pixels: mostra o canvas no lugar da <img>
+      out.className = 'cs-canvas';
+      out.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;display:block;';
+      img.removeAttribute('src'); img.style.visibility = 'hidden';
+      if(img._csCanvas) img._csCanvas.remove();
+      img.parentElement.insertBefore(out, img.nextSibling);
+      img._csCanvas = out;
+      return;
+    }
+    // afiar leve (unsharp mask 3x3, força 0.55)
+    try{
+      const d = g.getImageData(0, 0, W, H), p = d.data, o = new Uint8ClampedArray(p);
+      const A = 0.55, row = W * 4;
+      for(let y = 1; y < H - 1; y++){
+        for(let x = 1; x < W - 1; x++){
+          const i = y * row + x * 4;
+          for(let k = 0; k < 3; k++){
+            const c = o[i + k];
+            const blur = (o[i - row + k] + o[i + row + k] + o[i - 4 + k] + o[i + 4 + k] + 4 * c) / 8;
+            p[i + k] = c + A * (c - blur);
+          }
+        }
+      }
+      g.putImageData(d, 0, 0);
+    }catch(e){}
+    const png = /\.png(\?|$)/i.test(url);
+    const blob = await new Promise(res => out.toBlob(res, png ? 'image/png' : 'image/jpeg', 0.92));
+    if(!blob){ img.src = url; return; }
+    const bu = URL.createObjectURL(blob);
+    this._cache.set(key, bu);
+    if(this._cache.size > this.CACHE_MAX){
+      const [k0, u0] = this._cache.entries().next().value;
+      this._cache.delete(k0);
+      // só revoga se nenhuma capa na tela ainda usa essa
+      if(!document.querySelector('img[src="' + u0 + '"]')) URL.revokeObjectURL(u0);
+    }
+    if(img.isConnected){ img.src = bu; img.dataset.sharp = '1'; }
+  }
+};
+
 const ImageMem = {
   _io: null,
   _observer(){
@@ -2195,9 +2318,11 @@ const ImageMem = {
         const img = e.target, url = img.dataset.lazySrc;
         if(!url) continue;
         if(e.isIntersecting){
-          if(img.getAttribute('src') !== url) img.src = url;
-        } else if(img.hasAttribute('src')){
-          img.removeAttribute('src'); // libera o bitmap decodificado
+          if(CoverSharp.on()){ if(!img.hasAttribute('src') && !img._csBusy && !img._csCanvas) CoverSharp.render(img, url); }
+          else if(img.getAttribute('src') !== url) img.src = url;
+        } else if(PerfMode.isLite()){
+          if(img.hasAttribute('src')) img.removeAttribute('src'); // libera o bitmap decodificado
+          if(img._csCanvas){ img._csCanvas.remove(); img._csCanvas = null; }
         }
       }
     }, { rootMargin: '400px' });
@@ -2205,7 +2330,7 @@ const ImageMem = {
   },
   set(img, url){
     if(!url) return;
-    const io = PerfMode.isLite() ? this._observer() : null;
+    const io = (PerfMode.isLite() || CoverSharp.on()) ? this._observer() : null;
     if(!io){ img.src = url; return; }
     img.dataset.lazySrc = url;
     img.decoding = 'async';
@@ -2265,6 +2390,44 @@ const MemGuard = {
     this.read().then((n) => {
       if(n && n.total) pushDebugLog('📊 ' + what + ' — RAM livre ' + Math.round(n.avail / 1048576) + ' MB, app ' + Math.round((n.appPssKb || 0) / 1024) + ' MB', n.low);
     });
+  },
+  /** Antes de tentar de novo um download que caiu: solta tudo que é só
+   *  CACHE (dá pra refazer sozinho quando precisar) — nunca dado de
+   *  importação em andamento de outro servidor, favoritos, progresso ou
+   *  configurações. Registra a RAM antes e depois (APK). */
+  async cleanBeforeRetry(reason){
+    const before = await this.read();
+    this.relieve(reason);
+    let extra = [];
+    // capas afiadas guardadas que não estão na tela
+    try{
+      let n = 0;
+      for(const [k, u] of Array.from(CoverSharp._cache.entries())){
+        if(!document.querySelector('img[src="' + u + '"]')){ URL.revokeObjectURL(u); CoverSharp._cache.delete(k); n++; }
+      }
+      if(n) extra.push(n + ' capas guardadas');
+    }catch(e){}
+    // capas desenhadas em canvas fora da tela
+    try{
+      const vh = window.innerHeight; let n = 0;
+      document.querySelectorAll('.cs-canvas').forEach(c => {
+        const r = c.getBoundingClientRect();
+        if(r.bottom < -50 || r.top > vh + 50){ const img = c.previousElementSibling; if(img) img._csCanvas = null; c.remove(); n++; }
+      });
+      if(n) extra.push(n + ' capas fora da tela');
+    }catch(e){}
+    try{ if(typeof lastSearchState !== 'undefined' && !activeSearchOverlay){ lastSearchState = null; } }catch(e){}
+    try{ LiveEpg._cache.clear(); }catch(e){}
+    try{ if(State.ui.currentView !== 'dashboard') State.dashboardCache = null; }catch(e){}
+    if(extra.length) pushDebugLog('🧹 Também liberado: ' + extra.join(', ') + '.');
+    // dá um respiro pro coletor de lixo e mede de novo
+    setTimeout(async () => {
+      const after = await this.read();
+      if(before && after && before.avail && after.avail){
+        const d = Math.round((after.avail - before.avail) / 1048576);
+        pushDebugLog('📊 RAM livre antes de tentar de novo: ' + Math.round(before.avail / 1048576) + ' MB → ' + Math.round(after.avail / 1048576) + ' MB (' + (d >= 0 ? '+' : '') + d + ' MB).');
+      }
+    }, 4000);
   },
   relieve(reason){
     const pages = State.pageCache ? State.pageCache.size : 0;
@@ -4566,6 +4729,7 @@ const ServerModule = {
       if(r.ok || !r.retryable || attempt >= RETRIES) return r;
       const why = r.error && (r.error.status ? 'HTTP ' + r.error.status : (r.error.message || r.error));
       pushDebugLog('Rede: "' + server.nome + '" falhou (' + why + ') — tentativa ' + (attempt + 1) + ' de ' + RETRIES + ' em ' + WAIT_S + 's.', true);
+      try{ MemGuard.cleanBeforeRetry('"' + server.nome + '" vai tentar de novo'); }catch(e){}
       for(let sLeft = WAIT_S; sLeft > 0; sLeft--){
         report({ phase:'download', status:'processing', downloaded:0, total:null, speed:0,
           retryIn: sLeft, retryAttempt: attempt + 1, retryMax: RETRIES, retryWhy: String(why) });
@@ -4662,6 +4826,7 @@ const ServerModule = {
         resumes++;
         const why = origErr && (origErr.message || String(origErr));
         pushDebugLog('Rede: "' + server.nome + '" caiu em ' + formatBytes(bytes) + ' (' + why + ') — tentando continuar de onde parou (' + resumes + '/' + RESUMES + ') em ' + RESUME_WAIT_S + 's.', true);
+        try{ MemGuard.cleanBeforeRetry('"' + server.nome + '" vai continuar o download'); }catch(e){}
         for(let sLeft = RESUME_WAIT_S; sLeft > 0; sLeft--){
           report({ phase:'download', status:'processing', downloaded: bytes, total: totalBytes, speed: 0,
             retryIn: sLeft, retryAttempt: resumes, retryMax: RESUMES, retryWhy: String(why), retryResume: true });
@@ -6797,9 +6962,12 @@ const PlayerModule = {
     const nextBtn = qs('#player-next-episode');
     if(nextBtn) nextBtn.style.display = 'none';
     qs('#player-overlay').style.display = 'none';
+    const closedId = this.currentContent && this.currentContent.id;
     this.currentContent = null;
-    // controle remoto: volta o foco pro card que abriu o vídeo
-    if(TvNav.on()) setTimeout(() => { const lc = TvNav._lastContent; if(lc && lc.isConnected) TvNav.focus(lc); else TvNav.afterRender(); }, 80);
+    // controle remoto: volta o foco pro card que abriu o vídeo. A tela é
+    // redesenhada logo abaixo (o card antigo deixa de existir), então procura
+    // o card NOVO do mesmo conteúdo pelo id — ver TvNav.restoreCard.
+    if(TvNav.on()) TvNav.restoreCard(closedId, TvNav._lastContent);
     Router.render();
   }
 };
@@ -6892,6 +7060,7 @@ function renderCategorySelectWithFilter(viewKey, filters, allCategories){
 function renderContentCard(content, options){
   options = options || {};
   const card = el('div', { class:'content-card', tabindex:'0' });
+  if(content && content.id) card.setAttribute('data-cid', content.id); // TvNav.restoreCard
   const thumb = el('div', { class:'thumb' });
   const ownLogo = resolveContentLogo(content);
   const nameEl = el('div', { class:'name' }, [resolveContentName(content)]);
@@ -7379,6 +7548,7 @@ async function renderSeriesDetailView(container){
   function renderEpisodeRow(content){
     const prog = ProgressModule.getProgress(content.id);
     const row = el('div', { class:'episode-row', onclick:()=>PlayerModule.open(content) });
+    if(content && content.id) row.setAttribute('data-cid', content.id); // TvNav.restoreCard
     const eth = el('div', { class:'eth' });
     // Episódio sem capa própria no M3U cai pra capa da série.
     const episodeLogo = resolveContentLogo(content, entry.logo);
@@ -8964,6 +9134,8 @@ async function rollSuggestions(){
   const st = State.ui.suggest;
   st.loading = true;
   Router.render();
+  // enquanto sorteia a tela é redesenhada: segura o foco no destaque atual (senão ia pro "Também pode curtir")
+  if(st.current) TvNav.focusSoon('#content-area .suggest-hero .sh-main');
   const avoid = new Set();
   if(st.current) avoid.add(st.current.kind === 'movie' ? st.current.data.id : st.current.data.key); // "outra" = não repete
   const favs = await IDB.getAll(STORES.favorites).catch(() => []);
@@ -8988,7 +9160,11 @@ async function rollSuggestions(){
   }
   st.loading = false;
   st.rolls = (st.rolls || 0) + 1;
-  if(State.ui.currentView === 'suggest') Router.render();
+  if(State.ui.currentView === 'suggest'){
+    Router.render();
+    // controle: foco no item sorteado (botão principal), não no "Também pode curtir"
+    TvNav.focusSoon('#content-area .suggest-hero .sh-main');
+  }
 }
 
 function renderSuggestView(container){
@@ -9077,7 +9253,7 @@ function renderSuggestView(container){
   info.appendChild(el('div', { class:'sh-why' }, [s.why]));
 
   const actions = el('div', { class:'sh-actions' });
-  actions.appendChild(el('button', { class:'btn primary', onclick:() => {
+  actions.appendChild(el('button', { class:'btn primary sh-main', onclick:() => {
     State.ui.returnTo = isMovie ? null : { type:'suggest' }; // voltar da série → Sugira-me
     if(isMovie){ PlayerModule.open(s.data); return; }
     State.ui.activeSeriesKey = s.data.key;
@@ -9273,6 +9449,19 @@ const TvNav = {
     if(contentArea && scope.id === 'app' && (inContent || (inTopbar && dir === 'down'))){
       target = this.pick(cur, dir, all.filter(c => contentArea.contains(c.el)));
     }
+    // Nada mais pra focar pra cima/baixo no conteúdo, mas a página ainda
+    // tem o que rolar (título, texto…): ROLA a página e o foco fica onde
+    // está. A pesquisa geral só recebe o foco com a página já no topo.
+    if(!target && inContent && (dir === 'up' || dir === 'down')){
+      const sc = contentArea;
+      const canUp = sc.scrollTop > 1, canDown = sc.scrollTop + sc.clientHeight < sc.scrollHeight - 1;
+      if((dir === 'up' && canUp) || (dir === 'down' && canDown)){
+        const step = Math.round(sc.clientHeight * 0.6) * (dir === 'up' ? -1 : 1);
+        const lite = document.documentElement.classList.contains('lite');
+        try{ sc.scrollBy({ top: step, behavior: lite ? 'auto' : 'smooth' }); }catch(e){ sc.scrollTop += step; }
+        return;
+      }
+    }
     // ↑/↓ no conteúdo nunca pulam pra barra lateral (só ←)
     if(!target) target = this.pick(cur, dir, (inContent && (dir === 'up' || dir === 'down')) ? all.filter(c => !c.el.closest('#sidebar')) : all);
     if(!target) return;
@@ -9295,9 +9484,39 @@ const TvNav = {
     }
   },
 
+  /** Volta o foco pro card de um conteúdo depois que a tela foi redesenhada
+   *  (ex: fechou o player do canal HBO → foco de volta no card da HBO).
+   *  Espera a tela nova aparecer (até ~2s); se o card não existir mais,
+   *  cai no comportamento normal (1º item). */
+  /** Põe o foco no 1º elemento que casar com `selector` assim que a tela
+   *  nova aparecer (mesmo mecanismo do restoreCard). */
+  focusSoon(selector){ if(this.on()) this.restoreCard(null, null, selector); },
+
+  restoreCard(cid, oldEl, selector){
+    const tok = this._restoreTok = (this._restoreTok || 0) + 1;
+    const t0 = Date.now();
+    const esc = (v) => (window.CSS && CSS.escape) ? CSS.escape(v) : String(v).replace(/["\\]/g, '\\$&');
+    this._restoring = true;
+    const finish = () => { if(tok === this._restoreTok){ this._restoring = false; document.removeEventListener('keydown', onKey, true); } };
+    // apertou alguma tecla enquanto procurava: o usuário assumiu, para de procurar
+    const onKey = () => { if(tok === this._restoreTok){ this._restoreTok++; this._restoring = false; } document.removeEventListener('keydown', onKey, true); };
+    document.addEventListener('keydown', onKey, true);
+    const tryIt = () => {
+      if(tok !== this._restoreTok || !this.on()){ return; }
+      let card = selector ? document.querySelector(selector)
+        : (cid ? document.querySelector('#content-area .content-card[data-cid="' + esc(cid) + '"], #content-area .episode-row[data-cid="' + esc(cid) + '"]') : null);
+      if(card && (card.disabled || !card.getClientRects().length)) card = null;
+      if(!card && oldEl && oldEl.isConnected && oldEl.getClientRects().length) card = oldEl;
+      if(card){ finish(); this.focus(card); return; }
+      if(Date.now() - t0 < 2000) setTimeout(tryIt, 100);
+      else { finish(); this.afterRender(); }
+    };
+    setTimeout(tryIt, 60);
+  },
+
   /** Depois que uma tela é redesenhada: se o foco sumiu junto, põe no 1º item. */
   afterRender(){
-    if(!this.on()) return;
+    if(!this.on() || this._restoring) return; // restoreCard cuida do foco
     setTimeout(() => {
       const a = document.activeElement;
       if(!a || a === document.body || !a.isConnected){
