@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.0.64';
+<script>var APP_VERSION = '1.0.65';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -1110,6 +1110,37 @@ html.tv .content-card:focus{transform:none !important;outline:3px solid #fff;out
   box-shadow:0 0 0 3px rgba(var(--accent-rgb),.9) !important;}
 html.tv .content-card:hover{transform:none !important;}
 html.tv .content-card .thumb img{transform:none !important;}
+
+/* ---------- Modo TV: nitidez máxima (v1.0.65) ----------
+   1) Fonte do SISTEMA (Roboto/Noto do Android): ela tem "hinting" — o
+      desenho das letras é encaixado na grade de pixels. A Manrope (fonte
+      da web) não tem, e em 12–14px numa tela de 960x540 fica com as bordas
+      "meio pixel", que é o que parece embaçado.
+   2) Traço mais grosso (peso 500/600): letra fina some/borra quando o
+      projetor reescala a imagem.
+   3) Mais contraste: cinza claro em vez de cinza médio, fundo sólido em vez
+      de translúcido/degradê (texto sobre degradê tem borda "suja").
+   4) Nada de sombra em texto nem texto com degradê (brilho = borrão).
+   5) Colunas da grade com largura INTEIRA e PAR em pixels (ver TvSharp):
+      sem isso cada card começa em x=140,8px e a capa/texto são desenhados
+      entre dois pixels. */
+html.tv, html.tv body, html.tv button, html.tv input, html.tv select, html.tv textarea{
+  font-family:Roboto,"Noto Sans","Droid Sans",system-ui,-apple-system,"Segoe UI",Arial,sans-serif !important;
+}
+html.tv body{font-weight:500;-webkit-font-smoothing:antialiased;}
+html.tv{--text-1:#e6e9f2;--text-2:#b9bfcf;--border:rgba(255,255,255,.16);--border-strong:rgba(255,255,255,.28);
+  --bg-1:#141725;--bg-2:#1c2030;--bg-3:#252a3c;}
+html.tv body{background-image:none !important;background-color:#0b0d16;}
+html.tv *{text-shadow:none !important;}
+html.tv #sidebar .brand .name span, html.tv .dash-card .dnum{background:none !important;-webkit-text-fill-color:currentColor;color:var(--accent-2);}
+html.tv .dash-card .dnum{color:#fff;}
+html.tv .content-card .info .name, html.tv .nav-item, html.tv .chip, html.tv .btn, html.tv .episode-row .ename,
+html.tv .form-group label, html.tv .dash-card .dlabel, html.tv .content-card .info .server-tag, html.tv .content-card .info .cat-tag{font-weight:600;}
+html.tv .content-card .info{background:#141725;}
+/* altura de linha inteira no card: sem isso cada card tinha 249,19px e a 2ª
+   linha da grade começava em y=318,19 (capa e bordas entre dois pixels) */
+html.tv .content-card .info .name{line-height:16px;}
+html.tv .content-card .info .meta{line-height:16px;}
 </style>
 </head>
 <body>
@@ -2085,6 +2116,7 @@ const PerfMode = {
     const lite = this.isLite();
     document.documentElement.classList.toggle('lite', lite);
     document.documentElement.classList.toggle('tv', this.isTv());
+    try{ if(typeof TvSharp !== 'undefined') TvSharp.schedule(); }catch(e){}
     // Aparelho fraco: páginas menores (menos cards e capas na memória de uma vez),
     // só se a pessoa não mudou o tamanho padrão.
     if(State.settings){
@@ -2334,6 +2366,101 @@ const UpdateLog = {
   }
 };
 UpdateLog.install();
+
+/* ======================================================================
+   TvSharp — grade "no pixel" no modo TV
+   ------------------------------------------------------------------
+   A grade de cards usa colunas 1fr: com 5 colunas numa área de 744px cada
+   card fica com 140,8px e começa em posições quebradas (0, 150,8, 301,6…).
+   Capa e texto desenhados entre dois pixels = borrado. Aqui cada grade
+   ganha colunas com largura INTEIRA e PAR (a capa tem altura 150% da
+   largura → par garante altura inteira também). Sobra no máximo uns
+   poucos pixels à direita, invisível.
+   ====================================================================== */
+const TvSharp = {
+  _raf: 0,
+  snap(){
+    this._raf = 0;
+    const on = document.documentElement.classList.contains('tv');
+    document.querySelectorAll('.card-grid').forEach((g) => {
+      if(!on){ if(g._tvSnap){ g.style.gridTemplateColumns = ''; g._tvSnap = 0; } return; }
+      if(g._tvSnap){ g.style.gridTemplateColumns = ''; } // mede com a regra original (nº de colunas do CSS)
+      const cs = getComputedStyle(g);
+      const cols = (cs.gridTemplateColumns || '').split(' ').filter(Boolean).length;
+      if(!cols || cols > 12) return;
+      const gap = Math.round(parseFloat(cs.columnGap) || 0);
+      const inner = g.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
+      if(inner <= 0) return;
+      let w = Math.floor((inner - gap * (cols - 1)) / cols);
+      if(w % 2) w -= 1;
+      if(w < 40) return;
+      if(gap !== parseFloat(cs.columnGap)) g.style.columnGap = gap + 'px';
+      g.style.gridTemplateColumns = 'repeat(' + cols + ', ' + w + 'px)';
+      g._tvSnap = w;
+    });
+  },
+  schedule(){ if(!this._raf) this._raf = requestAnimationFrame(() => this.snap()); },
+  init(){
+    try{
+      new MutationObserver((muts) => {
+        if(!document.documentElement.classList.contains('tv')) return;
+        for(const m of muts) for(const n of m.addedNodes){
+          if(n.nodeType === 1 && (n.classList.contains('card-grid') || n.querySelector('.card-grid'))){ this.schedule(); return; }
+        }
+      }).observe(document.body, { childList: true, subtree: true });
+    }catch(e){}
+    window.addEventListener('resize', () => this.schedule());
+    this.schedule();
+  },
+  /** Janela de teste: padrões de 1 pixel + letras em vários tamanhos. */
+  openTest(){
+    const dpr = window.devicePixelRatio || 1;
+    const rw = Math.round(screen.width * dpr), rh = Math.round(screen.height * dpr);
+    const overlay = el('div', { class:'modal-overlay' });
+    const box = el('div', { class:'modal-box', style:'max-width:760px;' });
+    box.appendChild(el('h3', {}, ['Teste de nitidez', el('span', { class:'modal-close-x', onclick: () => overlay.remove() }, ['×'])]));
+    const info = el('div', { style:'font-size:13px;line-height:1.5;margin-bottom:10px;' });
+    const frac = Math.abs(dpr - Math.round(dpr)) > 0.01;
+    info.appendChild(el('div', {}, ['O app enxerga ' + window.innerWidth + '×' + window.innerHeight + ' • densidade ' + dpr + 'x • o Android desenha em ' + rw + '×' + rh + ' pixels.']));
+    info.appendChild(el('div', { style:'color:' + (frac ? '#fbbf24' : 'var(--text-2)') + ';' }, [
+      frac ? '⚠ Densidade quebrada (' + dpr + 'x): cada pixel do app vira ' + dpr + ' pixels reais — sempre fica um pouco borrado. Se o Android deixar, mude o tamanho de exibição/DPI.'
+           : 'Densidade inteira (' + dpr + 'x): do lado do app está ok.'
+    ]));
+    box.appendChild(info);
+    // padrão de linhas de 1px: se o caminho até a lente for 1:1, fica listrado nítido; se houver reescala, vira cinza/ondulado
+    const cv = document.createElement('canvas');
+    const W = 360, H = 90;
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    cv.style.width = W + 'px'; cv.style.height = H + 'px'; cv.style.display = 'block'; cv.style.imageRendering = 'pixelated';
+    const c = cv.getContext('2d');
+    c.fillStyle = '#000'; c.fillRect(0, 0, cv.width, cv.height);
+    c.fillStyle = '#fff';
+    const third = Math.floor(cv.width / 3);
+    for(let x = 0; x < third; x += 2) c.fillRect(x, 0, 1, cv.height);              // colunas de 1 pixel real
+    for(let y = 0; y < cv.height; y += 2) c.fillRect(third, y, third, 1);            // linhas de 1 pixel real
+    for(let y = 0; y < cv.height; y++) for(let x = third * 2 + (y % 2); x < cv.width; x += 2) c.fillRect(x, y, 1, 1); // xadrez
+    box.appendChild(el('div', { style:'font-size:12px;color:var(--text-2);margin-bottom:6px;' }, ['Listras e xadrez de 1 pixel real:']));
+    box.appendChild(cv);
+    const samples = el('div', { style:'display:grid;grid-template-columns:1fr 1fr;gap:6px 18px;margin:12px 0;' });
+    const txt = 'Ação 0123 Série';
+    [['Fonte do sistema', 'Roboto,"Noto Sans",sans-serif'], ['Manrope (fonte do app fora do modo TV)', "'Manrope',sans-serif"]].forEach(([lab, ff]) => {
+      const col = el('div');
+      col.appendChild(el('div', { style:'font-size:11px;color:var(--text-2);margin-bottom:2px;font-family:Roboto,sans-serif;' }, [lab]));
+      [12, 14, 16].forEach((px) => col.appendChild(el('div', { style:'font-family:' + ff + ' !important;font-size:' + px + 'px;font-weight:500;color:#fff;' }, [px + 'px — ' + txt])));
+      samples.appendChild(col);
+    });
+    box.appendChild(samples);
+    box.appendChild(el('div', { style:'font-size:12.5px;line-height:1.55;color:var(--text-1);' }, [
+      'Como ler: se as listras aparecem nítidas (preto e branco separados), o app está chegando 1:1 na lente. ' +
+      'Se viram um cinza liso, ondulado ou com faixas, a imagem está sendo REESCALADA no caminho — aí o borrado é do aparelho, não do app. ' +
+      'No projetor, confira: 1) trapézio/keystone em 0 (o ajuste digital reescala tudo); 2) zoom digital em 100%; ' +
+      '3) resolução de saída do Android igual à nativa do projetor; 4) foco da lente com este teste aberto.'
+    ]));
+    overlay.appendChild(box);
+    overlay.addEventListener('click', (e) => { if(e.target === overlay) overlay.remove(); });
+    document.body.appendChild(overlay);
+  }
+};
 
 /* ======================================================================
    STATUS DE INTERNET + DATA/HORA DO APARELHO (rodapé da barra lateral)
@@ -8180,6 +8307,9 @@ async function renderSettingsView(container){
   ]));
   perfRow.appendChild(tvGroup);
   perfBlock.appendChild(perfRow);
+  perfBlock.appendChild(el('div', { style:'margin-top:10px;' }, [
+    el('button', { class:'btn', onclick: () => TvSharp.openTest() }, ['🔍 Teste de nitidez da tela'])
+  ]));
   container.appendChild(perfBlock);
 
   // Automatic servers block
@@ -9367,6 +9497,7 @@ async function initApp(){
   const versionLabel = qs('#app-version-label');
   if(versionLabel) versionLabel.textContent = 'v' + APP_VERSION;
   try{ NetStatus.start(); NetStatus.startClock(); }catch(e){}
+  try{ TvSharp.init(); }catch(e){}
   // Busca os dados do Dashboard ANTES de mostrar a tela — assim ela já abre
   // com o conteúdo (ou com "Nada por aqui ainda") e o "Aguarde" cobre a espera.
   if(State.ui.currentView === 'dashboard' && State.servers.size > 0){
