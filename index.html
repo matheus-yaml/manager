@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.0.90';
+<script>var APP_VERSION = '1.0.92';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -217,6 +217,8 @@ a:focus,
 .net-row .net-status{flex:1;min-width:0;margin-bottom:0;}
 .sidebar-clock{flex-shrink:0;font-weight:600;color:var(--text-1);white-space:nowrap;font-variant-numeric:tabular-nums;}
 .sidebar-clock.bad{color:#f87171;}
+.net-speed{font-weight:600;color:var(--text-1);margin:-2px 0 8px 15px;font-variant-numeric:tabular-nums;}
+.net-speed.low{color:#fbbf24;}
 /* TV/projetor: barra lateral estreita — relógio numa linha e o status embaixo */
 html.tv .net-row{flex-direction:column;gap:5px;}
 html.tv .net-row .net-status{width:100%;}
@@ -1290,7 +1292,7 @@ html.tv .content-card .info .meta{line-height:16px;}
       <div id="live-cat-list" class="live-cat-list"></div>
     </div>
     <div id="sidebar-search-counters" class="search-counters" style="display:none;"></div>
-    <div class="footer-mini"><div class="net-row"><div id="net-status" class="net-status" tabindex="0" role="button" title="Toque para verificar de novo"><span class="dot"></span><span class="txt">Verificando internet…</span></div><span id="sidebar-clock" class="sidebar-clock"></span></div>StreamManager &middot; <span id="app-version-label">v1.0.0</span></div>
+    <div class="footer-mini"><div class="net-row"><div id="net-status" class="net-status" tabindex="0" role="button" title="Toque para verificar de novo"><span class="dot"></span><span class="txt">Verificando internet…</span></div><span id="sidebar-clock" class="sidebar-clock"></span></div><div id="net-speed" class="net-speed" style="display:none;"></div>StreamManager &middot; <span id="app-version-label">v1.0.0</span></div>
   </nav>
 
   <div id="main">
@@ -2073,9 +2075,6 @@ function renderDebugPanel(){
       else showToast('Não deu pra copiar automaticamente.', 'error');
     });
     header.appendChild(copyBtn);
-    const speedBtn = el('span', { style:'cursor:pointer;color:#ffd479;font-size:11px;padding:1px 6px;border:1px solid rgba(255,255,255,.2);border-radius:5px;', title:'Testar velocidade' }, ['velocidade']);
-    speedBtn.addEventListener('click', () => SpeedTest.run());
-    header.appendChild(speedBtn);
     const closeBtn = el('span', { style:'cursor:pointer;color:#888;font-size:15px;line-height:1;padding:0 2px;', title:'Fechar (desliga o painel — pode religar em Configurações)' }, ['×']);
     closeBtn.addEventListener('click', () => {
       State.ui.debugPanelEnabled = false;
@@ -2225,6 +2224,7 @@ const MemMonitor = {
     if(this._storage) lines.push(this._storage);
     lines.push(UpdateLog.statusLine());
     lines.push(NetStatus.statusLine());
+    try{ const ns = NetSpeed.statusLine(); if(ns) lines.push(ns); }catch(e){}
     // quanto as imagens da tela ocupam (bitmap = largura x altura x 4 bytes)
     try{
       let n = 0, bytes = 0;
@@ -2831,6 +2831,61 @@ const UpdateLog = {
 UpdateLog.install();
 
 /* ======================================================================
+   MONITOR DE VELOCIDADE (rodapé) — APK
+   ------------------------------------------------------------------
+   Conta quantos bytes ESTE APP recebeu da rede (Android TrafficStats),
+   inclusive o que o player nativo baixa, e mostra a velocidade a cada 2s:
+   "↓ 5,2 Mbps". Com um canal tocando, é a velocidade real que o vídeo está
+   recebendo — se cair abaixo do que o canal precisa, vem o "Carregando".
+   ====================================================================== */
+const NetSpeed = {
+  mbps: null, hist: [], _last: null, _ok: null,
+  start(){
+    if(!(window.cordova && typeof window.cordova.exec === 'function')) return;
+    this.tick();
+    setInterval(() => this.tick(), 2000);
+  },
+  tick(){
+    if(this._ok === false) return;
+    try{
+      window.cordova.exec((o) => {
+        this._ok = true;
+        const now = performance.now();
+        const app = +o.app;
+        if(this._last && app >= this._last.app){
+          const dt = (now - this._last.t) / 1000;
+          if(dt > 0.5){
+            this.mbps = (app - this._last.app) * 8 / dt / 1e6;
+            this.hist.push(this.mbps); if(this.hist.length > 30) this.hist.shift(); // último minuto
+            this.render();
+          }
+        }
+        this._last = { t: now, app };
+      }, () => { this._ok = false; const e = document.getElementById('net-speed'); if(e) e.style.display = 'none'; }, 'ManagerPip', 'netStats', []);
+    }catch(e){ this._ok = false; }
+  },
+  fmt(v){
+    if(v == null) return '—';
+    return v < 1 ? Math.round(v * 1000) + ' kbps' : v.toFixed(1).replace('.', ',') + ' Mbps';
+  },
+  avg(){ return this.hist.length ? this.hist.reduce((a, b) => a + b, 0) / this.hist.length : null; },
+  render(){
+    const e = document.getElementById('net-speed');
+    if(!e) return;
+    e.style.display = '';
+    const playing = !!(PlayerModule.currentContent && document.getElementById('player-overlay').style.display === 'flex');
+    e.textContent = '↓ ' + this.fmt(this.mbps) + (playing ? '  (vídeo)' : '');
+    e.classList.toggle('low', playing && this.mbps != null && this.mbps < 1.5);
+    e.title = 'Velocidade que este app está recebendo da internet (média do último minuto: ' + this.fmt(this.avg()) + ')';
+  },
+  statusLine(){
+    if(!this._ok) return null;
+    const h = this.hist;
+    return 'Rede (este app): agora ' + this.fmt(this.mbps) + ' • média 1 min ' + this.fmt(this.avg()) + ' • mínima ' + this.fmt(h.length ? Math.min.apply(null, h) : null);
+  }
+};
+
+/* ======================================================================
    TESTE DE VELOCIDADE (painel de diagnóstico → "velocidade")
    ------------------------------------------------------------------
    Responde "a rede deste aparelho aguenta o canal?":
@@ -2861,6 +2916,8 @@ const SpeedTest = {
         if(performance.now() >= stopAt) break;
       }
       try{ reader.cancel(); }catch(e){}
+    } catch(e){
+      if(!bytes) throw new Error('nenhum dado chegou — o servidor provavelmente não deixa abrir uma 2ª conexão ao mesmo tempo (limite de telas da conta). Use o monitor "↓ Mbps" do rodapé, que mede o próprio vídeo.');
     } finally { clearTimeout(kill); try{ ctl && ctl.abort(); }catch(e){} }
     const secs = Math.max(0.5, (performance.now() - (firstByte || t0)) / 1000);
     return { mbps: bytes * 8 / secs / 1e6, bytes, ttfb: firstByte ? Math.round(firstByte - t0) : null };
@@ -5984,7 +6041,10 @@ const PlayerModule = {
         this.hideBuffering();
         if(!played){ played = true; pushDebugLog('📺 Ao vivo tocando no player híbrido (vídeo nativo + controles do app).'); try{ NetStatus.noteOk(); }catch(e){} }
       }
-      else if(o.event === 'buffering') this.showBuffering();
+      else if(o.event === 'buffering'){
+        this.showBuffering();
+        pushDebugLog('📺 Carregando (o vídeo ficou sem dados) — rede agora: ' + NetSpeed.fmt(NetSpeed.mbps) + ', média 1 min: ' + NetSpeed.fmt(NetSpeed.avg()) + '.', true);
+      }
       else if(o.event === 'retry'){ this.showBuffering(); pushDebugLog('📺 Nativo: reconectando (tentativa ' + o.n + ' — ' + o.why + ').', true); }
       else if(o.event === 'error') pushDebugLog('📺 Nativo: erro ' + o.what + '/' + o.extra + '.', true);
       else if(o.event === 'failed'){
@@ -11251,6 +11311,7 @@ async function initApp(){
   const versionLabel = qs('#app-version-label');
   if(versionLabel) versionLabel.textContent = 'v' + APP_VERSION;
   try{ NetStatus.start(); NetStatus.startClock(); }catch(e){}
+  try{ NetSpeed.start(); }catch(e){}
   setTimeout(() => { NativeVideo.probe(); }, 1200);
   try{ TvSharp.init(); }catch(e){}
   // Busca os dados do Dashboard ANTES de mostrar a tela — assim ela já abre
