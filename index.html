@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.0.73';
+<script>var APP_VERSION = '1.0.74';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -231,6 +231,77 @@ html.tv .net-row .net-status{width:100%;}
 .net-status .sub{display:block;font-weight:500;color:var(--text-2);font-size:10.5px;}
 html.tv .net-status .sub{font-size:12px;}
 html.lite .net-status .dot{box-shadow:none;}
+
+/* ================= AO VIVO (layout novo) ================= */
+#live-side{display:none;flex:1;min-height:0;flex-direction:column;padding:10px 12px 8px;gap:8px;}
+#sidebar.live-side-on .nav-list{display:none;}
+#sidebar.live-side-on #live-side{display:flex;}
+.live-side-back{align-self:flex-start;padding:7px 12px;border-radius:10px;background:var(--bg-2);color:var(--text-0);font-weight:700;font-size:13px;border:1px solid var(--border);}
+.live-side-back:hover{background:var(--bg-3);}
+.live-side-title{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-2);font-weight:700;padding:4px 2px 0;}
+#live-cat-filter{width:100%;padding:8px 10px;font-size:13px;}
+.live-cat-list{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:2px;padding:2px;}
+.live-cat-sec{font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--accent);padding:10px 8px 3px;}
+.live-cat{display:flex;align-items:center;gap:8px;text-align:left;padding:8px 10px;border-radius:9px;color:var(--text-1);font-size:13px;font-weight:600;width:100%;}
+.live-cat .lc-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.live-cat .lc-n{font-size:11px;color:var(--text-2);font-weight:600;flex-shrink:0;}
+.live-cat:hover{background:var(--bg-2);color:var(--text-0);}
+.live-cat.active{background:rgba(var(--accent-rgb),.28);color:#fff;}
+.live-cat.active .lc-n{color:#fff;}
+.live-cat-empty{font-size:12px;color:var(--text-2);padding:8px;}
+html.tv .live-cat{padding:6px 9px;font-size:12px;}
+html.tv .live-cat .lc-n{font-size:12px;}
+html.tv .live-cat:focus{outline:3px solid #fff;outline-offset:-3px;background:rgba(var(--accent-rgb),.4);color:#fff;}
+html.tv .live-side-back:focus{outline:3px solid #fff;outline-offset:1px;}
+
+.live-top{margin-bottom:10px;}
+.live-cats-chip{display:none;}
+@media(max-width:900px){ .live-cats-chip{display:inline-flex;} }
+/* player embutido: fica parado no topo enquanto a lista de canais rola */
+.live-player{position:-webkit-sticky;position:sticky;top:-24px;z-index:4;display:flex;gap:16px;align-items:stretch;
+  margin:0 -28px 14px;padding:10px 28px 12px;background:var(--bg-0);border-bottom:1px solid var(--border);}
+.lp-screen{position:relative;flex:0 0 auto;width:min(52%,560px);border-radius:10px;overflow:hidden;background:#000;}
+.lp-screen::before{content:"";display:block;padding-top:56.25%;}
+.lp-empty{position:absolute;top:0;left:0;right:0;bottom:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;color:var(--text-2);font-size:13px;text-align:center;padding:10px;}
+.lp-empty b{font-size:30px;}
+.lp-info{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px;justify-content:center;}
+.lp-name{font-size:18px;font-weight:800;color:#fff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.lp-sub{font-size:12px;color:var(--text-2);}
+.lp-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px;}
+#lp-epg .epg-now{font-size:14px;white-space:normal;}
+#lp-epg .epg-now-title{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;}
+#lp-epg .epg-next{white-space:normal;}
+@media(max-width:900px){ .live-player{top:-16px;margin:0 -16px 12px;padding:8px 16px 10px;} }
+@media(max-width:640px){
+  .live-player{flex-direction:column;gap:8px;}
+  .lp-screen{width:100%;}
+  .lp-name{font-size:15px;}
+}
+html.tv .live-player{top:-12px;margin:0 -16px 10px;padding:8px 16px 10px;gap:12px;}
+html.tv .lp-screen{width:min(50%,420px);}
+html.tv .lp-name{font-size:16px;}
+/* canais em "fichas" compactas (logo + nome) — cabe bem mais na tela */
+.live-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px;}
+.live-grid .content-card{display:flex;flex-direction:row;align-items:center;position:relative;min-height:64px;scroll-margin-top:calc(var(--lp-h,260px) + 8px);}
+.live-grid .content-card .thumb{position:static;flex:0 0 64px;width:64px;height:64px;padding-top:0;background:rgba(255,255,255,.04);display:flex;align-items:center;justify-content:center;}
+.live-grid .content-card .thumb::before{display:none;}
+.live-grid .content-card .thumb img{position:static;width:56px;height:56px;object-fit:contain;transform:none !important;}
+.live-grid .content-card .thumb .ph{position:static;font-size:22px;}
+.live-grid .content-card .thumb .cs-canvas{position:static !important;width:56px !important;height:56px !important;}
+.live-grid .content-card .live-badge{display:none;}
+.live-grid .content-card .info{flex:1;min-width:0;padding:6px 44px 6px 10px !important;background:none !important;}
+.live-grid .content-card .info .name{-webkit-line-clamp:2;min-height:0;}
+html.tv .live-grid .content-card .info .name{-webkit-line-clamp:2;line-height:16px;}
+.live-grid .content-card .thumb > div[style*="position:absolute"]{top:50% !important;right:8px !important;transform:translateY(-50%);}
+.live-grid .content-card.playing{box-shadow:inset 3px 0 0 #ef4444;background:rgba(239,68,68,.12);}
+.live-grid .content-card.playing .info .name::before{content:"▶ ";color:#ef4444;}
+html.tv .live-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;}
+html.tv .live-grid .content-card:focus{transform:none !important;}
+/* player "mini" (dentro do Ao Vivo): mesmo player, só que encaixado na tela */
+#player-overlay.mini{z-index:30;cursor:pointer;background:#000;}
+#player-overlay.mini > :not(video):not(#player-buffering){display:none !important;}
+#player-overlay.mini #player-buffering{background:rgba(0,0,0,.35);}
+#player-overlay.mini video{object-fit:contain;}
 
 #sidebar-overlay{
   display:none;position:fixed;top:0;right:0;bottom:0;left:0;background:rgba(4,5,10,.6);
@@ -732,21 +803,21 @@ html.tv .modal-close-x:focus{color:#fff;background:rgba(var(--accent-rgb),.45);o
 #player-topbar .ptitle{font-size:15px;font-weight:700;}
 /* Ao vivo: programa passando agora (guia/EPG do servidor) — ver LiveEpg */
 .ptitle-wrap{min-width:0;flex:0 1 auto;display:flex;flex-direction:column;gap:3px;max-width:60vw;}
-#player-epg{min-width:0;}
-#player-epg .epg-now{display:flex;gap:8px;align-items:baseline;font-size:13.5px;color:#fff;font-weight:600;white-space:nowrap;min-width:0;}
-#player-epg .epg-now-title{overflow:hidden;text-overflow:ellipsis;min-width:0;}
-#player-epg .epg-now-title::before{content:"▶ ";color:#ef4444;}
-#player-epg .epg-now-time{color:rgba(255,255,255,.7);font-weight:500;font-size:12px;flex-shrink:0;}
-#player-epg .epg-bar{height:3px;border-radius:2px;background:rgba(255,255,255,.2);margin-top:4px;max-width:260px;overflow:hidden;}
-#player-epg .epg-bar i{display:block;height:100%;width:0;background:#ef4444;}
-#player-epg .epg-next{font-size:12px;color:rgba(255,255,255,.7);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.epg-box{min-width:0;}
+.epg-box .epg-now{display:flex;gap:8px;align-items:baseline;font-size:13.5px;color:#fff;font-weight:600;white-space:nowrap;min-width:0;}
+.epg-box .epg-now-title{overflow:hidden;text-overflow:ellipsis;min-width:0;}
+.epg-box .epg-now-title::before{content:"▶ ";color:#ef4444;}
+.epg-box .epg-now-time{color:rgba(255,255,255,.7);font-weight:500;font-size:12px;flex-shrink:0;}
+.epg-box .epg-bar{height:3px;border-radius:2px;background:rgba(255,255,255,.2);margin-top:4px;max-width:260px;overflow:hidden;}
+.epg-box .epg-bar i{display:block;height:100%;width:0;background:#ef4444;}
+.epg-box .epg-next{font-size:12px;color:rgba(255,255,255,.7);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 @media(max-width:640px){
   .ptitle-wrap{max-width:52vw;}
-  #player-epg .epg-now{font-size:12px;}
-  #player-epg .epg-next{display:none;}
+  .epg-box .epg-now{font-size:12px;}
+  .epg-box .epg-next{display:none;}
 }
-html.tv #player-epg .epg-now{font-size:13px;}
-html.tv #player-epg .epg-now-time, html.tv #player-epg .epg-next{font-size:12px;}
+html.tv .epg-box .epg-now{font-size:13px;}
+html.tv .epg-box .epg-now-time, html.tv .epg-box .epg-next{font-size:12px;}
 #player-close{font-size:22px;background:rgba(255,255,255,.12);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);width:38px;height:38px;border-radius:50%;transition:background .15s;}
 #player-close:hover{background:rgba(255,255,255,.2);}
 #player-back{font-size:20px;background:rgba(255,255,255,.12);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);width:38px;height:38px;border-radius:50%;flex-shrink:0;transition:background .15s;}
@@ -1185,8 +1256,15 @@ html.tv .content-card .info .meta{line-height:16px;}
       <li class="nav-item" data-view="servers" tabindex="0"><span class="ic">&#128421;</span>Servidores<span class="count" id="cnt-servers">0</span></li>
       <li class="nav-item" data-view="settings" tabindex="0"><span class="ic">&#9881;</span>Configurações</li>
     </ul>
+    <!-- Ao Vivo: a barra lateral vira a lista de categorias (ver renderLiveSidebar) -->
+    <div id="live-side">
+      <button id="live-side-back" class="live-side-back" type="button">&#8592; Menu</button>
+      <div class="live-side-title">Categorias</div>
+      <input type="text" id="live-cat-filter" placeholder="Filtrar categorias..." autocomplete="off">
+      <div id="live-cat-list" class="live-cat-list"></div>
+    </div>
     <div id="sidebar-search-counters" class="search-counters" style="display:none;"></div>
-    <div class="footer-mini"><div class="net-row"><div id="net-status" class="net-status" tabindex="0" role="button" title="Toque para verificar de novo"><span class="dot"></span><span class="txt">Verificando internet…</span></div><span id="sidebar-clock" class="sidebar-clock"></span></div>StreamManager &middot; local &amp; offline-first &middot; <span id="app-version-label">v1.0.0</span></div>
+    <div class="footer-mini"><div class="net-row"><div id="net-status" class="net-status" tabindex="0" role="button" title="Toque para verificar de novo"><span class="dot"></span><span class="txt">Verificando internet…</span></div><span id="sidebar-clock" class="sidebar-clock"></span></div>StreamManager &middot; <span id="app-version-label">v1.0.0</span></div>
   </nav>
 
   <div id="main">
@@ -1214,7 +1292,7 @@ html.tv .content-card .info .meta{line-height:16px;}
     <button id="player-back">&#8592;</button>
     <div class="ptitle-wrap">
       <div class="ptitle" id="player-title"></div>
-      <div id="player-epg" style="display:none;">
+      <div id="player-epg" class="epg-box" style="display:none;">
         <div class="epg-now"><span class="epg-now-title"></span><span class="epg-now-time"></span></div>
         <div class="epg-bar"><i></i></div>
         <div class="epg-next"></div>
@@ -2247,15 +2325,25 @@ const CoverSharp = {
     try{ im = await this._load(url, true); }
     catch(e){ im = await this._load(url, false); tainted = true; } // sem CORS (ou falhou de vez → catch lá fora usa a <img> normal)
     if(!img.isConnected) return;
-    // recorte igual ao object-fit:cover
+    // recorte igual ao object-fit:cover — ou, com object-fit:contain (logos
+    // dos canais no Ao Vivo), a imagem inteira centralizada com fundo transparente
     const sw = im.naturalWidth, sh = im.naturalHeight;
     if(!sw || !sh){ img.src = url; return; }
-    const scale = Math.max(W / sw, H / sh);
-    let cw = W / scale, ch = H / scale;
-    let cx = (sw - cw) / 2, cy = (sh - ch) / 2;
+    const contain = getComputedStyle(img).objectFit === 'contain';
+    let dx = 0, dy = 0, dW = W, dH = H, cx, cy, cw, ch;
+    if(contain){
+      const sc = Math.min(W / sw, H / sh, 1.5); // logo pequena: amplia no máx. 1,5x (mais que isso só borra)
+      dW = Math.max(1, Math.round(sw * sc)); dH = Math.max(1, Math.round(sh * sc));
+      dx = Math.floor((W - dW) / 2); dy = Math.floor((H - dH) / 2);
+      cx = 0; cy = 0; cw = sw; ch = sh;
+    } else {
+      const scale = Math.max(W / sw, H / sh);
+      cw = W / scale; ch = H / scale;
+      cx = (sw - cw) / 2; cy = (sh - ch) / 2;
+    }
     // redução em etapas (metade por vez)
     let src = im, sx = cx, sy = cy, sW = cw, sH = ch;
-    while(sW / 2 >= W && sH / 2 >= H){
+    while(sW / 2 >= dW && sH / 2 >= dH){
       const c = document.createElement('canvas');
       c.width = Math.round(sW / 2); c.height = Math.round(sH / 2);
       const g = c.getContext('2d'); g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
@@ -2266,7 +2354,7 @@ const CoverSharp = {
     out.width = W; out.height = H;
     const g = out.getContext('2d');
     g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
-    g.drawImage(src, sx, sy, sW, sH, 0, 0, W, H);
+    g.drawImage(src, sx, sy, sW, sH, dx, dy, dW, dH);
     im.src = ''; im = null; src = null; // solta a imagem grande
     if(tainted){
       // não dá pra ler os pixels: mostra o canvas no lugar da <img>
@@ -2294,7 +2382,7 @@ const CoverSharp = {
       }
       g.putImageData(d, 0, 0);
     }catch(e){}
-    const png = /\.png(\?|$)/i.test(url);
+    const png = contain || /\.png(\?|$)/i.test(url);
     const blob = await new Promise(res => out.toBlob(res, png ? 'image/png' : 'image/jpeg', 0.92));
     if(!blob){ img.src = url; return; }
     const bu = URL.createObjectURL(blob);
@@ -2636,17 +2724,38 @@ const LiveEpg = {
     return list;
   },
 
+  /** Pinta o programa atual em TODAS as caixas de guia (player em tela
+   *  cheia e o painel do Ao Vivo). onlyBar = só a barrinha de progresso. */
+  paintAll(onlyBar){
+    const L = this._last;
+    const cc = PlayerModule.currentContent;
+    if(!L || !cc || cc.id !== L.id) return;
+    const { cur, next } = L;
+    document.querySelectorAll('.epg-box').forEach(box => {
+      if(!onlyBar){
+        box.querySelector('.epg-now-title').textContent = cur.title;
+        box.querySelector('.epg-now-time').textContent = this._hm(cur.start) + '–' + this._hm(cur.stop);
+        box.querySelector('.epg-next').textContent = next ? 'A seguir: ' + next.title + ' (' + this._hm(next.start) + ')' : '';
+        box.title = cur.desc || '';
+        box.style.display = '';
+      }
+      const pct = Math.max(0, Math.min(100, (Date.now() / 1000 - cur.start) / Math.max(1, cur.stop - cur.start) * 100));
+      const bar = box.querySelector('.epg-bar i');
+      if(bar) bar.style.width = pct.toFixed(1) + '%';
+    });
+  },
+
   _hm(ts){ const d = new Date(ts * 1000); return (d.getHours() < 10 ? '0' : '') + d.getHours() + ':' + (d.getMinutes() < 10 ? '0' : '') + d.getMinutes(); },
 
   stop(){
     this._token++;
     clearTimeout(this._timer); clearInterval(this._barTimer);
-    const box = document.getElementById('player-epg');
-    if(box) box.style.display = 'none';
+    document.querySelectorAll('.epg-box').forEach(b => { b.style.display = 'none'; });
   },
 
   async show(content){
     this.stop();
+    this._last = null;
     if(!content || content.tipo !== 'live') return;
     const info = this.parse(content);
     if(!info) return;
@@ -2663,20 +2772,9 @@ const LiveEpg = {
       i = 0;
     }
     const cur = list[i], next = list[i + 1];
-    const box = document.getElementById('player-epg');
-    if(!box) return;
-    box.querySelector('.epg-now-title').textContent = cur.title;
-    box.querySelector('.epg-now-time').textContent = this._hm(cur.start) + '–' + this._hm(cur.stop);
-    box.querySelector('.epg-next').textContent = next ? 'A seguir: ' + next.title + ' (' + this._hm(next.start) + ')' : '';
-    box.title = cur.desc || '';
-    const bar = box.querySelector('.epg-bar i');
-    const paint = () => {
-      const pct = Math.max(0, Math.min(100, (Date.now() / 1000 - cur.start) / Math.max(1, cur.stop - cur.start) * 100));
-      bar.style.width = pct.toFixed(1) + '%';
-    };
-    paint();
-    this._barTimer = setInterval(paint, 30000);
-    box.style.display = '';
+    this._last = { id: content.id, cur, next };
+    this.paintAll();
+    this._barTimer = setInterval(() => this.paintAll(true), 30000);
     // quando o programa acabar, atualiza (mín. 30s, máx. 30 min)
     const wait = Math.max(30, Math.min(1800, cur.stop - Date.now() / 1000 + 5)) * 1000;
     this._timer = setTimeout(() => {
@@ -5228,7 +5326,7 @@ window.addEventListener('popstate', function(){
   // Chrome): usa a History API normalmente. Fecha a camada mais no topo
   // agora aberta, se houver alguma.
   const overlay = qs('#player-overlay');
-  if(overlay && overlay.style.display === 'flex'){
+  if(overlay && PlayerModule.isFullOpen()){
     PlayerModule.goBack();
     return;
   }
@@ -5257,11 +5355,32 @@ window.addEventListener('popstate', function(){
    fica inofensivo fora dele — não precisa de nenhuma checagem extra.
    ====================================================================== */
 let _lastRootBackPressAt = 0;
+
+/** Voltar (controle/Android/Esc) com uma janela (popup) aberta: fecha a de
+ *  cima, do jeito "certo" dela — × de fechar, "Cancelar"/"Fechar", ou
+ *  "Minimizar" na importação em andamento. true = fechou alguma. */
+function closeTopModal(){
+  if(TvSelect._overlay){ const sel = TvSelect._select; TvSelect.close(); if(sel && sel.isConnected) TvNav.focus(sel); return true; }
+  const modals = Array.from(document.querySelectorAll('.modal-overlay')).filter(m => m.style.display !== 'none' && m.getClientRects().length);
+  const top = modals[modals.length - 1];
+  if(!top) return false;
+  if(activeSearchOverlay && activeSearchOverlay.overlay === top){ activeSearchOverlay.close(false); return true; }
+  const x = top.querySelector('.modal-close-x');
+  if(x){ x.click(); return true; }
+  const btns = Array.from(top.querySelectorAll('button')).filter(b => !b.disabled && b.getClientRects().length);
+  const pick = btns.find(b => /^\s*(cancelar|fechar)\s*$/i.test(b.textContent))
+    || top.querySelector('#minimize-import-btn') // importação rodando: minimiza (mesmo com o botão escondido)
+    || btns.find(b => /cancelar|fechar|voltar/i.test(b.textContent));
+  if(pick){ pick.click(); return true; }
+  top.remove();
+  return true;
+}
+
 document.addEventListener('backbutton', function(e){
   if(e && e.preventDefault) e.preventDefault();
-  if(TvSelect._overlay){ const sel = TvSelect._select; TvSelect.close(); if(sel && sel.isConnected) TvNav.focus(sel); return; }
+  if(closeTopModal()){ _lastRootBackPressAt = 0; return; }
   const overlay = qs('#player-overlay');
-  if(overlay && overlay.style.display === 'flex'){
+  if(overlay && PlayerModule.isFullOpen()){
     PlayerModule.goBack();
     _lastRootBackPressAt = 0;
     return;
@@ -5364,16 +5483,120 @@ const PlayerModule = {
   _nextEpBtnReady: false,
   _skipNativeAttempt: false,
 
-  open(content){
+  /* ---------- player "mini" (encaixado na tela do Ao Vivo) ----------
+     É o MESMO player (mesma reprodução, HLS/TS, tentativas…), só que
+     posicionado por cima de um quadro da página (host) e sem controles.
+     Tocar nele / OK no canal que já está tocando = tela cheia; voltar da
+     tela cheia = volta pro quadro, sem reiniciar o vídeo. */
+  _mini: false, _miniHost: null, _miniReturn: false,
+  isMini(){ return this._mini; },
+  isFullOpen(){ const o = qs('#player-overlay'); return !!o && o.style.display === 'flex' && !this._mini; },
+  _clearMiniStyles(o){
+    ['top','left','width','height','right','bottom','clipPath','webkitClipPath','visibility','borderRadius'].forEach(k => { o.style[k] = ''; });
+  },
+  _ensureMiniListeners(){
+    if(this._miniListeners) return;
+    this._miniListeners = true;
+    const o = qs('#player-overlay');
+    // no mini, qualquer toque/clique = tela cheia (os gestos do player ficam de fora)
+    const block = (e) => { if(this._mini){ e.stopPropagation(); } };
+    ['touchstart','touchend','touchmove','mousedown','mouseup','pointerdown','pointerup','dblclick'].forEach(t => o.addEventListener(t, block, true));
+    o.addEventListener('click', (e) => { if(this._mini){ e.stopPropagation(); e.preventDefault(); this.expandMini(); } }, true);
+    const sync = () => { if(this._mini && !this._syncRaf) this._syncRaf = requestAnimationFrame(() => { this._syncRaf = 0; this._syncMini(); }); };
+    window.addEventListener('resize', sync);
+    const ca = qs('#content-area'); if(ca) ca.addEventListener('scroll', sync, { passive: true });
+    this._miniSyncFn = sync;
+    try{ this._miniRO = new ResizeObserver(sync); }catch(e){}
+  },
+  /** Encaixa o player no quadro (host) da tela do Ao Vivo. */
+  attachMini(host){
+    this._ensureMiniListeners();
+    if(this._miniRO){ try{ this._miniRO.disconnect(); this._miniRO.observe(host); }catch(e){} }
+    this._miniHost = host;
+    if(this._mini) this._syncMini();
+  },
+  _syncMini(){
+    const o = qs('#player-overlay'), h = this._miniHost;
+    if(!this._mini || !o) return;
+    if(!h || !h.isConnected){ o.style.visibility = 'hidden'; return; }
+    const r = h.getBoundingClientRect();
+    const ca = qs('#content-area').getBoundingClientRect();
+    o.style.visibility = r.width < 10 ? 'hidden' : '';
+    o.style.top = r.top + 'px'; o.style.left = r.left + 'px';
+    o.style.width = r.width + 'px'; o.style.height = r.height + 'px';
+    o.style.right = 'auto'; o.style.bottom = 'auto';
+    const ct = Math.max(0, Math.round(ca.top - r.top)), cb = Math.max(0, Math.round(r.bottom - ca.bottom));
+    const clip = 'inset(' + ct + 'px 0 ' + cb + 'px 0 round 10px)';
+    o.style.clipPath = clip; o.style.webkitClipPath = clip;
+  },
+  expandMini(){
+    if(!this._mini) return;
+    const o = qs('#player-overlay');
+    this._mini = false;
+    this._miniReturn = true;
+    o.classList.remove('mini');
+    this._clearMiniStyles(o);
+    pushNavState('player');
+    if(this.currentContent && this.currentContent.tipo === 'live') ProgressModule.markLiveWatched(this.currentContent).catch(()=>{});
+    this._showControls();
+    if(TvNav.on()) setTimeout(() => { const pp = qs('#player-playpause'); if(pp) TvNav.focus(pp); }, 60);
+  },
+  /** Volta da tela cheia pro quadro do Ao Vivo (sem parar o vídeo). */
+  toMini(){
+    const o = qs('#player-overlay');
+    if(document.fullscreenElement) document.exitFullscreen().catch(()=>{});
+    this._unlockOrientation();
+    this._setNativeImmersive(false);
+    this._miniReturn = false;
+    this._mini = true;
+    o.classList.add('mini');
+    this._syncMini();
+    const id = this.currentContent && this.currentContent.id;
+    if(TvNav.on() && id) TvNav.restoreCard(id, null);
+  },
+  /** Saiu do Ao Vivo: para o player mini. */
+  stopMini(){
+    if(!this._mini && !(this._miniReturn && !this.isFullOpen())) return;
+    const o = qs('#player-overlay');
+    this._mini = false; this._miniReturn = false;
+    this.playToken++;
+    clearTimeout(this._miniMarkT);
+    try{ LiveEpg.stop(); }catch(e){}
+    this.cleanup();
+    this.hideFallbackBar();
+    o.classList.remove('mini');
+    this._clearMiniStyles(o);
+    o.style.display = 'none';
+    this.currentContent = null;
+  },
+
+  open(content, opts){
     const overlay = qs('#player-overlay');
+    const mini = !!(opts && opts.mini);
+    // OK/clique no canal que JÁ está tocando no quadro: só abre em tela cheia
+    if(!mini && this._mini && this.currentContent && content && this.currentContent.id === content.id){ this.expandMini(); return; }
     // Só empilha uma entrada de histórico quando o player estava REALMENTE
     // fechado antes — troca de episódio (próximo episódio, ou clicar outro
     // episódio já com o player aberto) reusa o mesmo open() mas não deve
     // empilhar de novo (senão o usuário precisaria apertar voltar várias
     // vezes só pra sair, uma por episódio trocado).
-    const wasClosed = overlay.style.display !== 'flex';
+    const wasClosed = overlay.style.display !== 'flex' || this._mini;
+    if(mini){
+      this._ensureMiniListeners();
+      if(opts.host) this.attachMini(opts.host);
+      this._mini = true; this._miniReturn = false;
+      overlay.classList.add('mini');
+      clearTimeout(this._miniMarkT);
+      // só entra no "Continuar Assistindo" se ficou uns segundos no canal
+      this._miniMarkT = setTimeout(() => { if(this.currentContent && this.currentContent.id === content.id) ProgressModule.markLiveWatched(content).catch(()=>{}); }, 15000);
+    } else if(this._mini){
+      // abriu outra coisa (ex: filme pela pesquisa) com o mini tocando: vira player normal
+      this._mini = false; this._miniReturn = false;
+      overlay.classList.remove('mini');
+      this._clearMiniStyles(overlay);
+    }
     this.currentContent = content;
-    if(content && content.tipo === 'live') ProgressModule.markLiveWatched(content).catch(()=>{});
+    if(!mini && content && content.tipo === 'live') ProgressModule.markLiveWatched(content).catch(()=>{});
     this.retryCount = 0;
     this.isUserPaused = false;
     this._skipNativeAttempt = false;
@@ -5395,7 +5618,8 @@ const PlayerModule = {
     overlay.style.display = 'flex';
     overlay.classList.toggle('live-mode', content.tipo === 'live');
     try{ LiveEpg.show(content); }catch(e){}
-    if(wasClosed) pushNavState('player');
+    if(mini){ this._syncMini(); }
+    else if(wasClosed) pushNavState('player');
 
     this._ensureVideoListeners();
     this._ensureNextEpisodeButton();
@@ -5411,7 +5635,7 @@ const PlayerModule = {
     if(volumeBtn0) volumeBtn0.innerHTML = video0.muted ? this.ICONS.volumeOff : this.ICONS.volumeOn;
     const volumeSlider0 = qs('#player-volume-slider');
     if(volumeSlider0) volumeSlider0.value = video0.muted ? 0 : video0.volume;
-    this._showControls();
+    if(!mini) this._showControls();
   },
 
   _ensureNextEpisodeButton(){
@@ -5759,7 +5983,7 @@ const PlayerModule = {
     // precisar clicar no vídeo primeiro. Guardado por overlay visível pra
     // não interferir em nenhum outro lugar do app (ex: campos de texto).
     document.addEventListener('keydown', (e) => {
-      if(overlay.style.display !== 'flex') return;
+      if(overlay.style.display !== 'flex' || this._mini) return;
       if(e.key === 'Escape'){
         e.preventDefault();
         this.goBack();
@@ -6943,6 +7167,15 @@ const PlayerModule = {
   },
 
   close(){
+    // tela cheia que veio do quadro do Ao Vivo: volta pro quadro, vídeo segue tocando
+    if(this._miniReturn && !this._mini && State.ui.currentView === 'live' && this._miniHost && this._miniHost.isConnected &&
+       this.currentContent && this.currentContent.tipo === 'live'){
+      this.toMini();
+      return;
+    }
+    this._mini = false; this._miniReturn = false;
+    clearTimeout(this._miniMarkT);
+    { const o = qs('#player-overlay'); o.classList.remove('mini'); this._clearMiniStyles(o); }
     this.playToken++; // invalidate any pending retries/callbacks
     try{ LiveEpg.stop(); }catch(e){}
     if(document.fullscreenElement) document.exitFullscreen().catch(()=>{});
@@ -7170,6 +7403,7 @@ function renderContentCard(content, options){
     } else {
       State.ui.returnTo = null;
     }
+    if(options.onActivate){ options.onActivate(content, card); return; }
     PlayerModule.open(content);
   };
   card.addEventListener('click', activateCard);
@@ -7370,6 +7604,193 @@ async function renderListView(type, titleLabel, container){
   container.appendChild(grid);
   container.appendChild(renderPagination(filters.page, totalPages, (p)=>{ filters.page = p; Router.render(); window.scrollTo(0,0); }));
 
+}
+
+/* ======================================================================
+   VIEW: AO VIVO (layout novo)
+   ------------------------------------------------------------------
+   - Barra lateral vira a lista de categorias (com campo de filtrar e
+     "← Menu" pra voltar ao menu normal) — ver renderLiveSidebar.
+   - No topo: servidores + ★ Favoritos (o servidor escolhido filtra as
+     categorias da barra lateral).
+   - Player embutido (quadro fixo no topo) + fichas de canais embaixo.
+     Clicar/OK num canal = toca no quadro; OK/clique de novo no canal que
+     está tocando (ou no quadro) = tela cheia. No controle remoto, parar o
+     foco num canal por ~0,7s já toca ele no quadro.
+   ====================================================================== */
+const LiveView = {
+  _byId: new Map(),
+  _focusT: null,
+  play(content){
+    const host = document.getElementById('lp-screen');
+    if(!host) return;
+    PlayerModule.open(content, { mini: true, host });
+    this.markPlaying();
+  },
+  activate(content){
+    if(PlayerModule.isMini() && PlayerModule.currentContent && PlayerModule.currentContent.id === content.id){ PlayerModule.expandMini(); return; }
+    this.play(content);
+  },
+  markPlaying(){
+    const cc = PlayerModule.currentContent;
+    const id = (PlayerModule.isMini() || PlayerModule._miniReturn) && cc ? cc.id : null;
+    document.querySelectorAll('.live-grid .content-card').forEach(c => c.classList.toggle('playing', !!id && c.getAttribute('data-cid') === id));
+    const nameEl = document.getElementById('lp-name'), subEl = document.getElementById('lp-sub'), empty = document.querySelector('.lp-empty');
+    const fsBtn = document.getElementById('lp-full');
+    if(nameEl) nameEl.textContent = id ? resolveContentName(cc) : 'Nenhum canal tocando';
+    if(subEl) subEl.textContent = id ? (getServerName(cc.serverId) + (cc.categoria ? ' • ' + cc.categoria : '')) :
+      (TvNav.on() ? 'Pare o foco num canal pra assistir aqui • OK de novo = tela cheia' : 'Toque num canal pra assistir aqui • toque de novo (ou no vídeo) = tela cheia');
+    if(empty) empty.style.display = id ? 'none' : '';
+    if(fsBtn) fsBtn.style.display = id ? '' : 'none';
+    if(!id) document.querySelectorAll('#lp-epg').forEach(b => { b.style.display = 'none'; });
+    else try{ LiveEpg.paintAll(); }catch(e){}
+  }
+};
+
+function renderLiveSidebar(filters, catOptions){
+  const list = qs('#live-cat-list'), input = qs('#live-cat-filter'), back = qs('#live-side-back');
+  if(!list || !input) return;
+  // contagem por categoria (do servidor escolhido, ou de todos)
+  const counts = new Map(); let total = 0;
+  for(const [id, srv] of State.servers){
+    if(filters.server !== 'all' && id !== filters.server) continue;
+    const cc = srv.liveCategoryCounts || {};
+    for(const k in cc){ counts.set(k, (counts.get(k) || 0) + cc[k]); total += cc[k]; }
+  }
+  const g = CategoryGroups.build(catOptions, 'live');
+  const sumOf = (members) => members.reduce((a, m) => a + (counts.get(m) || 0), 0);
+  const sections = [
+    ['', [{ v:'all', l:'Todas as categorias', n: total, members: [] }]],
+    ['Grupos', g.genres.map(n => ({ v: CategoryGroups.token(n), l: n, members: g.members.get(n) || [], n: sumOf(g.members.get(n) || []) }))],
+    ['Plataformas', g.platforms.map(n => ({ v: CategoryGroups.token(n), l: n, members: g.members.get(n) || [], n: sumOf(g.members.get(n) || []) }))],
+    ['Categorias', g.other.map(c => ({ v: c, l: c, members: [], n: counts.get(c) || 0 }))]
+  ];
+  const fill = () => {
+    const q = normalizeText(input.value || '');
+    const hit = (t) => !q || normalizeText(t).indexOf(q) !== -1;
+    list.innerHTML = '';
+    let shown = 0;
+    for(const [title, items] of sections){
+      const vis = items.filter(it => it.v === 'all' || it.v === filters.category || hit(it.l) || it.members.some(hit));
+      if(!vis.length) continue;
+      if(title) list.appendChild(el('div', { class:'live-cat-sec' }, [title]));
+      for(const it of vis){
+        const b = el('button', { type:'button', class:'live-cat' + (filters.category === it.v ? ' active' : '') }, [
+          el('span', { class:'lc-name' }, [it.l]), el('span', { class:'lc-n' }, [String(it.n || 0)])
+        ]);
+        b.addEventListener('click', () => {
+          filters.category = it.v; filters.page = 1;
+          if(window.innerWidth <= 900){ qs('#sidebar').classList.remove('open'); qs('#sidebar-overlay').classList.remove('open'); }
+          Router.render();
+          if(TvNav.on()) TvNav.focusSoon('#live-cat-list .live-cat.active');
+        });
+        list.appendChild(b);
+        if(it.v !== 'all') shown++;
+      }
+    }
+    if(q && !shown) list.appendChild(el('div', { class:'live-cat-empty' }, ['Nenhuma categoria encontrada']));
+  };
+  // o campo é fixo (não é recriado): teclado do celular não fecha a cada letra
+  if(!input._wired){
+    input._wired = true;
+    input.addEventListener('input', () => {
+      State.ui.categoryFilterText.live = input.value;
+      clearTimeout(input._t);
+      input._t = setTimeout(() => { if(input._fill) input._fill(); }, 120);
+    });
+    back.addEventListener('click', () => {
+      State.ui.liveSideHidden = true;
+      qs('#sidebar').classList.remove('live-side-on');
+      if(TvNav.on()){ const n = document.querySelector('#sidebar .nav-item[data-view="live"]'); if(n) TvNav.focus(n); }
+    });
+  }
+  if(input.value !== (State.ui.categoryFilterText.live || '') && document.activeElement !== input) input.value = State.ui.categoryFilterText.live || '';
+  input._fill = fill;
+  fill();
+}
+
+async function renderLiveView(container){
+  const filters = State.ui.filters.live;
+  const pageSize = State.settings.pageSize || PAGE_SIZE_DEFAULT;
+  container.classList.add('live-view');
+  const pageKey = pageCacheKey('live', filters);
+  const alreadyCached = State.pageCache.has(filterMetaCacheKey('live', filters)) && State.pageCache.has(pageKey);
+  let loading = null;
+  if(!alreadyCached && !State.pageFetchesInFlight.has(pageKey)){
+    loading = el('div', { class:'loader-inline' }, [el('div',{class:'spinner'}), 'Carregando...']);
+    container.appendChild(loading);
+  }
+  const { serverIds, catOptions, pageResult } = await loadTypePageData('live', filters, pageSize);
+  if(State.ui.currentView !== 'live') return;
+  if(loading) loading.remove();
+
+  // servidores + favoritos (+ no celular: atalho pras categorias)
+  const top = el('div', { class:'chip-row live-top' });
+  if(serverIds.length > 0){
+    top.appendChild(el('button', { class:'chip' + (filters.server==='all'?' active':''), onclick:()=>{ filters.server='all'; filters.category='all'; filters.page=1; Router.render(); } }, ['Todos']));
+    for(const sid of serverIds){
+      top.appendChild(el('button', { class:'chip' + (filters.server===sid?' active':''), onclick:((id)=>()=>{ filters.server=id; filters.category='all'; filters.page=1; Router.render(); })(sid) }, [getServerName(sid)]));
+    }
+  }
+  top.appendChild(el('button', { class:'chip' + (filters.favoritesOnly?' active':''), onclick:()=>{ filters.favoritesOnly = !filters.favoritesOnly; filters.page=1; Router.render(); } }, ['★ Favoritos']));
+  top.appendChild(el('button', { class:'chip live-cats-chip', onclick:()=>{
+    State.ui.liveSideHidden = false; qs('#sidebar').classList.add('live-side-on');
+    qs('#sidebar').classList.add('open'); qs('#sidebar-overlay').classList.add('open');
+  } }, ['☰ ' + (filters.category === 'all' ? 'Categorias' : CategoryGroups.label(filters.category))]));
+  container.appendChild(top);
+
+  // player embutido + informações do canal
+  const lp = el('div', { class:'live-player' });
+  const screen = el('div', { class:'lp-screen', id:'lp-screen' }, [el('div', { class:'lp-empty' }, [el('b', {}, ['📺']), 'Escolha um canal — ele toca aqui'])]);
+  const info = el('div', { class:'lp-info' });
+  info.appendChild(el('div', { class:'lp-name', id:'lp-name' }, ['']));
+  info.appendChild(el('div', { class:'lp-sub', id:'lp-sub' }, ['']));
+  const epg = el('div', { id:'lp-epg', class:'epg-box', style:'display:none;' });
+  epg.innerHTML = '<div class="epg-now"><span class="epg-now-title"></span><span class="epg-now-time"></span></div><div class="epg-bar"><i></i></div><div class="epg-next"></div>';
+  info.appendChild(epg);
+  const actions = el('div', { class:'lp-actions' });
+  actions.appendChild(el('button', { class:'btn primary', id:'lp-full', style:'display:none;', onclick:()=>PlayerModule.expandMini() }, ['⛶ Tela cheia']));
+  info.appendChild(actions);
+  lp.appendChild(screen); lp.appendChild(info);
+  container.appendChild(lp);
+
+  const counterEl0 = qs('#cnt-live');
+  if(counterEl0) counterEl0.textContent = pageResult.total;
+  const totalPages = Math.max(1, Math.ceil(pageResult.total / pageSize));
+  if(filters.page > totalPages && totalPages >= 1){ filters.page = totalPages; Router.render(); return; }
+
+  renderLiveSidebar(filters, catOptions);
+
+  if(pageResult.total === 0){
+    container.appendChild(renderEmptyState('📭', 'Nenhum canal encontrado', filters.favoritesOnly ? 'Nenhum canal favorito com esses filtros.' : 'Nenhum canal com esses filtros.'));
+  } else {
+    const grid = el('div', { class:'live-grid' });
+    LiveView._byId = new Map();
+    for(const content of pageResult.items){
+      LiveView._byId.set(content.id, content);
+      grid.appendChild(renderContentCard(content, { onActivate: (c) => LiveView.activate(c) }));
+    }
+    // controle remoto: parou o foco num canal = toca no quadro
+    grid.addEventListener('focusin', (e) => {
+      if(!TvNav.on()) return;
+      const card = e.target.closest && e.target.closest('.content-card');
+      if(!card) return;
+      clearTimeout(LiveView._focusT);
+      LiveView._focusT = setTimeout(() => {
+        if(document.activeElement !== card || !card.isConnected) return;
+        const c = LiveView._byId.get(card.getAttribute('data-cid'));
+        const cc = PlayerModule.currentContent;
+        if(c && !(cc && cc.id === c.id)) LiveView.play(c);
+      }, 700);
+    });
+    container.appendChild(grid);
+    container.appendChild(renderPagination(filters.page, totalPages, (p)=>{ filters.page = p; Router.render(); }));
+  }
+
+  PlayerModule.attachMini(screen);
+  LiveView.markPlaying();
+  // altura do quadro (pra lista não esconder o canal focado atrás dele)
+  requestAnimationFrame(() => { container.style.setProperty('--lp-h', lp.offsetHeight + 'px'); PlayerModule._syncMini(); });
 }
 
 /* ======================================================================
@@ -9366,7 +9787,7 @@ const TvNav = {
     if(modals.length) return modals[modals.length - 1];
     if(activeSearchOverlay && activeSearchOverlay.overlay && activeSearchOverlay.overlay.isConnected) return activeSearchOverlay.overlay;
     const player = document.getElementById('player-overlay');
-    if(player && player.style.display === 'flex') return player;
+    if(player && player.style.display === 'flex' && !player.classList.contains('mini')) return player;
     return document.getElementById('app');
   },
 
@@ -9417,7 +9838,7 @@ const TvNav = {
     if(!el) return;
     try{ el.focus({ preventScroll: true }); }catch(e){ el.focus(); }
     const lite = document.documentElement.classList.contains('lite');
-    try{ el.scrollIntoView({ block: el.closest('#sidebar') ? 'nearest' : 'center', inline: 'nearest', behavior: lite ? 'auto' : 'smooth' }); }
+    try{ el.scrollIntoView({ block: (el.closest('#sidebar') || el.closest('.live-grid')) ? 'nearest' : 'center', inline: 'nearest', behavior: lite ? 'auto' : 'smooth' }); }
     catch(e){ el.scrollIntoView(); }
     if(!el.closest('#sidebar') && !el.closest('.modal-overlay') && !el.closest('#player-overlay')) this._lastContent = el;
   },
@@ -9463,7 +9884,8 @@ const TvNav = {
     if(!target) return;
     // Conteúdo → menu: cai no item ATIVO do menu (não num aleatório)
     if(!inSidebar && target.closest('#sidebar')){
-      const active = document.querySelector('#sidebar .nav-item.active');
+      const active = document.querySelector('#sidebar.live-side-on #live-cat-list .live-cat.active') ||
+        document.querySelector('#sidebar.live-side-on #live-cat-list .live-cat') || document.querySelector('#sidebar .nav-item.active');
       this.focus(active || target); return;
     }
     this.focus(target);
@@ -9720,7 +10142,7 @@ const TvNav = {
       if(this._swallowOk && this.isOk(e)){ e.preventDefault(); e.stopPropagation(); return; }
       const a = document.activeElement;
       const player = document.getElementById('player-overlay');
-      const playerOpen = player && player.style.display === 'flex';
+      const playerOpen = player && player.style.display === 'flex' && !player.classList.contains('mini');
 
       // ---- campo de texto ----
       if(this.isTextInput(a)){
@@ -9774,11 +10196,9 @@ const TvNav = {
         TvSelect.open(a);
         return;
       }
-      if((k === 'Escape' || k === 'GoBack' || k === 'BrowserBack') && TvSelect._overlay){
-        e.preventDefault(); e.stopPropagation();
-        const sel = TvSelect._select; TvSelect.close();
-        if(sel && sel.isConnected) TvNav.focus(sel);
-        return;
+      if(k === 'Escape' || k === 'GoBack' || k === 'BrowserBack' || e.keyCode === 27 || e.keyCode === 461 || e.keyCode === 10009){
+        // voltar com popup aberto: fecha o popup (não a tela de trás)
+        if(document.querySelector('.modal-overlay') && closeTopModal()){ e.preventDefault(); e.stopPropagation(); return; }
       }
 
       // ---- segurar OK num card = favoritar ----
@@ -9853,6 +10273,9 @@ const Router = {
     contentArea.appendChild(container);
 
     qs('#page-title').textContent = VIEW_TITLES[view] || '';
+    // Ao Vivo: barra lateral vira a lista de categorias; fora dele, o player mini para
+    qs('#sidebar').classList.toggle('live-side-on', view === 'live' && !State.ui.liveSideHidden);
+    if(view !== 'live') PlayerModule.stopMini();
     qsa('.nav-item').forEach(function(item){
       const itemView = item.getAttribute('data-view');
       item.classList.toggle('active', itemView === view || (view === 'series-detail' && itemView === 'series'));
@@ -9860,7 +10283,7 @@ const Router = {
 
     switch(view){
       case 'dashboard': renderDashboardView(container); break;
-      case 'live': renderListView('live', 'Ao Vivo', container); break;
+      case 'live': renderLiveView(container); break;
       case 'series': renderSeriesListView(container); break;
       case 'series-detail': renderSeriesDetailView(container); break;
       case 'movies': renderListView('movie', 'Filmes', container); break;
@@ -9877,6 +10300,7 @@ const Router = {
   },
 
   goTo(view){
+    if(view === 'live') State.ui.liveSideHidden = false; // clicou em Ao Vivo: mostra as categorias
     State.ui.currentView = view;
     State.ui.returnTo = null; // navegou pelo menu: "voltar" de uma série aberta depois não herda a origem antiga
     if(view !== 'series-detail') State.ui.activeSeriesKey = null;
