@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.0.75';
+<script>var APP_VERSION = '1.0.77';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -2031,13 +2031,21 @@ function renderDebugPanel(){
   let panel = document.getElementById('debug-panel');
   if(!panel){
     panel = el('div', { id:'debug-panel', style:
-      'position:fixed;bottom:10px;right:10px;z-index:100000;width:min(360px,80vw);max-height:40vh;' +
+      'position:fixed;bottom:10px;right:10px;z-index:100000;width:min(520px,94vw);height:min(56vh,440px);min-width:220px;min-height:120px;resize:both;' +
       'background:rgba(10,11,18,.92);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);border:1px solid rgba(255,255,255,.15);' +
       'border-radius:10px;font-family:monospace;font-size:11px;color:#8fd; display:flex;flex-direction:column;overflow:hidden;box-shadow:0 12px 32px -8px rgba(0,0,0,.6);'
     });
-    const header = el('div', { style:'display:flex;align-items:center;justify-content:space-between;padding:7px 10px;border-bottom:1px solid rgba(255,255,255,.1);flex-shrink:0;' }, [
-      el('span', { style:'font-weight:700;color:#fff;' }, ['Diagnóstico']),
+    const header = el('div', { style:'display:flex;align-items:center;gap:10px;padding:7px 10px;border-bottom:1px solid rgba(255,255,255,.1);flex-shrink:0;cursor:move;user-select:none;touch-action:none;', title:'Arraste pra mover • canto de baixo à direita pra redimensionar' }, [
+      el('span', { style:'font-weight:700;color:#fff;flex:1;' }, ['⠿ Diagnóstico']),
     ]);
+    const copyBtn = el('span', { style:'cursor:pointer;color:#8fd;font-size:11px;padding:1px 6px;border:1px solid rgba(255,255,255,.2);border-radius:5px;', title:'Copiar tudo' }, ['copiar']);
+    copyBtn.addEventListener('click', () => {
+      const txt = [(document.getElementById('debug-panel-mem') || {}).textContent || ''].concat(State.debugLog.map(e => '[' + e.time + '] ' + e.message)).join('\n');
+      const done = () => showToast('Diagnóstico copiado.', 'success');
+      if(navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(done).catch(() => showToast('Não deu pra copiar automaticamente.', 'error'));
+      else showToast('Não deu pra copiar automaticamente.', 'error');
+    });
+    header.appendChild(copyBtn);
     const closeBtn = el('span', { style:'cursor:pointer;color:#888;font-size:15px;line-height:1;padding:0 2px;', title:'Fechar (desliga o painel — pode religar em Configurações)' }, ['×']);
     closeBtn.addEventListener('click', () => {
       State.ui.debugPanelEnabled = false;
@@ -2051,9 +2059,10 @@ function renderDebugPanel(){
     panel.appendChild(el('div', { id:'debug-panel-mem', style:'padding:6px 10px;border-bottom:1px solid rgba(255,255,255,.1);color:#ffd479;white-space:pre-wrap;line-height:1.45;flex-shrink:0;' }, ['Memória: medindo…']));
     // (a linha é atualizada a cada 3s)
     MemMonitor.start();
-    const body = el('div', { id:'debug-panel-body', style:'overflow-y:auto;padding:6px 10px;white-space:pre-wrap;line-height:1.5;' });
+    const body = el('div', { id:'debug-panel-body', style:'overflow-y:auto;padding:6px 10px;white-space:pre-wrap;line-height:1.5;flex:1;min-height:0;' });
     panel.appendChild(body);
     document.body.appendChild(panel);
+    DebugPanelDrag.attach(panel, header);
   }
   const body = document.getElementById('debug-panel-body');
   body.innerHTML = '';
@@ -2062,6 +2071,58 @@ function renderDebugPanel(){
   }
   body.scrollTop = body.scrollHeight;
 }
+
+/** Mover (arrastando o título) e redimensionar (canto) o painel — mouse ou
+ *  dedo. A posição/tamanho ficam salvos pra próxima vez. */
+const DebugPanelDrag = {
+  KEY: 'sm_debug_panel_box',
+  attach(panel, handle){
+    try{
+      const b = JSON.parse(localStorage.getItem(this.KEY) || 'null');
+      if(b){
+        panel.style.width = Math.min(b.w, window.innerWidth - 8) + 'px';
+        panel.style.height = Math.min(b.h, window.innerHeight - 8) + 'px';
+        this._place(panel, b.x, b.y);
+      }
+    }catch(e){}
+    let start = null;
+    const down = (e) => {
+      if(e.target.closest && e.target.closest('span[title]')) return; // botões do título (copiar / ×)
+      const p = e.touches ? e.touches[0] : e;
+      const r = panel.getBoundingClientRect();
+      start = { x: p.clientX, y: p.clientY, left: r.left, top: r.top };
+      e.preventDefault();
+    };
+    const move = (e) => {
+      if(!start) return;
+      const p = e.touches ? e.touches[0] : e;
+      this._place(panel, start.left + p.clientX - start.x, start.top + p.clientY - start.y);
+      if(e.cancelable) e.preventDefault();
+    };
+    const up = () => { if(start){ start = null; this._save(panel); } };
+    handle.addEventListener('mousedown', down);
+    handle.addEventListener('touchstart', down, { passive: false });
+    window.addEventListener('mousemove', move);
+    window.addEventListener('touchmove', move, { passive: false });
+    window.addEventListener('mouseup', up);
+    window.addEventListener('touchend', up);
+    // redimensionou pelo canto: salva
+    panel.addEventListener('mouseup', () => this._save(panel));
+    try{ let t; new ResizeObserver(() => { clearTimeout(t); t = setTimeout(() => this._save(panel), 400); }).observe(panel); }catch(e){}
+  },
+  _place(panel, x, y){
+    const r = panel.getBoundingClientRect();
+    x = Math.max(0, Math.min(x, window.innerWidth - Math.min(r.width, 80)));
+    y = Math.max(0, Math.min(y, window.innerHeight - 40));
+    panel.style.left = x + 'px'; panel.style.top = y + 'px';
+    panel.style.right = 'auto'; panel.style.bottom = 'auto';
+  },
+  _save(panel){
+    if(!panel.isConnected) return;
+    const r = panel.getBoundingClientRect();
+    try{ localStorage.setItem(this.KEY, JSON.stringify({ x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) })); }catch(e){}
+  }
+};
 
 function removeDebugPanel(){
   const panel = document.getElementById('debug-panel');
@@ -2997,11 +3058,12 @@ const NetStatus = {
           st = { kind: 'bad', clock: true, text: 'Data/hora do aparelho errada', sub: 'aparelho: ' + this._fmt(now) + ' • certo: ' + this._fmt(server) };
         } else if(server){
           try{ localStorage.setItem('sm_clock_ok_at', String(Math.max(now, server))); }catch(e){}
-          st = httpsOk ? { kind: 'ok', text: 'Internet ok' } : { kind: 'warn', text: 'Internet ok, mas HTTPS falha', sub: 'data/hora certa — pode ser a rede bloqueando' };
+          st = { kind: 'ok', text: 'Internet ok' };
+          if(!httpsOk && !this._httpsNoted){ this._httpsNoted = true; pushDebugLog('🌐 Site https de teste não respondeu (a internet está ok; data/hora certa).'); }
         } else {
           const h = this._clockHeuristic(now);
           if(h) st = { kind: 'bad', clock: true, text: 'Data/hora do aparelho errada', sub: h };
-          else st = httpsOk ? { kind: 'ok', text: 'Internet ok' } : { kind: 'warn', text: 'Internet ok, mas HTTPS falha', sub: 'confira a data/hora do aparelho' };
+          else st = { kind: 'ok', text: 'Internet ok' };
         }
       }
     }catch(e){
@@ -6880,7 +6942,12 @@ const PlayerModule = {
   _ensureVideoListeners(){
     if(this._videoListenersReady) return;
     const video = qs('#video-player');
-    video.addEventListener('playing', ()=> { this.hideBuffering(); try{ NetStatus.noteOk(); }catch(e){} });
+    video.addEventListener('playing', ()=> {
+      this.hideBuffering();
+      try{ NetStatus.noteOk(); }catch(e){}
+      // voltou a tocar: próxima queda recomeça a contagem de tentativas do zero
+      if(this.retryCount && this.currentContent && this.currentContent.tipo === 'live'){ pushDebugLog('📺 Ao vivo voltou a tocar.'); this.retryCount = 0; }
+    });
     // vídeo recebendo dados = internet funcionando (no máx. 1 aviso a cada 5s)
     video.addEventListener('progress', ()=> { const n = Date.now(); if(n - (this._lastNetNote || 0) > 5000){ this._lastNetNote = n; try{ NetStatus.noteOk(); }catch(e){} } });
     video.addEventListener('waiting', ()=> this.showBuffering());
@@ -6942,10 +7009,49 @@ const PlayerModule = {
     this._videoListenersReady = true;
   },
 
+  /** Ao vivo: vigia de travamento (TS, HLS ou nativo). Alguns travamentos
+   *  não disparam erro nenhum — o vídeo só para de andar. Parado ~6s: tenta
+   *  "pular" o buraco pro fim do que já foi baixado (resolve sem reconectar);
+   *  parado ~15s: reconecta (e, no ao vivo, tenta PRA SEMPRE). */
+  _armLiveWatchdog(content, token){
+    if(this.stallWatchdog){ clearInterval(this.stallWatchdog); this.stallWatchdog = null; }
+    this.lastTimeUpdateAt = Date.now();
+    let nudged = false;
+    this.stallWatchdog = setInterval(()=>{
+      if(token !== this.playToken){ clearInterval(this.stallWatchdog); this.stallWatchdog = null; return; }
+      if(this.isUserPaused) return; // pausa manual não é travamento
+      const video = qs('#video-player');
+      const stalledFor = Date.now() - (this.lastTimeUpdateAt || Date.now());
+      if(stalledFor < 5000){ nudged = false; return; }
+      if(!nudged && stalledFor >= 6000){
+        nudged = true;
+        try{
+          const b = video.buffered;
+          if(b && b.length){
+            const end = b.end(b.length - 1);
+            if(end - video.currentTime > 1){
+              video.currentTime = end - 0.8;
+              video.play().catch(()=>{});
+              pushDebugLog('📺 Ao vivo parado há ' + Math.round(stalledFor / 1000) + 's — pulei pro fim do que já tinha baixado.');
+              this.lastTimeUpdateAt = Date.now() - 3000;
+              return;
+            }
+          }
+        }catch(e){}
+      }
+      if(stalledFor > 15000){
+        clearInterval(this.stallWatchdog);
+        this.stallWatchdog = null;
+        this._retryOrFallback(content, token, 'O stream travou e não retomou sozinho.');
+      }
+    }, 2000);
+  },
+
   _startPlayback(content, token){
     if(token !== this.playToken) return; // a newer open()/close() happened meanwhile
     const video = qs('#video-player');
     this.showBuffering();
+    if(content && content.tipo === 'live') this._armLiveWatchdog(content, token);
 
     const url = resolveContentUrl(content);
     const isLive = content.tipo === 'live';
@@ -7077,22 +7183,7 @@ const PlayerModule = {
         this.mpegtsPlayer.load();
         this.mpegtsPlayer.play().catch(()=>{});
 
-        // Watchdog: alguns travamentos de stream ao vivo não disparam evento de
-        // erro nenhum — o vídeo simplesmente para de avançar. Aqui checamos
-        // periodicamente se o tempo do vídeo está evoluindo; se ficar parado
-        // por muito tempo (e o usuário NÃO tiver pausado manualmente),
-        // forçamos uma reconexão automática.
-        this.lastTimeUpdateAt = Date.now();
-        this.stallWatchdog = setInterval(()=>{
-          if(token !== this.playToken){ clearInterval(this.stallWatchdog); return; }
-          if(this.isUserPaused) return; // pausa manual não é travamento
-          const stalledFor = Date.now() - (this.lastTimeUpdateAt || Date.now());
-          if(stalledFor > 12000){
-            clearInterval(this.stallWatchdog);
-            this.stallWatchdog = null;
-            this._retryOrFallback(content, token, 'O stream travou e não retomou sozinho.');
-          }
-        }, 4000);
+        // (vigia de travamento: ver _armLiveWatchdog, vale pra qualquer formato)
       }catch(err){
         this._retryOrFallback(content, token, 'Não foi possível iniciar o player para este canal.');
       }
@@ -7123,6 +7214,20 @@ const PlayerModule = {
 
   _retryOrFallback(content, token, message){
     if(token !== this.playToken) return;
+    // AO VIVO: tenta pra sempre (espera cresce até 10s entre tentativas)
+    if(content && content.tipo === 'live'){
+      this.retryCount++;
+      const wait = Math.min(10000, 1500 * this.retryCount);
+      pushDebugLog('📺 Ao vivo: ' + message + ' — reconectando (tentativa ' + this.retryCount + ', em ' + Math.round(wait / 1000) + 's).', true);
+      if(this.retryCount === 1 || this.retryCount % 5 === 0) showToast('Reconectando o canal... (tentativa ' + this.retryCount + ')', 'error');
+      this.cleanup();
+      this.showBuffering();
+      this.retryTimer = setTimeout(()=>{
+        if(token !== this.playToken) return;
+        this._startPlayback(content, token);
+      }, wait);
+      return;
+    }
     if(this.retryCount < this.maxRetries){
       this.retryCount++;
       showToast('Tentando reconectar ao stream... (' + this.retryCount + '/' + this.maxRetries + ')', 'error');
@@ -10364,7 +10469,9 @@ const Router = {
     // sobrescreve seu próprio contador com o valor filtrado logo depois.
     updateSidebarCounts();
     this.render();
-    if(window.innerWidth <= 900){
+    // celular: ao entrar no Ao Vivo a barra lateral fica aberta mostrando as
+    // categorias (fecha ao escolher uma ou ao tocar fora)
+    if(window.innerWidth <= 900 && !(view === 'live' && !State.ui.liveSideHidden)){
       qs('#sidebar').classList.remove('open');
       qs('#sidebar-overlay').classList.remove('open');
     }
