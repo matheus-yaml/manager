@@ -634,6 +634,7 @@ public class ManagerPip extends CordovaPlugin {
     // ---------- Wi-Fi: trava + informações + eventos de rede ----------
     private android.net.wifi.WifiManager.WifiLock mWifiHp, mWifiLl;
     private boolean mNetWatching = false;
+    private Boolean mValidated = null;
     private final java.util.ArrayList<String> mNetEvents = new java.util.ArrayList<String>();
 
     private android.net.wifi.WifiManager wifi() {
@@ -680,6 +681,11 @@ public class ManagerPip extends CordovaPlugin {
                 @Override public void onLost(android.net.Network n) { netEvent("REDE CAIU (Android perdeu a conexão)"); }
                 @Override public void onLosing(android.net.Network n, int ms) { netEvent("rede prestes a cair"); }
                 @Override public void onUnavailable() { netEvent("rede indisponível"); }
+                @Override public void onCapabilitiesChanged(android.net.Network n, android.net.NetworkCapabilities c) {
+                    boolean v = c.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+                    if (mValidated != null && mValidated != v) netEvent(v ? "internet voltou (Android validou de novo)" : "INTERNET PERDIDA (Wi-Fi conectado, mas sem internet)");
+                    mValidated = v;
+                }
             });
             netEvent("monitor de rede iniciado");
         } catch (Throwable t) { netEvent("monitor de rede falhou: " + t.getMessage()); }
@@ -694,8 +700,23 @@ public class ManagerPip extends CordovaPlugin {
                 o.put("link", wi.getLinkSpeed());
                 if (Build.VERSION.SDK_INT >= 21) o.put("freq", wi.getFrequency());
                 if (Build.VERSION.SDK_INT >= 29) { o.put("rx", wi.getRxLinkSpeedMbps()); o.put("tx", wi.getTxLinkSpeedMbps()); }
+                // estado da conexão com o roteador: COMPLETED = conectado;
+                // SCANNING / ASSOCIATING / DISCONNECTED... = caiu ou reconectando
+                try { o.put("state", String.valueOf(wi.getSupplicantState())); } catch (Throwable ignore) {}
+                o.put("netId", wi.getNetworkId());
+                o.put("ip", wi.getIpAddress());
             }
         } catch (Throwable t) { o.put("err", t.getMessage()); }
+        try {
+            o.put("wifiOn", wifi().isWifiEnabled());
+            android.net.ConnectivityManager cm = (android.net.ConnectivityManager) cordova.getActivity().getApplicationContext().getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (Build.VERSION.SDK_INT >= 23) {
+                android.net.Network an = cm.getActiveNetwork();
+                o.put("connected", an != null);
+                android.net.NetworkCapabilities nc = an != null ? cm.getNetworkCapabilities(an) : null;
+                if (nc != null) o.put("validated", nc.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED));
+            }
+        } catch (Throwable ignore) {}
         o.put("lock", mWifiHp != null && mWifiHp.isHeld());
         o.put("sdk", Build.VERSION.SDK_INT);
         JSONArray ev = new JSONArray();
