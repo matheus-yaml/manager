@@ -64,6 +64,20 @@ import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 
+import android.app.Dialog;
+import android.graphics.Color;
+import android.media.MediaPlayer;
+import android.net.Uri;
+import android.os.Handler;
+import android.os.Looper;
+import android.view.Gravity;
+import android.view.KeyEvent;
+import android.content.DialogInterface;
+import android.widget.FrameLayout;
+import android.widget.TextView;
+import android.widget.VideoView;
+import android.view.ViewGroup;
+import org.apache.cordova.PluginResult;
 import org.apache.cordova.CallbackContext;
 import org.apache.cordova.CordovaPlugin;
 import org.json.JSONArray;
@@ -74,6 +88,61 @@ public class ManagerPip extends CordovaPlugin {
 
     @Override
     public boolean execute(String action, JSONArray args, final CallbackContext callback) throws JSONException {
+        // ---------- MINI PLAYER NATIVO (quadro do Ao Vivo, por cima do app) ----------
+        // Um VideoView do Android posicionado em cima do quadro da página. Não
+        // pega foco: as setas continuam navegando no app.
+        if ("miniShow".equals(action) || "miniMove".equals(action)) {
+            final boolean show = "miniShow".equals(action);
+            final String url = show ? args.getString(0) : null;
+            final int off = show ? 1 : 0;
+            final int x = args.optInt(off), y = args.optInt(off + 1), w = args.optInt(off + 2), h = args.optInt(off + 3);
+            final boolean visible = args.optBoolean(off + 4, true);
+            if (show) mCb = callback;
+            cordova.getActivity().runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        if (show) miniOpen(url);
+                        miniPlace(x, y, w, h, visible);
+                        if (!show) callback.success();
+                    } catch (Throwable t) { callback.error(t.getClass().getSimpleName() + ": " + t.getMessage()); }
+                }
+            });
+            return true;
+        }
+        if ("miniHide".equals(action)) {
+            cordova.getActivity().runOnUiThread(new Runnable() {
+                @Override
+                public void run() { miniClose("hidden"); callback.success(); }
+            });
+            return true;
+        }
+        // ---------- PLAYER NATIVO (tela cheia, fora do WebView) ----------
+        // O Android toca o stream sozinho (TS ou HLS, com o chip de vídeo) —
+        // sem JavaScript convertendo o vídeo. Voltar fecha e devolve pro app.
+        if ("hasNativePlayer".equals(action)) {
+            callback.success(1);
+            return true;
+        }
+        if ("playVideo".equals(action)) {
+            final String url = args.getString(0);
+            final String title = args.optString(1, "");
+            cordova.getActivity().runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    try { openPlayer(url, title, callback); }
+                    catch (Throwable t) { callback.error(t.getClass().getSimpleName() + ": " + t.getMessage()); }
+                }
+            });
+            return true;
+        }
+        if ("stopVideo".equals(action)) {
+            cordova.getActivity().runOnUiThread(new Runnable() {
+                @Override
+                public void run() { closePlayer("stopped"); callback.success(); }
+            });
+            return true;
+        }
         if ("isSupported".equals(action)) {
             callback.success(isSupported() ? 1 : 0);
             return true;
@@ -218,6 +287,262 @@ public class ManagerPip extends CordovaPlugin {
         else r = new Rational(w, h);
         PictureInPictureParams params = new PictureInPictureParams.Builder().setAspectRatio(r).build();
         return activity.enterPictureInPictureMode(params);
+    }
+
+    // ================== PLAYER NATIVO ==================
+    private Dialog pDialog;
+    private VideoView pView;
+    private TextView pLabel;
+    private CallbackContext pCb;
+    private final Handler pH = new Handler(Looper.getMainLooper());
+    private int pRetries = 0;
+    private boolean pEverPlayed = false;
+    private int pLastPos = -1;
+    private long pLastMove = 0;
+    private String pUrl, pTitle;
+    private Runnable pWatch, pHideLabel;
+
+    private void pSend(String json, boolean keep) {
+        if (pCb == null) return;
+        PluginResult r = new PluginResult(PluginResult.Status.OK, json);
+        r.setKeepCallback(keep);
+        pCb.sendPluginResult(r);
+        if (!keep) pCb = null;
+    }
+    private static String q(String s) { return JSONObject.quote(s == null ? "" : s); }
+
+    private void pLabel(String text, boolean autoHide) {
+        if (pLabel == null) return;
+        pLabel.setText(text);
+        pLabel.setVisibility(View.VISIBLE);
+        if (pHideLabel != null) pH.removeCallbacks(pHideLabel);
+        if (autoHide) {
+            pHideLabel = new Runnable() { public void run() { if (pLabel != null) pLabel.setVisibility(View.GONE); } };
+            pH.postDelayed(pHideLabel, 4000);
+        }
+    }
+
+    private void openPlayer(String url, String title, CallbackContext cb) {
+        closePlayer("replaced");
+        miniClose("fullscreen"); // libera o decodificador pro vídeo em tela cheia
+        pCb = cb; pUrl = url; pTitle = title; pRetries = 0; pEverPlayed = false; pLastPos = -1; pLastMove = System.currentTimeMillis();
+        Activity act = cordova.getActivity();
+        final Dialog d = new Dialog(act, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
+        FrameLayout root = new FrameLayout(act);
+        root.setBackgroundColor(Color.BLACK);
+        final VideoView v = new VideoView(act);
+        root.addView(v, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.CENTER));
+        TextView t = new TextView(act);
+        t.setTextColor(Color.WHITE); t.setTextSize(18); t.setPadding(36, 22, 36, 22);
+        t.setBackgroundColor(0xAA000000);
+        FrameLayout.LayoutParams tl = new FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.LEFT);
+        tl.setMargins(30, 30, 30, 30);
+        root.addView(t, tl);
+        d.setContentView(root);
+        pDialog = d; pView = v; pLabel = t;
+        pLabel(title + "  •  carregando...", false);
+
+        v.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
+            public void onPrepared(MediaPlayer mp) {
+                pEverPlayed = true; pRetries = 0; pLastMove = System.currentTimeMillis();
+                pLabel(pTitle, true);
+                mp.start();
+                pSend("{\"event\":\"playing\"}", true);
+            }
+        });
+        v.setOnInfoListener(new MediaPlayer.OnInfoListener() {
+            public boolean onInfo(MediaPlayer mp, int what, int extra) {
+                if (what == MediaPlayer.MEDIA_INFO_BUFFERING_START) pLabel(pTitle + "  •  carregando...", false);
+                else if (what == MediaPlayer.MEDIA_INFO_BUFFERING_END || what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) pLabel(pTitle, true);
+                return false;
+            }
+        });
+        v.setOnErrorListener(new MediaPlayer.OnErrorListener() {
+            public boolean onError(MediaPlayer mp, int what, int extra) {
+                pSend("{\"event\":\"error\",\"what\":" + what + ",\"extra\":" + extra + "}", true);
+                // nunca tocou e já falhou 2x: esse formato o Android não abre — devolve pro app tentar do jeito dele
+                if (!pEverPlayed && pRetries >= 1) { closePlayer("failed"); return true; }
+                retry("erro " + what + "/" + extra);
+                return true;
+            }
+        });
+        v.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
+            public void onCompletion(MediaPlayer mp) { retry("o stream terminou"); } // ao vivo não "termina": reconecta
+        });
+        d.setOnKeyListener(new DialogInterface.OnKeyListener() {
+            public boolean onKey(DialogInterface di, int keyCode, KeyEvent ev) {
+                if (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_ESCAPE) {
+                    if (ev.getAction() == KeyEvent.ACTION_UP) closePlayer("closed");
+                    return true;
+                }
+                if ((keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN) && ev.getAction() == KeyEvent.ACTION_UP) {
+                    pLabel(pTitle, true); // mostra o nome do canal
+                    return true;
+                }
+                return false;
+            }
+        });
+        d.setOnCancelListener(new DialogInterface.OnCancelListener() {
+            public void onCancel(DialogInterface di) { closePlayer("closed"); }
+        });
+        d.show();
+        try {
+            Window w = d.getWindow();
+            if (w != null) {
+                w.getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
+                w.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            }
+        } catch (Throwable ignore) {}
+        v.setVideoURI(Uri.parse(url));
+        v.start();
+        // vigia: vídeo parado ~15s (sem erro) = reconecta
+        pWatch = new Runnable() {
+            public void run() {
+                if (pView == null) return;
+                try {
+                    int pos = pView.getCurrentPosition();
+                    if (pos != pLastPos) { pLastPos = pos; pLastMove = System.currentTimeMillis(); }
+                    else if (System.currentTimeMillis() - pLastMove > 15000) { pLastMove = System.currentTimeMillis(); retry("vídeo parado"); }
+                } catch (Throwable ignore) {}
+                pH.postDelayed(this, 3000);
+            }
+        };
+        pH.postDelayed(pWatch, 3000);
+    }
+
+    private void retry(String why) {
+        if (pView == null) return;
+        pRetries++;
+        long wait = Math.min(10000, 1500L * pRetries);
+        pLabel(pTitle + "  •  reconectando (tentativa " + pRetries + ")...", false);
+        pSend("{\"event\":\"retry\",\"n\":" + pRetries + ",\"why\":" + q(why) + "}", true);
+        pH.postDelayed(new Runnable() {
+            public void run() {
+                if (pView == null) return;
+                try { pView.stopPlayback(); } catch (Throwable ignore) {}
+                pLastMove = System.currentTimeMillis();
+                pView.setVideoURI(Uri.parse(pUrl));
+                pView.start();
+            }
+        }, wait);
+    }
+
+    private void closePlayer(String reason) {
+        if (pWatch != null) { pH.removeCallbacks(pWatch); pWatch = null; }
+        if (pHideLabel != null) { pH.removeCallbacks(pHideLabel); pHideLabel = null; }
+        pH.removeCallbacksAndMessages(null);
+        if (pView != null) { try { pView.stopPlayback(); } catch (Throwable ignore) {} pView = null; }
+        if (pDialog != null) { try { pDialog.setOnCancelListener(null); pDialog.dismiss(); } catch (Throwable ignore) {} pDialog = null; }
+        pLabel = null;
+        if (pCb != null) pSend("{\"event\":" + q(reason) + ",\"played\":" + pEverPlayed + "}", false);
+    }
+
+    // ================== MINI PLAYER NATIVO ==================
+    private FrameLayout mBox;
+    private VideoView mView;
+    private CallbackContext mCb;
+    private String mUrl;
+    private int mRetries = 0, mLastPos = -1;
+    private boolean mPlayed = false;
+    private long mLastMove = 0;
+    private Runnable mWatch;
+    private final Handler mH = new Handler(Looper.getMainLooper());
+
+    private void mSend(String json, boolean keep) {
+        if (mCb == null) return;
+        PluginResult r = new PluginResult(PluginResult.Status.OK, json);
+        r.setKeepCallback(keep);
+        mCb.sendPluginResult(r);
+        if (!keep) mCb = null;
+    }
+
+    private void miniOpen(String url) {
+        Activity act = cordova.getActivity();
+        ViewGroup content = (ViewGroup) act.findViewById(android.R.id.content);
+        if (mBox == null) {
+            mBox = new FrameLayout(act);
+            mBox.setBackgroundColor(Color.BLACK);
+            mBox.setFocusable(false);
+            content.addView(mBox, new FrameLayout.LayoutParams(1, 1, Gravity.TOP | Gravity.LEFT));
+        }
+        if (url.equals(mUrl) && mView != null) return; // já tocando esse canal
+        if (mView != null) { try { mView.stopPlayback(); } catch (Throwable ignore) {} mBox.removeView(mView); mView = null; }
+        mUrl = url; mRetries = 0; mPlayed = false; mLastPos = -1; mLastMove = System.currentTimeMillis();
+        final VideoView v = new VideoView(act);
+        v.setFocusable(false);
+        mBox.addView(v, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.CENTER));
+        mView = v;
+        v.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
+            public void onPrepared(MediaPlayer mp) { mPlayed = true; mRetries = 0; mLastMove = System.currentTimeMillis(); mp.start(); mSend("{\"event\":\"playing\"}", true); }
+        });
+        v.setOnErrorListener(new MediaPlayer.OnErrorListener() {
+            public boolean onError(MediaPlayer mp, int what, int extra) {
+                mSend("{\"event\":\"error\",\"what\":" + what + ",\"extra\":" + extra + "}", true);
+                if (!mPlayed && mRetries >= 1) { miniClose("failed"); return true; }
+                miniRetry("erro " + what + "/" + extra);
+                return true;
+            }
+        });
+        v.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
+            public void onCompletion(MediaPlayer mp) { miniRetry("o stream terminou"); }
+        });
+        v.setVideoURI(Uri.parse(url));
+        v.start();
+        if (mWatch == null) {
+            mWatch = new Runnable() {
+                public void run() {
+                    if (mView == null) { mWatch = null; return; }
+                    try {
+                        int pos = mView.getCurrentPosition();
+                        if (pos != mLastPos) { mLastPos = pos; mLastMove = System.currentTimeMillis(); }
+                        else if (System.currentTimeMillis() - mLastMove > 15000) { mLastMove = System.currentTimeMillis(); miniRetry("vídeo parado"); }
+                    } catch (Throwable ignore) {}
+                    mH.postDelayed(this, 3000);
+                }
+            };
+            mH.postDelayed(mWatch, 3000);
+        }
+    }
+
+    /** x/y/w/h em pixels CSS * densidade, relativos ao WebView */
+    private void miniPlace(int x, int y, int w, int h, boolean visible) {
+        if (mBox == null) return;
+        int ox = 0, oy = 0;
+        try {
+            int[] wl = new int[2], cl = new int[2];
+            webView.getView().getLocationInWindow(wl);
+            ((View) mBox.getParent()).getLocationInWindow(cl);
+            ox = wl[0] - cl[0]; oy = wl[1] - cl[1];
+        } catch (Throwable ignore) {}
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(Math.max(1, w), Math.max(1, h), Gravity.TOP | Gravity.LEFT);
+        lp.setMargins(ox + x, oy + y, 0, 0);
+        mBox.setLayoutParams(lp);
+        mBox.setVisibility(visible && w > 2 && h > 2 ? View.VISIBLE : View.INVISIBLE);
+    }
+
+    private void miniRetry(String why) {
+        if (mView == null) return;
+        mRetries++;
+        long wait = Math.min(10000, 1500L * mRetries);
+        mSend("{\"event\":\"retry\",\"n\":" + mRetries + ",\"why\":" + q(why) + "}", true);
+        mH.postDelayed(new Runnable() {
+            public void run() {
+                if (mView == null) return;
+                try { mView.stopPlayback(); } catch (Throwable ignore) {}
+                mLastMove = System.currentTimeMillis();
+                mView.setVideoURI(Uri.parse(mUrl));
+                mView.start();
+            }
+        }, wait);
+    }
+
+    private void miniClose(String reason) {
+        mH.removeCallbacksAndMessages(null);
+        mWatch = null;
+        if (mView != null) { try { mView.stopPlayback(); } catch (Throwable ignore) {} mView = null; }
+        if (mBox != null) { try { ((ViewGroup) mBox.getParent()).removeView(mBox); } catch (Throwable ignore) {} mBox = null; }
+        mUrl = null;
+        if (mCb != null) mSend("{\"event\":" + q(reason) + ",\"played\":" + mPlayed + "}", false);
     }
 }
 PIPEOF
