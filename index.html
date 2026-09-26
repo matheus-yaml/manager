@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.0.63';
+<script>var APP_VERSION = '1.0.64';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -213,6 +213,13 @@ a:focus,
 }
 
 /* Status de internet / data-hora (rodapé da barra lateral) */
+.net-row{display:flex;align-items:flex-start;gap:8px;margin-bottom:8px;}
+.net-row .net-status{flex:1;min-width:0;margin-bottom:0;}
+.sidebar-clock{flex-shrink:0;font-weight:600;color:var(--text-1);white-space:nowrap;font-variant-numeric:tabular-nums;}
+.sidebar-clock.bad{color:#f87171;}
+/* TV/projetor: barra lateral estreita — relógio numa linha e o status embaixo */
+html.tv .net-row{flex-direction:column;gap:5px;}
+html.tv .net-row .net-status{width:100%;}
 .net-status{display:flex;align-items:flex-start;gap:7px;margin-bottom:8px;cursor:pointer;font-weight:600;line-height:1.35;color:var(--text-1);border-radius:6px;}
 .net-status .dot{width:8px;height:8px;border-radius:50%;background:#6b7280;flex-shrink:0;margin-top:4px;}
 .net-status.ok .dot{background:#34d399;box-shadow:0 0 6px rgba(52,211,153,.7);}
@@ -1128,7 +1135,7 @@ html.tv .content-card .thumb img{transform:none !important;}
       <li class="nav-item" data-view="settings" tabindex="0"><span class="ic">&#9881;</span>Configurações</li>
     </ul>
     <div id="sidebar-search-counters" class="search-counters" style="display:none;"></div>
-    <div class="footer-mini"><div id="net-status" class="net-status" tabindex="0" role="button" title="Toque para verificar de novo"><span class="dot"></span><span class="txt">Verificando internet…</span></div>StreamManager &middot; local &amp; offline-first &middot; <span id="app-version-label">v1.0.0</span></div>
+    <div class="footer-mini"><div class="net-row"><div id="net-status" class="net-status" tabindex="0" role="button" title="Toque para verificar de novo"><span class="dot"></span><span class="txt">Verificando internet…</span></div><span id="sidebar-clock" class="sidebar-clock"></span></div>StreamManager &middot; local &amp; offline-first &middot; <span id="app-version-label">v1.0.0</span></div>
   </nav>
 
   <div id="main">
@@ -2435,7 +2442,23 @@ const NetStatus = {
     }
     return st;
   },
+  /** Relógio do rodapé: "Sáb 26/09 11:43:05" (fica vermelho se a data/hora estiver errada). */
+  _tickClock(){
+    const c = document.getElementById('sidebar-clock');
+    if(!c) return;
+    const d = new Date(), p = (n) => (n < 10 ? '0' : '') + n;
+    const txt = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'][d.getDay()] + ' ' + p(d.getDate()) + '/' + p(d.getMonth() + 1) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+    if(c.textContent !== txt) c.textContent = txt;
+    const bad = !!(this.state && this.state.clock);
+    if(c.classList.contains('bad') !== bad) c.classList.toggle('bad', bad);
+  },
+  startClock(){
+    if(this._clockOn) return; this._clockOn = true;
+    const tick = () => { this._tickClock(); setTimeout(tick, 1000 - (Date.now() % 1000) + 5); };
+    tick();
+  },
   render(){
+    this._tickClock();
     const box = document.getElementById('net-status');
     if(!box) return;
     const st = this.state;
@@ -9343,7 +9366,7 @@ async function initApp(){
   TvNav.init();
   const versionLabel = qs('#app-version-label');
   if(versionLabel) versionLabel.textContent = 'v' + APP_VERSION;
-  try{ NetStatus.start(); }catch(e){}
+  try{ NetStatus.start(); NetStatus.startClock(); }catch(e){}
   // Busca os dados do Dashboard ANTES de mostrar a tela — assim ela já abre
   // com o conteúdo (ou com "Nada por aqui ainda") e o "Aguarde" cobre a espera.
   if(State.ui.currentView === 'dashboard' && State.servers.size > 0){
