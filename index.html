@@ -60,6 +60,7 @@ canvas{width:100%;height:70px;display:block;background:#0d0f19;border-radius:8px
   <button id="btnCopy">📋 Copiar resultado</button>
   <label class="opt"><input type="checkbox" id="optParallel" checked> Baixar ao mesmo tempo</label>
   <label class="opt"><input type="checkbox" id="optNeutral" checked> Incluir servidor neutro (Cloudflare)</label>
+  <label class="opt" id="optLockWrap"><input type="checkbox" id="optLock" checked> Trava do Wi-Fi (alto desempenho)</label>
 </div>
 
 <div class="verdict" id="verdict">Aperte <b>Iniciar</b>. O teste baixa as listas sem parar (o conteúdo é descartado, nada é salvo) e mede, segundo a segundo, quanto chega, quantos "buracos" sem dados acontecem e quantas vezes a conexão cai. Deixe rodar uns 10–15 minutos.</div>
@@ -70,6 +71,12 @@ canvas{width:100%;height:70px;display:block;background:#0d0f19;border-radius:8px
   <h2>⏱ Latência (resposta dos servidores, a cada 2s)</h2>
   <canvas id="pingCanvas"></canvas>
   <div class="small" id="pingInfo">—</div>
+</div>
+
+<div class="card" style="margin-top:10px;">
+  <h2>📡 Wi-Fi do aparelho</h2>
+  <canvas id="wifiCanvas"></canvas>
+  <div class="small" id="wifiInfo">Só aparece no APK com o plugin atualizado (ManagerPip com wifiInfo).</div>
 </div>
 
 <div class="card" id="devCard" style="margin-top:10px;display:none;">
@@ -238,8 +245,99 @@ function tick(){
     }
     render(t);
   });
+  checkBlackout();
   verdict();
 }
+
+/* ============ APAGÃO GERAL: todos sem dados ao mesmo tempo ============ */
+const blackouts = []; // {start, end, dur, rssiStart}
+let boStart = 0, boSecs = 0;
+function checkBlackout(){
+  const act = targets.filter(t => t.active && t.status !== 'parado');
+  if(act.length < 2) return;
+  const allZero = act.every(t => t.zeroRun >= 1);
+  if(allZero){
+    boSecs++;
+    if(!boStart) boStart = now() - 1000;
+  } else if(boStart){
+    const dur = boSecs; boSecs = 0;
+    if(dur >= 3){
+      const prev = blackouts[blackouts.length - 1];
+      const b = { start: boStart, end: now(), dur: dur, rssi: wifiLast && wifiLast.rssi };
+      blackouts.push(b);
+      log('⛔ APAGÃO GERAL: todos ficaram ' + dur + 's sem dados (' + fmtT(b.start) + '–' + fmtT(b.end) + ')' +
+        (prev ? ' • ' + fmtDur(b.start - prev.start) + ' depois do anterior' : ' • primeiro') +
+        (b.rssi != null ? ' • sinal ' + b.rssi + ' dBm' : ''), 'e');
+    }
+    boStart = 0;
+  }
+}
+function blackoutSummary(){
+  if(!blackouts.length) return 'Nenhum apagão geral (todos sem dados ≥3s ao mesmo tempo).';
+  const gaps = [];
+  for(let i = 1; i < blackouts.length; i++) gaps.push(Math.round((blackouts[i].start - blackouts[i - 1].start) / 1000));
+  const durs = blackouts.map(b => b.dur);
+  return blackouts.length + ' apagão(ões) geral(is): duração ' + durs.join('s, ') + 's' +
+    (gaps.length ? ' • intervalo entre eles: ' + gaps.map(g => fmtDur(g * 1000)).join(', ') : '');
+}
+
+/* ================= WI-FI (plugin ManagerPip: wifiInfo / wifiLock) ================= */
+let wifiLast = null, wifiTimer = null, wifiOk = null;
+const wifiHist = [];         // rssi por leitura (2s)
+const seenEv = new Set();
+function pip(action, args){
+  return new Promise((res, rej) => {
+    if(!(window.cordova && window.cordova.exec)) return rej(new Error('sem APK'));
+    try{ window.cordova.exec(res, rej, 'ManagerPip', action, args || []); }catch(e){ rej(e); }
+  });
+}
+function parseW(o){ return typeof o === 'string' ? JSON.parse(o) : o; }
+function band(f){ return !f ? '?' : f > 4900 ? '5 GHz' : '2,4 GHz'; }
+function sigLabel(r){ return r >= -55 ? 'ótimo' : r >= -67 ? 'bom' : r >= -75 ? 'fraco' : 'muito fraco'; }
+function wifiEvents(o){
+  (o.events || []).forEach(e => {
+    if(seenEv.has(e)) return; seenEv.add(e);
+    const i = e.indexOf('|'); const ts = +e.slice(0, i), what = e.slice(i + 1);
+    log('📡 Android [' + fmtT(ts) + ']: ' + what, /CAIU|prestes|indispon/.test(what) ? 'e' : 'i');
+  });
+}
+async function wifiPoll(){
+  try{
+    const o = parseW(await pip('wifiInfo'));
+    wifiOk = true; wifiLast = o;
+    wifiEvents(o);
+    if(o.rssi != null){ wifiHist.push(o.rssi); if(wifiHist.length > 90) wifiHist.shift(); }
+    $('wifiInfo').textContent =
+      'Sinal: ' + (o.rssi != null ? o.rssi + ' dBm (' + sigLabel(o.rssi) + ')' : '?') +
+      ' • faixa: ' + band(o.freq) + (o.freq ? ' (' + o.freq + ' MHz)' : '') +
+      ' • link: ' + (o.link != null ? o.link + ' Mbps' : '?') + (o.rx ? ' (recebe ' + o.rx + ' / envia ' + o.tx + ')' : '') +
+      ' • trava: ' + (o.lock ? 'LIGADA' : 'desligada') + ' • Android ' + (o.sdk || '?') +
+      (wifiHist.length ? ' • pior sinal: ' + Math.min.apply(null, wifiHist) + ' dBm' : '');
+    drawRssi();
+  }catch(e){
+    if(wifiOk === null){ wifiOk = false; $('wifiInfo').textContent = 'Informações do Wi-Fi indisponíveis: ' + (window.cordova ? 'o APK ainda não tem o plugin novo (precisa gerar de novo com o build.sh atualizado).' : 'só funciona dentro do APK.'); }
+    clearInterval(wifiTimer); wifiTimer = null;
+  }
+}
+function drawRssi(){
+  const cv = $('wifiCanvas'); const dpr = window.devicePixelRatio || 1;
+  const w = Math.round(cv.clientWidth * dpr), h = Math.round(cv.clientHeight * dpr); if(!w || !h) return;
+  cv.width = w; cv.height = h; const g = cv.getContext('2d');
+  const lo = -95, hi = -30; const y = (v) => h - ((Math.max(lo, Math.min(hi, v)) - lo) / (hi - lo)) * (h - 4 * dpr);
+  g.fillStyle = 'rgba(248,113,113,.12)'; g.fillRect(0, y(-75), w, h - y(-75));
+  g.strokeStyle = '#34d399'; g.lineWidth = 1.5 * dpr; g.beginPath();
+  wifiHist.forEach((v, i) => { const x = (90 - wifiHist.length + i) / 90 * w; i ? g.lineTo(x, y(v)) : g.moveTo(x, y(v)); });
+  g.stroke();
+  g.fillStyle = '#a9afc0'; g.font = (10 * dpr) + 'px sans-serif'; g.fillText('sinal (dBm) • faixa vermelha = fraco', 4 * dpr, 11 * dpr);
+}
+async function applyLock(){
+  const on = $('optLock').checked;
+  try{ const o = parseW(await pip('wifiLock', [on])); wifiEvents(o); log('📡 Trava do Wi-Fi ' + (o.lock ? 'LIGADA (Android não deve economizar energia no Wi-Fi)' : 'desligada') + '.'); }
+  catch(e){ if(window.cordova) log('Trava do Wi-Fi indisponível: ' + (e && e.message || e) + ' (APK sem o plugin novo).', 'w'); }
+}
+function wifiStart(){ if(window.cordova && !wifiTimer && wifiOk !== false){ wifiPoll(); wifiTimer = setInterval(wifiPoll, 2000); } }
+window.addEventListener('offline', () => log('🌐 Navegador: SEM INTERNET (evento offline)', 'e'));
+window.addEventListener('online', () => log('🌐 Navegador: internet voltou (evento online)'));
 
 function avg(arr){ return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null; }
 
@@ -370,6 +468,8 @@ function verdict(){
     const a = t.bytesTotal * 8 / Math.max(1, secs) / 1e6;
     parts.push(t.name + ': média <b>' + fmtMbps(a) + '</b>, ' + t.gaps3 + ' buraco(s) ≥3s, ' + t.drops + ' queda(s).');
   });
+  if(blackouts.length || boStart) parts.push('⛔ ' + blackoutSummary() + (boStart ? ' <b>(apagão acontecendo agora)</b>' : ''));
+  if(wifiLast && wifiLast.rssi != null) parts.push('📡 Wi-Fi: ' + wifiLast.rssi + ' dBm (' + sigLabel(wifiLast.rssi) + '), ' + band(wifiLast.freq) + ', trava ' + (wifiLast.lock ? 'ligada' : 'desligada') + '.');
   if(secs >= 120){
     const iptvBad = iptv.filter(t => t.gaps3 + t.drops > 0);
     const neuBad = neu && (neu.gaps3 + neu.drops > 0);
@@ -408,6 +508,7 @@ function start(){
   tickTimer = setInterval(tick, 1000);
   pingTimer = setInterval(pingOnce, 2000);
   if(window.cordova && !devTimer) devTimer = setInterval(devTick, 1000);
+  wifiStart();
   updateButtons();
 }
 let rotTimer = null;
@@ -425,6 +526,7 @@ function resetAll(){
   setupTargets();
   logLines.length = 0; $('log').innerHTML = '';
   pingHist.length = 0; devHist.length = 0; devLast = null;
+  blackouts.length = 0; boStart = 0; boSecs = 0; wifiHist.length = 0;
   startedAt = 0;
   $('verdict').textContent = 'Tudo apagado.';
   log('🗑 Resultados apagados.');
@@ -445,7 +547,7 @@ function copyResult(){
       ', buracos ≥1s ' + t.gaps1 + ' / ≥3s ' + t.gaps3 + ' / ≥5s ' + t.gaps5 + ' (maior ' + t.longestGap + 's), quedas ' + t.drops +
       ', conexões ' + t.conn + ', completos ' + t.completes + ', baixado ' + fmtMB(t.bytesTotal));
   });
-  lines.push('', $('pingInfo').textContent, $('devInfo').textContent, '', 'Eventos:');
+  lines.push('', blackoutSummary(), 'Wi-Fi: ' + $('wifiInfo').textContent, $('pingInfo').textContent, $('devInfo').textContent, '', 'Eventos:');
   logLines.forEach(l => lines.push(l.line));
   const txt = lines.join('\n');
   const ok = () => log('📋 Resultado copiado.');
@@ -486,9 +588,10 @@ $('btnReset').addEventListener('click', resetAll);
 $('btnCopy').addEventListener('click', copyResult);
 $('optNeutral').addEventListener('change', () => { const r = running; stop(); setupTargets(); if(r) start(); });
 $('optParallel').addEventListener('change', () => { if(running){ stop(); start(); } });
+$('optLock').addEventListener('change', applyLock);
 
 $('env').textContent = (window.cordova ? 'APK' : 'navegador') + ' • ' + (window.devicePixelRatio || 1) + 'x • ' + (navigator.hardwareConcurrency || '?') + ' núcleos';
-document.addEventListener('deviceready', () => { $('env').textContent = 'APK (ponte Android ok) • ' + (window.devicePixelRatio || 1) + 'x • ' + (navigator.hardwareConcurrency || '?') + ' núcleos'; }, false);
+document.addEventListener('deviceready', () => { $('env').textContent = 'APK (ponte Android ok) • ' + (window.devicePixelRatio || 1) + 'x • ' + (navigator.hardwareConcurrency || '?') + ' núcleos'; applyLock(); wifiStart(); }, false);
 setupTargets();
 updateButtons();
 setTimeout(() => $('btnStart').focus(), 100);
