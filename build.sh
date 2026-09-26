@@ -59,6 +59,11 @@ cat > "$PIP/plugin.xml" <<'PIPEOF'
     <edit-config file="AndroidManifest.xml" target="/manifest/application/activity[@android:name='MainActivity']" mode="merge">
       <activity android:supportsPictureInPicture="true" android:resizeableActivity="true" />
     </edit-config>
+    <config-file target="AndroidManifest.xml" parent="/manifest">
+      <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+      <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+      <uses-permission android:name="android.permission.WAKE_LOCK" />
+    </config-file>
     <source-file src="src/android/ManagerPip.java" target-dir="src/com/manager/pip" />
   </platform>
 </plugin>
@@ -166,6 +171,26 @@ public class ManagerPip extends CordovaPlugin {
                 o.put("total", TrafficStats.getTotalRxBytes());
                 callback.success(o);
             } catch (Throwable t) { callback.error(t.getClass().getSimpleName() + ": " + t.getMessage()); }
+            return true;
+        }
+        // ---------- WI-FI ----------
+        // wifiLock [true|false]: pede pro Android NÃO pôr o Wi-Fi em economia
+        // de energia enquanto o app está aberto (modo alto desempenho e, no
+        // Android 10+, baixa latência). Solta sozinho quando o app fecha.
+        if ("wifiLock".equals(action)) {
+            try {
+                boolean on = args.optBoolean(0, true);
+                setWifiLock(on);
+                callback.success(wifiJson());
+            } catch (Throwable t) { callback.error(t.getClass().getSimpleName() + ": " + t.getMessage()); }
+            return true;
+        }
+        // wifiInfo: sinal (dBm), velocidade do link, frequência (2.4/5 GHz),
+        // se a trava está ligada e os eventos de rede (quando o Android
+        // disse que a rede caiu/voltou), com horário.
+        if ("wifiInfo".equals(action)) {
+            try { watchNetwork(); callback.success(wifiJson()); }
+            catch (Throwable t) { callback.error(t.getClass().getSimpleName() + ": " + t.getMessage()); }
             return true;
         }
         if ("hasNativePlayer".equals(action)) {
@@ -604,6 +629,84 @@ public class ManagerPip extends CordovaPlugin {
                 mView.start();
             }
         }, wait);
+    }
+
+    // ---------- Wi-Fi: trava + informações + eventos de rede ----------
+    private android.net.wifi.WifiManager.WifiLock mWifiHp, mWifiLl;
+    private boolean mNetWatching = false;
+    private final java.util.ArrayList<String> mNetEvents = new java.util.ArrayList<String>();
+
+    private android.net.wifi.WifiManager wifi() {
+        return (android.net.wifi.WifiManager) cordova.getActivity().getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+    }
+
+    private synchronized void setWifiLock(boolean on) {
+        android.net.wifi.WifiManager wm = wifi();
+        if (on) {
+            if (mWifiHp == null) {
+                mWifiHp = wm.createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF, "Manager:hp");
+                mWifiHp.setReferenceCounted(false);
+            }
+            if (!mWifiHp.isHeld()) mWifiHp.acquire();
+            if (Build.VERSION.SDK_INT >= 29) {
+                if (mWifiLl == null) {
+                    mWifiLl = wm.createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "Manager:ll");
+                    mWifiLl.setReferenceCounted(false);
+                }
+                if (!mWifiLl.isHeld()) mWifiLl.acquire();
+            }
+            netEvent("trava do Wi-Fi LIGADA");
+        } else {
+            try { if (mWifiHp != null && mWifiHp.isHeld()) mWifiHp.release(); } catch (Throwable ignore) {}
+            try { if (mWifiLl != null && mWifiLl.isHeld()) mWifiLl.release(); } catch (Throwable ignore) {}
+            netEvent("trava do Wi-Fi desligada");
+        }
+    }
+
+    private synchronized void netEvent(String what) {
+        mNetEvents.add(System.currentTimeMillis() + "|" + what);
+        while (mNetEvents.size() > 60) mNetEvents.remove(0);
+    }
+
+    private synchronized void watchNetwork() {
+        if (mNetWatching) return;
+        mNetWatching = true;
+        try {
+            android.net.ConnectivityManager cm = (android.net.ConnectivityManager) cordova.getActivity().getApplicationContext().getSystemService(Context.CONNECTIVITY_SERVICE);
+            android.net.NetworkRequest req = new android.net.NetworkRequest.Builder()
+                .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET).build();
+            cm.registerNetworkCallback(req, new android.net.ConnectivityManager.NetworkCallback() {
+                @Override public void onAvailable(android.net.Network n) { netEvent("rede conectada"); }
+                @Override public void onLost(android.net.Network n) { netEvent("REDE CAIU (Android perdeu a conexão)"); }
+                @Override public void onLosing(android.net.Network n, int ms) { netEvent("rede prestes a cair"); }
+                @Override public void onUnavailable() { netEvent("rede indisponível"); }
+            });
+            netEvent("monitor de rede iniciado");
+        } catch (Throwable t) { netEvent("monitor de rede falhou: " + t.getMessage()); }
+    }
+
+    private synchronized JSONObject wifiJson() throws JSONException {
+        JSONObject o = new JSONObject();
+        try {
+            android.net.wifi.WifiInfo wi = wifi().getConnectionInfo();
+            if (wi != null) {
+                o.put("rssi", wi.getRssi());
+                o.put("link", wi.getLinkSpeed());
+                if (Build.VERSION.SDK_INT >= 21) o.put("freq", wi.getFrequency());
+                if (Build.VERSION.SDK_INT >= 29) { o.put("rx", wi.getRxLinkSpeedMbps()); o.put("tx", wi.getTxLinkSpeedMbps()); }
+            }
+        } catch (Throwable t) { o.put("err", t.getMessage()); }
+        o.put("lock", mWifiHp != null && mWifiHp.isHeld());
+        o.put("sdk", Build.VERSION.SDK_INT);
+        JSONArray ev = new JSONArray();
+        for (String e : mNetEvents) ev.put(e);
+        o.put("events", ev);
+        return o;
+    }
+
+    @Override
+    public void onDestroy() {
+        try { setWifiLock(false); } catch (Throwable ignore) {}
     }
 
     private void miniClose(String reason) {
