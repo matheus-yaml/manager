@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>const APP_VERSION = '1.0.56';</script>
+<script>const APP_VERSION = '1.0.57';</script>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1009,6 +1009,62 @@ html.native-pip #video-player{width:100vw !important;height:100vh !important;obj
 .loader-inline{display:flex;align-items:center;gap:10px;color:var(--text-2);font-size:13px;padding:30px;justify-content:center;}
 .spinner{width:16px;height:16px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;}
 @keyframes spin{to{transform:rotate(360deg)}}
+
+/* ---------- Modo TV: nitidez em tela de baixa resolução ----------
+   Tamanho de letra INTEIRO e no mínimo 12px (tamanho quebrado, tipo 11,5px,
+   fica borrado em 960x540), sem letra apertada e sem aumentar o card no foco
+   (o aumento reamostra o card inteiro e borra o texto). Gerado a partir de
+   todas as regras de fonte da página. */
+html.tv #content-load-bar span,
+html.tv #global-search,
+html.tv #player-lock-hint,
+html.tv #player-next-episode,
+html.tv #player-speed-menu button,
+html.tv #player-time-current,
+html.tv #player-time-duration,
+html.tv #sidebar .footer-mini,
+html.tv .chip,
+html.tv .content-card .fav-btn,
+html.tv .content-card .info .cat-tag,
+html.tv .content-card .info .name,
+html.tv .content-card .info .server-tag,
+html.tv .content-card .live-badge,
+html.tv .content-card .next-ep-badge,
+html.tv .dash-card .dlabel,
+html.tv .empty-state p,
+html.tv .episode-row .estatus,
+html.tv .form-group .hint,
+html.tv .form-group label,
+html.tv .nav-item,
+html.tv .nav-item .count,
+html.tv .nav-section-label,
+html.tv .player-ctrl-btn,
+html.tv .progress-overall .plabel,
+html.tv .search-counters,
+html.tv .server-item .sstats,
+html.tv .server-item .surl,
+html.tv .server-section-title,
+html.tv .sp-item .sp-detail,
+html.tv .sp-item .sp-top,
+html.tv .suggest-hero .sh-kicker,
+html.tv .suggest-hero .sh-meta,
+html.tv .suggest-hero .sh-why,
+html.tv .tv-select-group,
+html.tv .xs-server,
+html.tv .xs-sub,
+html.tv input,
+html.tv select{font-size:12px;}
+html.tv .season-block h4,
+html.tv .server-item .sname,
+html.tv .suggest-lead,
+html.tv .xs-name{font-size:14px;}
+html.tv #sidebar .brand .name{font-size:16px;}
+html.tv, html.tv *{letter-spacing:normal !important;}
+html.tv body{text-rendering:optimizeLegibility;}
+html.tv .content-card:focus{transform:none !important;outline:3px solid #fff;outline-offset:-3px;
+  box-shadow:0 0 0 3px rgba(var(--accent-rgb),.9) !important;}
+html.tv .content-card:hover{transform:none !important;}
+html.tv .content-card .thumb img{transform:none !important;}
 </style>
 </head>
 <body>
@@ -1996,6 +2052,7 @@ const PerfMode = {
     const wv = /; wv\)/.test(ua) ? 'WebView' : 'navegador';
     return 'Chrome ' + chrome + ' (' + wv + ') • ' + (navigator.hardwareConcurrency || '?') + ' núcleos • ' +
       (navigator.deviceMemory ? navigator.deviceMemory + ' GB' : 'RAM ?') + ' • tela ' + screen.width + 'x' + screen.height +
+      ' (densidade ' + (window.devicePixelRatio || 1) + 'x = ' + Math.round(screen.width * (window.devicePixelRatio || 1)) + 'x' + Math.round(screen.height * (window.devicePixelRatio || 1)) + ' pixels reais)' +
       ' • modo leve ' + (this.isLite() ? 'LIGADO' : 'desligado') + ' (' + this.setting() + ')';
   },
   /** Mede quanto um trecho levou e registra no painel de diagnóstico. */
