@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.0.61';
+<script>var APP_VERSION = '1.0.63';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -211,6 +211,19 @@ a:focus,
   padding:14px 18px;border-top:1px solid var(--border);
   font-size:11px;color:var(--text-2);
 }
+
+/* Status de internet / data-hora (rodapé da barra lateral) */
+.net-status{display:flex;align-items:flex-start;gap:7px;margin-bottom:8px;cursor:pointer;font-weight:600;line-height:1.35;color:var(--text-1);border-radius:6px;}
+.net-status .dot{width:8px;height:8px;border-radius:50%;background:#6b7280;flex-shrink:0;margin-top:4px;}
+.net-status.ok .dot{background:#34d399;box-shadow:0 0 6px rgba(52,211,153,.7);}
+.net-status.ok{color:#34d399;}
+.net-status.bad .dot{background:#ef4444;box-shadow:0 0 6px rgba(239,68,68,.7);}
+.net-status.bad{color:#f87171;}
+.net-status.warn .dot{background:#f59e0b;box-shadow:0 0 6px rgba(245,158,11,.7);}
+.net-status.warn{color:#fbbf24;}
+.net-status .sub{display:block;font-weight:500;color:var(--text-2);font-size:10.5px;}
+html.tv .net-status .sub{font-size:12px;}
+html.lite .net-status .dot{box-shadow:none;}
 
 #sidebar-overlay{
   display:none;position:fixed;top:0;right:0;bottom:0;left:0;background:rgba(4,5,10,.6);
@@ -1115,7 +1128,7 @@ html.tv .content-card .thumb img{transform:none !important;}
       <li class="nav-item" data-view="settings" tabindex="0"><span class="ic">&#9881;</span>Configurações</li>
     </ul>
     <div id="sidebar-search-counters" class="search-counters" style="display:none;"></div>
-    <div class="footer-mini">StreamManager &middot; local &amp; offline-first &middot; <span id="app-version-label">v1.0.0</span></div>
+    <div class="footer-mini"><div id="net-status" class="net-status" tabindex="0" role="button" title="Toque para verificar de novo"><span class="dot"></span><span class="txt">Verificando internet…</span></div>StreamManager &middot; local &amp; offline-first &middot; <span id="app-version-label">v1.0.0</span></div>
   </nav>
 
   <div id="main">
@@ -1964,6 +1977,7 @@ const MemMonitor = {
     }
     if(this._storage) lines.push(this._storage);
     lines.push(UpdateLog.statusLine());
+    lines.push(NetStatus.statusLine());
     box.textContent = 'Memória (atualiza a cada 3s)\n' + lines.join('\n');
   }
 };
@@ -2313,6 +2327,149 @@ const UpdateLog = {
   }
 };
 UpdateLog.install();
+
+/* ======================================================================
+   STATUS DE INTERNET + DATA/HORA DO APARELHO (rodapé da barra lateral)
+   ------------------------------------------------------------------
+   Verde = internet ok • Vermelho = sem internet • Amarelo/vermelho =
+   data/hora errada (com a hora errada o HTTPS falha: o GitHub/atualização
+   e servidores https param, mesmo com internet funcionando).
+   Como descobre a hora certa:
+   1) HTTPS (HEAD leve no GitHub): o cabeçalho "Expires" menos o
+      "max-age" = hora do servidor (esses 2 cabeçalhos são legíveis);
+   2) se o HTTPS falhar: HTTP puro num serviço de hora (worldtimeapi);
+   3) se nada disso responder: testa só se há rede (generate_204) e usa
+      pistas — relógio antes da data desta versão, ou voltou no tempo
+      em relação à última hora confirmada.
+   ====================================================================== */
+const NetStatus = {
+  MIN_TS: Date.UTC(2026, 8, 20), // nenhuma data válida é anterior a esta versão
+  TOLERANCE: 10 * 60 * 1000,     // diferença aceitável (10 min)
+  state: null,
+  _busy: false,
+  _warnedClock: false,
+  _timer: null,
+  _fetch(url, opts, ms){
+    const ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    const o = Object.assign({ cache: 'no-store', credentials: 'omit' }, opts || {});
+    if(ctl) o.signal = ctl.signal;
+    let t;
+    return Promise.race([
+      fetch(url, o),
+      new Promise((_, rej) => { t = setTimeout(() => { try{ ctl && ctl.abort(); }catch(e){} rej(new Error('tempo esgotado')); }, ms || 8000); })
+    ]).finally(() => clearTimeout(t));
+  },
+  _fmt(ts){
+    try{ return new Date(ts).toLocaleString('pt-BR', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' }); }
+    catch(e){ return new Date(ts).toLocaleString(); }
+  },
+  _maxSeen(){ try{ return +localStorage.getItem('sm_clock_ok_at') || 0; }catch(e){ return 0; } },
+  /** Pistas sem servidor: relógio claramente no passado. */
+  _clockHeuristic(now){
+    if(now < this.MIN_TS) return 'o aparelho está em ' + this._fmt(now) + ' (antes desta versão do app existir)';
+    const seen = this._maxSeen();
+    if(seen && now < seen - 2 * 3600 * 1000) return 'o relógio voltou no tempo (já foi confirmado ' + this._fmt(seen) + ')';
+    return null;
+  },
+  async _httpsTime(){
+    const u = ManualUpdate.DEFAULT_URL + '?net=' + Date.now();
+    const r = await this._fetch(u, { method: 'HEAD' }, 8000);
+    let server = null;
+    const exp = Date.parse(r.headers.get('expires') || '');
+    const m = /max-age=(\d+)/.exec(r.headers.get('cache-control') || '');
+    if(!isNaN(exp)) server = exp - (m ? (+m[1]) * 1000 : 0);
+    if(server && server < this.MIN_TS) server = null;
+    return server;
+  },
+  async _httpTime(){
+    const r = await this._fetch('http://worldtimeapi.org/api/timezone/Etc/UTC', {}, 6000);
+    const j = await r.json();
+    const ts = j && j.unixtime ? j.unixtime * 1000 : Date.parse(j && j.utc_datetime);
+    return ts && !isNaN(ts) ? ts : null;
+  },
+  async _hasNetwork(){
+    try{ await this._fetch('http://connectivitycheck.gstatic.com/generate_204?t=' + Date.now(), { mode: 'no-cors' }, 6000); return true; }catch(e){}
+    try{ await this._fetch('https://www.google.com/generate_204?t=' + Date.now(), { mode: 'no-cors' }, 6000); return true; }catch(e){}
+    return false;
+  },
+  async check(){
+    if(this._busy) return this.state;
+    this._busy = true;
+    const now = Date.now();
+    let st;
+    try{
+      if(navigator.onLine === false){
+        st = { kind: 'bad', text: 'Sem internet', sub: 'o aparelho diz que está desconectado' };
+      } else {
+        let httpsOk = false, server = null;
+        try{ server = await this._httpsTime(); httpsOk = true; }catch(e){}
+        if(!httpsOk){ try{ server = await this._httpTime(); }catch(e){} }
+        const net = httpsOk || !!server || await this._hasNetwork();
+        if(!net){
+          st = { kind: 'bad', text: 'Sem internet', sub: 'nenhum site respondeu' };
+        } else if(server && Math.abs(now - server) > this.TOLERANCE){
+          st = { kind: 'bad', clock: true, text: 'Data/hora do aparelho errada', sub: 'aparelho: ' + this._fmt(now) + ' • certo: ' + this._fmt(server) };
+        } else if(server){
+          try{ localStorage.setItem('sm_clock_ok_at', String(Math.max(now, server))); }catch(e){}
+          st = httpsOk ? { kind: 'ok', text: 'Internet ok' } : { kind: 'warn', text: 'Internet ok, mas HTTPS falha', sub: 'data/hora certa — pode ser a rede bloqueando' };
+        } else {
+          const h = this._clockHeuristic(now);
+          if(h) st = { kind: 'bad', clock: true, text: 'Data/hora do aparelho errada', sub: h };
+          else st = httpsOk ? { kind: 'ok', text: 'Internet ok' } : { kind: 'warn', text: 'Internet ok, mas HTTPS falha', sub: 'confira a data/hora do aparelho' };
+        }
+      }
+    }catch(e){
+      st = { kind: 'warn', text: 'Não deu pra verificar a internet', sub: String(e && e.message || e) };
+    }
+    st.at = Date.now();
+    const changed = !this.state || this.state.kind !== st.kind || this.state.text !== st.text;
+    this.state = st;
+    this._busy = false;
+    this.render();
+    if(changed && typeof pushDebugLog === 'function'){
+      pushDebugLog('🌐 ' + st.text + (st.sub ? ' — ' + st.sub : ''), st.kind !== 'ok');
+    }
+    if(st.clock && !this._warnedClock){
+      this._warnedClock = true;
+      try{ showToast('A data/hora do aparelho está errada — atualizações e servidores HTTPS vão falhar. Acerte nas configurações do Android (data/hora automática).', 'error'); }catch(e){}
+    }
+    return st;
+  },
+  render(){
+    const box = document.getElementById('net-status');
+    if(!box) return;
+    const st = this.state;
+    box.className = 'net-status' + (st ? ' ' + st.kind : '');
+    box.querySelector('.txt').innerHTML = '';
+    const txt = box.querySelector('.txt');
+    txt.appendChild(document.createTextNode(st ? st.text : 'Verificando internet…'));
+    if(st && st.sub){ const s = document.createElement('span'); s.className = 'sub'; s.textContent = st.sub; txt.appendChild(s); }
+  },
+  statusLine(){
+    const st = this.state;
+    return 'Internet: ' + (st ? st.text + (st.sub ? ' (' + st.sub + ')' : '') : 'verificando…');
+  },
+  start(){
+    const box = document.getElementById('net-status');
+    if(box && !box._wired){
+      box._wired = true;
+      const go = () => {
+        const b = document.getElementById('net-status');
+        b.className = 'net-status'; b.querySelector('.txt').textContent = 'Verificando internet…';
+        this.check().then((st) => { try{ showToast(st.text + (st.sub ? ' — ' + st.sub : ''), st.kind === 'ok' ? 'success' : (st.kind === 'bad' ? 'error' : '')); }catch(e){} });
+      };
+      box.addEventListener('click', go);
+      box.addEventListener('keydown', (e) => { if(e.key === 'Enter' || e.keyCode === 13){ e.preventDefault(); go(); } });
+    }
+    window.addEventListener('online', () => this.check());
+    window.addEventListener('offline', () => this.check());
+    document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible') this.check(); });
+    const every = () => (typeof PerfMode !== 'undefined' && PerfMode.isLite && PerfMode.isLite()) ? 120000 : 60000;
+    const loop = () => { this._timer = setTimeout(() => { if(document.visibilityState !== 'hidden') this.check(); loop(); }, every()); };
+    setTimeout(() => this.check(), 1500);
+    loop();
+  }
+};
 
 /* ======================================================================
    ATUALIZAÇÃO MANUAL (Configurações) — sem mexer no index do APK
@@ -7323,8 +7480,10 @@ function renderServersView(){
   for(const [,s] of State.servers){
     if(s.tipoOrigem === 'manual') manual.push(s); else auto.push(s);
   }
-  manual.sort((a,b)=>a.nome.localeCompare(b.nome));
-  auto.sort((a,b)=>a.nome.localeCompare(b.nome));
+  // verdes (última atualização ok) primeiro, vermelhos (erro) por último; dentro de cada grupo, por nome
+  const byStatus = (a,b)=>((a.lastStatus === 'error') - (b.lastStatus === 'error')) || a.nome.localeCompare(b.nome);
+  manual.sort(byStatus);
+  auto.sort(byStatus);
 
   container.appendChild(el('div', { class:'server-section-title' }, ['Servidores Manuais']));
   if(manual.length===0){
@@ -9184,6 +9343,7 @@ async function initApp(){
   TvNav.init();
   const versionLabel = qs('#app-version-label');
   if(versionLabel) versionLabel.textContent = 'v' + APP_VERSION;
+  try{ NetStatus.start(); }catch(e){}
   // Busca os dados do Dashboard ANTES de mostrar a tela — assim ela já abre
   // com o conteúdo (ou com "Nada por aqui ainda") e o "Aguarde" cobre a espera.
   if(State.ui.currentView === 'dashboard' && State.servers.size > 0){
