@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.0.60';
+<script>var APP_VERSION = '1.0.61';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -2334,6 +2334,43 @@ const ManualUpdate = {
   setUrl(u){ try{ if(!u || u === this.DEFAULT_URL) localStorage.removeItem(this.KEY); else localStorage.setItem(this.KEY, u); }catch(e){} },
   inApk(){ return !!window.cordova; }, // no APK grava onde o carregador guarda a versão
   overrideActive(){ return !!window.__SM_OVERRIDE_META; },
+  /** Limpa resíduos de cache SEM tocar no IndexedDB (servidores, listas,
+   *  progresso, favoritos) nem nas configurações:
+   *  - service workers e Cache Storage (o app não usa, mas limpa se sobrou algo)
+   *  - sessionStorage
+   *  - cache HTTP do WebView do APK (precisa do plugin nativo com "clearCache";
+   *    em APK antigo sem essa ação, só pula)
+   *  - no navegador o cache HTTP não pode ser apagado por código; por isso o
+   *    download sempre usa no-store + ?t= (nunca vem do cache). */
+  async clearCaches(){
+    const done = [];
+    try{
+      if(navigator.serviceWorker && navigator.serviceWorker.getRegistrations){
+        const regs = await navigator.serviceWorker.getRegistrations();
+        for(const r of regs){ try{ await r.unregister(); }catch(e){} }
+        done.push('service workers: ' + regs.length);
+      }
+    }catch(e){}
+    try{
+      if(window.caches && caches.keys){
+        const keys = await caches.keys();
+        for(const k of keys){ try{ await caches.delete(k); }catch(e){} }
+        done.push('cache storage: ' + keys.length);
+      }
+    }catch(e){}
+    try{ sessionStorage.clear(); done.push('sessionStorage'); }catch(e){}
+    if(window.cordova && typeof window.cordova.exec === 'function'){
+      const r = await new Promise((resolve) => {
+        const t = setTimeout(() => resolve('sem resposta'), 3000);
+        try{
+          window.cordova.exec(() => { clearTimeout(t); resolve('ok'); }, (m) => { clearTimeout(t); resolve('indisponível (' + m + ')'); }, 'ManagerPip', 'clearCache', []);
+        }catch(e){ clearTimeout(t); resolve('indisponível'); }
+      });
+      done.push('cache do WebView: ' + r);
+    }
+    pushDebugLog('🧹 Limpeza de cache — ' + done.join(' • '));
+    return done;
+  },
   revertToFile(){
     try{ localStorage.removeItem('sm_browser_override'); localStorage.removeItem('sm_browser_override_meta'); }catch(e){}
     pushDebugLog('🔄 Voltando para a versão do arquivo (v' + (window.__SM_FILE_VERSION || APP_VERSION) + ')…');
@@ -2429,6 +2466,7 @@ const ManualUpdate = {
     if(!this.inApk()){
       if(!this._saveBrowser(html, newVer, url)){ onStatus('Sem espaço no navegador para guardar a versão nova.', true); return false; }
       try{ localStorage.setItem('sm_last_update', JSON.stringify({ from: APP_VERSION, at: Date.now(), manual: true })); }catch(e){}
+      onStatus('Limpando cache…'); await this.clearCaches();
       pushDebugLog('🔄 Atualização manual: v' + newVer + ' guardada no navegador — recarregando…');
       onStatus('Versão v' + newVer + ' instalada. Recarregando…');
       setTimeout(() => location.reload(), 600);
@@ -2441,6 +2479,7 @@ const ManualUpdate = {
     const ok = await this._save(html, hash);
     if(!ok){ onStatus('Não consegui gravar a versão nova no aparelho.', true); return false; }
     try{ localStorage.setItem('sm_last_update', JSON.stringify({ from: APP_VERSION, at: Date.now(), manual: true })); }catch(e){}
+    onStatus('Limpando cache…'); await this.clearCaches();
     pushDebugLog('🔄 Atualização manual: v' + newVer + ' gravada — recarregando…');
     onStatus('Versão v' + newVer + ' instalada. Recarregando…');
     setTimeout(() => location.reload(), 600);
@@ -7873,7 +7912,15 @@ async function renderSettingsView(container){
       updStatus.style.color = 'var(--text-2)';
       updStatus.textContent = 'URL voltou para a padrão (GitHub).';
     });
-    row.appendChild(goBtn); row.appendChild(resetBtn);
+    const cleanBtn = el('button', { class:'btn' }, ['🧹 Só limpar cache e recarregar']);
+    cleanBtn.addEventListener('click', async () => {
+      cleanBtn.disabled = true;
+      updStatus.style.color = 'var(--text-2)'; updStatus.textContent = 'Limpando cache…';
+      const d = await ManualUpdate.clearCaches();
+      updStatus.textContent = 'Feito (' + d.join(' • ') + '). Recarregando…';
+      setTimeout(() => location.reload(), 900);
+    });
+    row.appendChild(goBtn); row.appendChild(resetBtn); row.appendChild(cleanBtn);
     if(!ManualUpdate.inApk() && ManualUpdate.overrideActive()){
       const backBtn = el('button', { class:'btn' }, ['⟲ Voltar para a v' + window.__SM_FILE_VERSION + ' (arquivo)']);
       backBtn.addEventListener('click', () => { if(confirm('Voltar para a versão do arquivo (v' + window.__SM_FILE_VERSION + ')? O app vai recarregar.')) ManualUpdate.revertToFile(); });

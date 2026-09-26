@@ -98,26 +98,52 @@ public class ManagerPip extends CordovaPlugin {
             });
             return true;
         }
+        // Limpa o cache HTTP do WebView (arquivos baixados da internet que o
+        // navegador interno guarda). Não mexe em IndexedDB/localStorage.
+        if ("clearCache".equals(action)) {
+            cordova.getActivity().runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        android.view.View v = webView.getView();
+                        if (v instanceof android.webkit.WebView) ((android.webkit.WebView) v).clearCache(true);
+                        else webView.clearCache();
+                        callback.success();
+                    } catch (Throwable t) {
+                        callback.error(t.getClass().getSimpleName() + ": " + t.getMessage());
+                    }
+                }
+            });
+            return true;
+        }
         // Memória RAM do aparelho (pro painel de diagnóstico do app):
         // total, livre, se o Android está em "pouca memória" e quanto este
         // app (processo principal) está usando.
         if ("memInfo".equals(action)) {
-            try {
-                ActivityManager am = (ActivityManager) cordova.getActivity().getSystemService(Context.ACTIVITY_SERVICE);
-                ActivityManager.MemoryInfo mi = new ActivityManager.MemoryInfo();
-                am.getMemoryInfo(mi);
-                JSONObject o = new JSONObject();
-                o.put("total", mi.totalMem);
-                o.put("avail", mi.availMem);
-                o.put("low", mi.lowMemory);
-                o.put("threshold", mi.threshold);
-                Debug.MemoryInfo dm = new Debug.MemoryInfo();
-                Debug.getMemoryInfo(dm);
-                o.put("appPssKb", dm.getTotalPss());
-                callback.success(o);
-            } catch (Throwable t) {
-                callback.error(t.getClass().getSimpleName() + ": " + t.getMessage());
-            }
+            // Roda FORA da thread da ponte JS<->Java: Debug.getMemoryInfo é
+            // lento (centenas de ms num aparelho fraco) e, na thread da ponte,
+            // travava a página inteira a cada leitura.
+            cordova.getThreadPool().execute(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        ActivityManager am = (ActivityManager) cordova.getActivity().getSystemService(Context.ACTIVITY_SERVICE);
+                        ActivityManager.MemoryInfo mi = new ActivityManager.MemoryInfo();
+                        am.getMemoryInfo(mi);
+                        JSONObject o = new JSONObject();
+                        o.put("total", mi.totalMem);
+                        o.put("avail", mi.availMem);
+                        o.put("low", mi.lowMemory);
+                        o.put("threshold", mi.threshold);
+                        Debug.MemoryInfo dm = new Debug.MemoryInfo();
+                        Debug.getMemoryInfo(dm);
+                        o.put("appPssKb", dm.getTotalPss());
+                        callback.success(o);
+                    } catch (Throwable t) {
+                        callback.error(t.getClass().getSimpleName() + ": " + t.getMessage());
+                    }
+                }
+            });
             return true;
         }
         // Tela cheia de verdade no APK: esconde barra de status e de navegação
