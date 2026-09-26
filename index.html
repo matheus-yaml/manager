@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.0.81';
+<script>var APP_VERSION = '1.0.83';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -2794,6 +2794,141 @@ const UpdateLog = {
 UpdateLog.install();
 
 /* ======================================================================
+   NativeVideo — ao vivo no PLAYER DO PRÓPRIO ANDROID (APK)
+   ------------------------------------------------------------------
+   No projetor, tocar TS pelo navegador interno exige converter o vídeo em
+   JavaScript (mpegts.js): o diagnóstico mostrou 7–10 "travadas" de até
+   1,2s a cada 10s por causa disso. Aqui o canal abre numa tela cheia NATIVA
+   (VideoView do Android, com o chip de vídeo): zero conversão em JS, menos
+   RAM, e o app fica parado atrás. Voltar fecha e devolve pro app.
+   Precisa do APK gerado com o build.sh novo (ação "playVideo" do plugin);
+   APK antigo: continua tudo como antes.
+   ====================================================================== */
+const NativeVideo = {
+  _avail: null,
+  active: false,
+  /* ---- quadro do Ao Vivo tocando NATIVO (VideoView do Android por cima da
+     página, na posição do quadro). Sem conversão em JS também na prévia. ---- */
+  _miniId: null, _miniKey: '',
+  _rect(){
+    const host = document.getElementById('lp-screen');
+    const dpr = window.devicePixelRatio || 1;
+    if(!host || !host.isConnected) return { x:0, y:0, w:0, h:0, visible:false };
+    const b = host.getBoundingClientRect();
+    const ca = document.getElementById('content-area').getBoundingClientRect();
+    const modal = Array.from(document.querySelectorAll('.modal-overlay')).some(m => m.style.display !== 'none');
+    const drawer = document.getElementById('sidebar').classList.contains('open') && window.innerWidth <= 900;
+    const visible = State.ui.currentView === 'live' && !modal && !drawer && !this.active &&
+      document.visibilityState !== 'hidden' && b.width > 10 && b.top >= ca.top - 2 && b.bottom <= ca.bottom + 2;
+    return { x: Math.round(b.left * dpr), y: Math.round(b.top * dpr), w: Math.round(b.width * dpr), h: Math.round(b.height * dpr), visible };
+  },
+  miniPlay(content){
+    if(!this._avail || content._noNativeMini) { LiveView.previewInfo(content); return; }
+    LiveView.previewInfo(content);
+    if(this._miniId === content.id) return;
+    this._miniId = content.id;
+    const r = this._rect();
+    this._miniKey = [r.x, r.y, r.w, r.h, r.visible].join(',');
+    this._ensureSync();
+    let played = false;
+    window.cordova.exec((msg) => {
+      let o = {}; try{ o = JSON.parse(msg); }catch(e){}
+      if(o.event === 'playing'){ if(!played) pushDebugLog('📺 Prévia tocando no player nativo.'); played = true; this._miniContent = content; }
+      else if(o.event === 'retry') pushDebugLog('📺 Prévia nativa: reconectando (tentativa ' + o.n + ' — ' + o.why + ').', true);
+      else if(o.event === 'failed'){ pushDebugLog('📺 A prévia nativa não abre este canal (só mostra as informações).', true); content._noNativeMini = true; if(this._miniId === content.id) this._miniId = null; }
+      else if(o.event === 'hidden' || o.event === 'fullscreen'){ if(this._miniId === content.id) this._miniId = null; }
+    }, () => { this._miniId = null; }, 'ManagerPip', 'miniShow', [resolveContentUrl(content), r.x, r.y, r.w, r.h, r.visible]);
+  },
+  miniSync(){
+    if(!this._miniId) return;
+    const r = this._rect();
+    const key = [r.x, r.y, r.w, r.h, r.visible].join(',');
+    if(key === this._miniKey) return;
+    this._miniKey = key;
+    try{ window.cordova.exec(() => {}, () => {}, 'ManagerPip', 'miniMove', [r.x, r.y, r.w, r.h, r.visible]); }catch(e){}
+  },
+  miniStop(){
+    if(!this._miniId) return;
+    this._miniId = null;
+    try{ window.cordova.exec(() => {}, () => {}, 'ManagerPip', 'miniHide', []); }catch(e){}
+  },
+  _ensureSync(){
+    if(this._syncOn) return;
+    this._syncOn = true;
+    let raf = 0;
+    const kick = () => { if(!raf) raf = requestAnimationFrame(() => { raf = 0; this.miniSync(); }); };
+    const ca = document.getElementById('content-area');
+    if(ca) ca.addEventListener('scroll', kick, { passive: true });
+    window.addEventListener('resize', kick);
+    document.addEventListener('visibilitychange', kick);
+    try{ new MutationObserver(kick).observe(document.body, { childList: true, subtree: false, attributes: true, attributeFilter: ['class', 'style'] }); }catch(e){}
+    try{ new MutationObserver(kick).observe(document.getElementById('modal-root'), { childList: true }); }catch(e){}
+    try{ new MutationObserver(kick).observe(document.getElementById('sidebar'), { attributes: true, attributeFilter: ['class'] }); }catch(e){}
+    setInterval(kick, 1500); // rede de segurança (barato: só manda se mudou)
+  },
+  probe(){
+    return new Promise((res) => {
+      if(this._avail !== null) return res(this._avail);
+      if(!(window.cordova && typeof window.cordova.exec === 'function')){ this._avail = false; return res(false); }
+      const t = setTimeout(() => { this._avail = false; res(false); }, 3000);
+      try{
+        window.cordova.exec(() => { clearTimeout(t); this._avail = true; pushDebugLog('📺 Player nativo do Android disponível neste APK.'); res(true); },
+          () => { clearTimeout(t); this._avail = false; res(false); }, 'ManagerPip', 'hasNativePlayer', []);
+      }catch(e){ clearTimeout(t); this._avail = false; res(false); }
+    });
+  },
+  /** Usar o player nativo pra este conteúdo? */
+  wanted(content){
+    if(!this._avail || !content || content.tipo !== 'live' || content._noNative) return false;
+    const mode = ((State.settings && State.settings.performance) || {}).liveEngine || 'auto';
+    if(mode === 'js') return false;
+    if(mode === 'native') return true;
+    return PerfMode.isLite(); // automático: projetor/TV/aparelho fraco
+  },
+  play(content){
+    const name = resolveContentName(content);
+    const urls = [resolveContentUrl(content)];
+    const x = LiveEpg.parse(content);
+    if(x){
+      const m3 = x.base + '/live/' + encodeURIComponent(x.user) + '/' + encodeURIComponent(x.pass) + '/' + x.id + '.m3u8';
+      if(urls.indexOf(m3) === -1) urls.push(m3); // se o .ts não abrir, tenta o mesmo canal em HLS
+    }
+    try{ PlayerModule.stopMini(); }catch(e){}
+    this.active = true;
+    ProgressModule.markLiveWatched(content).catch(()=>{});
+    pushDebugLog('📺 Abrindo "' + name + '" no player nativo do Android.');
+    this._miniId = null; // o Android fecha a prévia pra liberar o decodificador
+    const back = () => {
+      this.active = false;
+      if(TvNav.on() && State.ui.currentView === 'live') TvNav.restoreCard(content.id, null);
+      try{ if(State.ui.currentView === 'live') this.miniPlay(content); else LiveView.previewInfo(content); }catch(e){}
+    };
+    const tryAt = (i) => {
+      let played = false;
+      window.cordova.exec((msg) => {
+        let o = {}; try{ o = JSON.parse(msg); }catch(e){}
+        if(o.event === 'playing'){ if(!played) pushDebugLog('📺 Tocando no player nativo' + (i ? ' (HLS)' : '') + '.'); played = true; }
+        else if(o.event === 'retry') pushDebugLog('📺 Nativo: reconectando (tentativa ' + o.n + ' — ' + o.why + ').', true);
+        else if(o.event === 'error') pushDebugLog('📺 Nativo: erro ' + o.what + '/' + o.extra + '.', true);
+        else if(o.event === 'failed'){
+          if(i + 1 < urls.length){ pushDebugLog('📺 Nativo não abriu esse endereço — tentando em HLS.', true); tryAt(i + 1); return; }
+          pushDebugLog('📺 O player nativo não abre este canal — usando o player do app.', true);
+          this.active = false;
+          content._noNative = true;
+          PlayerModule.open(content);
+        }
+        else if(o.event === 'closed' || o.event === 'stopped' || o.event === 'replaced'){ if(o.event !== 'replaced') back(); }
+      }, (err) => {
+        pushDebugLog('📺 Player nativo indisponível (' + err + ') — usando o player do app.', true);
+        this.active = false; this._avail = false;
+        PlayerModule.open(content);
+      }, 'ManagerPip', 'playVideo', [urls[i], name]);
+    };
+    tryAt(0);
+  }
+};
+
+/* ======================================================================
    LiveEpg — "o que está passando agora" num canal ao vivo
    ------------------------------------------------------------------
    Servidores IPTV no padrão Xtream (a grande maioria: get.php?username=…)
@@ -2880,7 +3015,8 @@ const LiveEpg = {
   paintAll(onlyBar){
     const L = this._last;
     const cc = PlayerModule.currentContent;
-    if(!L || !cc || cc.id !== L.id) return;
+    const id = this._forceId || (cc && cc.id);
+    if(!L || !id || id !== L.id) return;
     const { cur, next } = L;
     document.querySelectorAll('.epg-box').forEach(box => {
       if(!onlyBar){
@@ -5728,6 +5864,7 @@ const PlayerModule = {
   },
   expandMini(){
     if(!this._mini) return;
+    if(this.currentContent && NativeVideo.wanted(this.currentContent)){ NativeVideo.play(this.currentContent); return; }
     const o = qs('#player-overlay');
     this._mini = false;
     this._miniReturn = true;
@@ -5774,6 +5911,8 @@ const PlayerModule = {
     const overlay = qs('#player-overlay');
     this._ensureFullClassObserver();
     const mini = !!(opts && opts.mini);
+    // ao vivo em tela cheia no projetor: player nativo do Android (ver NativeVideo)
+    if(!mini && NativeVideo.wanted(content)){ NativeVideo.play(content); return; }
     // OK/clique no canal que JÁ está tocando no quadro: só abre em tela cheia
     if(!mini && this._mini && this.currentContent && content && this.currentContent.id === content.id){ this.expandMini(); return; }
     // Só empilha uma entrada de histórico quando o player estava REALMENTE
@@ -7958,12 +8097,25 @@ const LiveView = {
    *  quadro primeiro e expande — assim o Voltar devolve pro quadro sem reiniciar. */
   activate(content){
     clearTimeout(this._focusT);
+    if(NativeVideo.wanted(content)){ NativeVideo.play(content); return; }
     const cc = PlayerModule.currentContent;
     if(!(PlayerModule.isMini() && cc && cc.id === content.id)) this.play(content);
     PlayerModule.expandMini();
   },
+  /** Player nativo em uso: o quadro não toca (economia) — mostra nome e o que
+   *  está passando no canal focado; OK abre em tela cheia. */
+  previewInfo(content){
+    LiveEpg._forceId = content.id;
+    const nameEl = document.getElementById('lp-name'), subEl = document.getElementById('lp-sub'), empty = document.querySelector('.lp-empty');
+    if(nameEl) nameEl.textContent = resolveContentName(content);
+    if(subEl) subEl.textContent = getServerName(content.serverId) + (content.categoria ? ' • ' + content.categoria : '') + ' • OK = assistir';
+    if(empty){ empty.style.display = ''; empty.lastChild.textContent = 'OK para assistir em tela cheia'; }
+    document.querySelectorAll('.live-grid .content-card').forEach(c => c.classList.toggle('playing', c.getAttribute('data-cid') === content.id));
+    try{ LiveEpg.show(content); }catch(e){}
+  },
   markPlaying(){
     const cc = PlayerModule.currentContent;
+    if(!cc) LiveEpg._forceId = LiveEpg._forceId || null; else LiveEpg._forceId = null;
     const id = (PlayerModule.isMini() || PlayerModule._miniReturn) && cc ? cc.id : null;
     document.querySelectorAll('.live-grid .content-card').forEach(c => c.classList.toggle('playing', !!id && c.getAttribute('data-cid') === id));
     const nameEl = document.getElementById('lp-name'), subEl = document.getElementById('lp-sub'), empty = document.querySelector('.lp-empty');
@@ -8077,6 +8229,11 @@ async function renderLiveView(container){
   const epg = el('div', { id:'lp-epg', class:'epg-box', style:'display:none;' });
   epg.innerHTML = '<div class="epg-now"><span class="epg-now-title"></span><span class="epg-now-time"></span></div><div class="epg-bar"><i></i></div><div class="epg-next"></div>';
   info.appendChild(epg);
+  // tocar no quadro (dedo/mouse) com a prévia nativa tocando = tela cheia nativa
+  screen.addEventListener('click', () => {
+    const c = NativeVideo._miniId && LiveView._byId.get(NativeVideo._miniId);
+    if(c) NativeVideo.play(c);
+  });
   lp.appendChild(screen); lp.appendChild(info);
   container.appendChild(lp);
 
@@ -8106,6 +8263,7 @@ async function renderLiveView(container){
         if(document.activeElement !== card || !card.isConnected) return;
         const c = LiveView._byId.get(card.getAttribute('data-cid'));
         const cc = PlayerModule.currentContent;
+        if(c && NativeVideo.wanted(c)){ NativeVideo.miniPlay(c); return; } // prévia no player nativo (sem conversão em JS)
         if(c && !(cc && cc.id === c.id)) LiveView.play(c);
       }, 700);
     });
@@ -9481,7 +9639,7 @@ async function renderSettingsView(container){
   });
   engGroup.appendChild(engSel);
   engGroup.appendChild(el('div', { style:'font-size:11px;color:var(--text-2);margin-top:4px;' }, [
-    'Nativo: o próprio Android toca o canal (usa o chip de vídeo, quase sem trabalho pro app). Se um canal não abrir assim, o app troca sozinho pro player dele.'
+    'Nativo: o canal abre na tela cheia do próprio Android (chip de vídeo, sem conversão em JavaScript — bem mais leve no projetor). Precisa do APK gerado com o build.sh novo. Se um canal não abrir assim, o app usa o player dele.'
   ]));
   perfRow.appendChild(engGroup);
   perfBlock.appendChild(perfRow);
@@ -10617,7 +10775,7 @@ const Router = {
     qs('#page-title').textContent = VIEW_TITLES[view] || '';
     // Ao Vivo: barra lateral vira a lista de categorias; fora dele, o player mini para
     qs('#sidebar').classList.toggle('live-side-on', view === 'live' && !State.ui.liveSideHidden);
-    if(view !== 'live') PlayerModule.stopMini();
+    if(view !== 'live'){ PlayerModule.stopMini(); try{ NativeVideo.miniStop(); }catch(e){} }
     qsa('.nav-item').forEach(function(item){
       const itemView = item.getAttribute('data-view');
       item.classList.toggle('active', itemView === view || (view === 'series-detail' && itemView === 'series'));
@@ -10857,6 +11015,7 @@ async function initApp(){
   const versionLabel = qs('#app-version-label');
   if(versionLabel) versionLabel.textContent = 'v' + APP_VERSION;
   try{ NetStatus.start(); NetStatus.startClock(); }catch(e){}
+  setTimeout(() => { NativeVideo.probe(); }, 1200);
   try{ TvSharp.init(); }catch(e){}
   // Busca os dados do Dashboard ANTES de mostrar a tela — assim ela já abre
   // com o conteúdo (ou com "Nada por aqui ainda") e o "Aguarde" cobre a espera.
