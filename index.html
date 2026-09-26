@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.0.88';
+<script>var APP_VERSION = '1.0.89';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -273,6 +273,14 @@ html.native-hole .lp-screen .lp-empty{display:none !important;}
 /* player híbrido: o vídeo é nativo (atrás) — a tela do player fica transparente */
 #player-overlay.hybrid{background:transparent !important;}
 #player-overlay.hybrid video{visibility:hidden !important;}
+/* ao vivo nativo (projetor): só play/pausa, AO VIVO, volume, tela cheia e PiP embaixo; voltar/fechar em cima */
+#player-overlay.hybrid #player-seek-back5, #player-overlay.hybrid #player-seek-fwd5,
+#player-overlay.hybrid #player-time-current, #player-overlay.hybrid #player-time-duration,
+#player-overlay.hybrid #player-seek-track, #player-overlay.hybrid #player-speed, #player-overlay.hybrid #player-speed-menu,
+#player-overlay.hybrid #player-next-episode, #player-overlay.hybrid #player-lock-affordance, #player-overlay.hybrid #player-lock-hint,
+#player-overlay.hybrid #player-seek-feedback, #player-overlay.hybrid #player-zoom-badge{display:none !important;}
+#player-overlay.hybrid #player-controls-bottom{justify-content:flex-start;}
+#player-overlay.hybrid #player-volume-wrap{margin-left:auto;}
 .lp-screen{position:relative;flex:0 0 auto;width:min(66%,760px);border-radius:10px;overflow:hidden;background:#000;}
 .lp-screen::before{content:"";display:block;padding-top:56.25%;}
 .lp-empty{position:absolute;top:0;left:0;right:0;bottom:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;color:var(--text-2);font-size:13px;text-align:center;padding:10px;}
@@ -1846,7 +1854,8 @@ const DEFAULT_SETTINGS = {
     maxConcurrentProcessing: 3, // quantos servidores importam ao mesmo tempo
     liteMode: 'auto',           // 'auto' | 'on' | 'off' — ver PerfMode
     tvMode: 'auto',             // 'auto' | 'on' | 'off' — navegação por controle remoto (ver TvNav)
-    liveEngine: 'auto'          // 'auto' | 'native' | 'js' — como tocar o ao vivo (ver PlayerModule._nativeLiveUrl)
+    liveEngine: 'auto',         // 'auto' | 'native' | 'js' — (antigo) HLS nativo dentro do WebView
+    nativeLive: true            // projetor: ao vivo no player nativo do Android (ver NativeVideo)
   }
 
 };
@@ -2970,10 +2979,8 @@ const NativeVideo = {
   /** Usar o player nativo pra este conteúdo? */
   wanted(content){
     if(!this._avail || !content || content.tipo !== 'live' || content._noNative) return false;
-    const mode = ((State.settings && State.settings.performance) || {}).liveEngine || 'auto';
-    if(mode === 'js') return false;
-    if(mode === 'native') return true;
-    return PerfMode.isLite(); // automático: projetor/TV/aparelho fraco
+    if(!PerfMode.isTvDevice()) return false; // só no projetor/TV
+    return ((State.settings && State.settings.performance) || {}).nativeLive !== false; // ligado por padrão (Configurações › Desempenho)
   },
   play(content){
     const name = resolveContentName(content);
@@ -9780,22 +9787,26 @@ async function renderSettingsView(container){
     'Agora: ' + (PerfMode.isTv() ? 'ligado' : 'desligado') + '. Setas movem entre os itens; OK abre; segure OK num card pra ver as opções (favoritar, baixar, remover); em campo de texto, OK pra digitar.'
   ]));
   perfRow.appendChild(tvGroup);
-  // Como tocar o ao vivo (ver PlayerModule._nativeLiveUrl)
-  const engGroup = el('div', { class:'form-group' });
-  engGroup.appendChild(el('label', {}, ['Player do ao vivo']));
-  const engSel = el('select', { 'aria-label':'Player do ao vivo' });
-  [['auto','Automático (nativo em TV/projetor)'],['native','Nativo do Android (mais leve)'],['js','Do app (mais compatível)']].forEach(([v,l]) => engSel.appendChild(el('option', { value:v }, [l])));
-  engSel.value = perf.liveEngine || 'auto';
-  engSel.addEventListener('change', async () => {
-    State.settings.performance = Object.assign({}, State.settings.performance || DEFAULT_SETTINGS.performance, { liveEngine: engSel.value });
-    await IDB.put(STORES.settings, State.settings);
-    showToast('Vale a partir do próximo canal aberto.', 'success');
-  });
-  engGroup.appendChild(engSel);
-  engGroup.appendChild(el('div', { style:'font-size:11px;color:var(--text-2);margin-top:4px;' }, [
-    'Nativo: o canal abre na tela cheia do próprio Android (chip de vídeo, sem conversão em JavaScript — bem mais leve no projetor). Precisa do APK gerado com o build.sh novo. Se um canal não abrir assim, o app usa o player dele.'
-  ]));
-  perfRow.appendChild(engGroup);
+  // Projetor/TV: ao vivo no player nativo do Android (ver NativeVideo / player híbrido)
+  if(PerfMode.isTvDevice()){
+    const engGroup = el('div', { class:'form-group' });
+    const lab = el('label', { style:'display:flex;align-items:center;gap:8px;cursor:pointer;' });
+    const chk = el('input', { type:'checkbox' });
+    chk.checked = perf.nativeLive !== false;
+    chk.addEventListener('change', async () => {
+      State.settings.performance = Object.assign({}, State.settings.performance || DEFAULT_SETTINGS.performance, { nativeLive: chk.checked });
+      await IDB.put(STORES.settings, State.settings);
+      showToast('Player nativo no ao vivo ' + (chk.checked ? 'ligado' : 'desligado') + ' — vale a partir do próximo canal.', 'success');
+    });
+    lab.appendChild(chk);
+    lab.appendChild(document.createTextNode('Player nativo no ao vivo (projetor)'));
+    engGroup.appendChild(lab);
+    engGroup.appendChild(el('div', { style:'font-size:11px;color:var(--text-2);margin-top:4px;' }, [
+      (NativeVideo._avail === false ? '⚠ Este APK não tem o player nativo (gere o APK com o build.sh novo). ' : '') +
+      'O próprio Android toca os canais ao vivo (chip de vídeo, sem conversão em JavaScript) — bem mais leve. Controles: play/pausa, ao vivo, volume, tela cheia e PiP. Filmes e séries continuam no player do app.'
+    ]));
+    perfRow.appendChild(engGroup);
+  }
   perfBlock.appendChild(perfRow);
   perfBlock.appendChild(el('div', { style:'margin-top:10px;' }, [
     el('button', { class:'btn', onclick: () => TvSharp.openTest() }, ['🔍 Teste de nitidez da tela'])
