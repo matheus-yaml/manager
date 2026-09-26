@@ -113,12 +113,13 @@ public class ManagerPip extends CordovaPlugin {
             final int off = show ? 1 : 0;
             final int x = args.optInt(off), y = args.optInt(off + 1), w = args.optInt(off + 2), h = args.optInt(off + 3);
             final boolean visible = args.optBoolean(off + 4, true);
+            final String bg = show ? args.optString(off + 5, "#0B0D16") : null;
             if (show) mCb = callback;
             cordova.getActivity().runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
                     try {
-                        if (show) miniOpen(url);
+                        if (show) miniOpen(url, bg);
                         miniPlace(x, y, w, h, visible);
                         if (!show) callback.success();
                     } catch (Throwable t) { callback.error(t.getClass().getSimpleName() + ": " + t.getMessage()); }
@@ -472,14 +473,20 @@ public class ManagerPip extends CordovaPlugin {
         if (!keep) mCb = null;
     }
 
-    private void miniOpen(String url) {
+    /** O vídeo fica ATRÁS do WebView (que fica transparente só onde a página
+     *  deixa um "buraco" no quadro). Assim tudo da página — painel de
+     *  diagnóstico, popups, avisos — aparece POR CIMA do vídeo. O fundo da
+     *  tela nativa ganha a cor de fundo do app, então o resto fica igual. */
+    private void miniOpen(String url, String bg) {
         Activity act = cordova.getActivity();
         ViewGroup content = (ViewGroup) act.findViewById(android.R.id.content);
         if (mBox == null) {
             mBox = new FrameLayout(act);
             mBox.setBackgroundColor(Color.BLACK);
             mBox.setFocusable(false);
-            content.addView(mBox, new FrameLayout.LayoutParams(1, 1, Gravity.TOP | Gravity.LEFT));
+            content.addView(mBox, 0, new FrameLayout.LayoutParams(1, 1, Gravity.TOP | Gravity.LEFT));
+            try { content.setBackgroundColor(Color.parseColor(bg == null ? "#0B0D16" : bg)); } catch (Throwable t) { content.setBackgroundColor(0xFF0B0D16); }
+            try { webView.getView().setBackgroundColor(Color.TRANSPARENT); } catch (Throwable ignore) {}
         }
         if (url.equals(mUrl) && mView != null) return; // já tocando esse canal
         if (mView != null) { try { mView.stopPlayback(); } catch (Throwable ignore) {} mBox.removeView(mView); mView = null; }
@@ -557,6 +564,7 @@ public class ManagerPip extends CordovaPlugin {
         mWatch = null;
         if (mView != null) { try { mView.stopPlayback(); } catch (Throwable ignore) {} mView = null; }
         if (mBox != null) { try { ((ViewGroup) mBox.getParent()).removeView(mBox); } catch (Throwable ignore) {} mBox = null; }
+        try { webView.getView().setBackgroundColor(Color.BLACK); } catch (Throwable ignore) {}
         mUrl = null;
         if (mCb != null) mSend("{\"event\":" + q(reason) + ",\"played\":" + mPlayed + "}", false);
     }
