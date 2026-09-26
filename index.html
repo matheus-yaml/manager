@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.0.87';
+<script>var APP_VERSION = '1.0.88';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -270,6 +270,9 @@ html.tv .live-side-back:focus{outline:3px solid #fff;outline-offset:1px;}
 html.native-hole, html.native-hole body, html.native-hole #app, html.native-hole #main, html.native-hole #content-area,
 html.native-hole #content-area > div, html.native-hole .live-player, html.native-hole .lp-screen{background:transparent !important;background-image:none !important;}
 html.native-hole .lp-screen .lp-empty{display:none !important;}
+/* player híbrido: o vídeo é nativo (atrás) — a tela do player fica transparente */
+#player-overlay.hybrid{background:transparent !important;}
+#player-overlay.hybrid video{visibility:hidden !important;}
 .lp-screen{position:relative;flex:0 0 auto;width:min(66%,760px);border-radius:10px;overflow:hidden;background:#000;}
 .lp-screen::before{content:"";display:block;padding-top:56.25%;}
 .lp-empty{position:absolute;top:0;left:0;right:0;bottom:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;color:var(--text-2);font-size:13px;text-align:center;padding:10px;}
@@ -2829,6 +2832,50 @@ UpdateLog.install();
 const NativeVideo = {
   _avail: null,
   active: false,
+  /* ===== MOTOR DO PLAYER HÍBRIDO (ao vivo) =====
+     O vídeo é tocado pelo Android ATRÁS da página; a tela do player
+     (controles, guia, nome do canal, navegação pelo controle) continua sendo
+     a do app, por cima. Aqui só: começar/trocar canal, posição (quadro ou
+     tela cheia), pausar, volume e parar. Ver PlayerModule (this._hybrid). */
+  _engineId: null, _engineKey: '',
+  _overlayRect(){
+    const o = document.getElementById('player-overlay');
+    const dpr = window.devicePixelRatio || 1;
+    if(!o || o.style.display !== 'flex' || o.style.visibility === 'hidden') return { x:0, y:0, w:0, h:0, visible:false };
+    const b = o.getBoundingClientRect();
+    const visible = b.width > 10 && b.height > 10 && document.visibilityState !== 'hidden';
+    return { x: Math.round(b.left * dpr), y: Math.round(b.top * dpr), w: Math.round(b.width * dpr), h: Math.round(b.height * dpr), visible };
+  },
+  engineStart(content, onEvent){
+    const bg = this._bgHex();
+    this._hole(true);
+    this._engineId = content.id;
+    const r = this._overlayRect();
+    this._engineKey = [r.x, r.y, r.w, r.h, r.visible].join(',');
+    this._ensureSync();
+    window.cordova.exec((msg) => {
+      let o = {}; try{ o = JSON.parse(msg); }catch(e){}
+      if(this._engineId !== content.id) return; // já trocou de canal
+      try{ onEvent && onEvent(o); }catch(e){}
+    }, (err) => { try{ onEvent && onEvent({ event: 'failed', err: String(err) }); }catch(e){} },
+    'ManagerPip', 'miniShow', [resolveContentUrl(content), r.x, r.y, r.w, r.h, r.visible, bg]);
+  },
+  engineSync(){
+    if(!this._engineId) return;
+    const r = this._overlayRect();
+    const key = [r.x, r.y, r.w, r.h, r.visible].join(',');
+    if(key === this._engineKey) return;
+    this._engineKey = key;
+    try{ window.cordova.exec(() => {}, () => {}, 'ManagerPip', 'miniMove', [r.x, r.y, r.w, r.h, r.visible]); }catch(e){}
+  },
+  enginePause(paused){ try{ window.cordova.exec(() => {}, () => {}, 'ManagerPip', paused ? 'miniPause' : 'miniResume', []); }catch(e){} },
+  engineVolume(v){ try{ window.cordova.exec(() => {}, () => {}, 'ManagerPip', 'miniVolume', [v]); }catch(e){} },
+  engineStop(){
+    this._hole(false);
+    if(!this._engineId) return;
+    this._engineId = null;
+    try{ window.cordova.exec(() => {}, () => {}, 'ManagerPip', 'miniHide', []); }catch(e){}
+  },
   /* ---- quadro do Ao Vivo tocando NATIVO (VideoView do Android por cima da
      página, na posição do quadro). Sem conversão em JS também na prévia. ---- */
   _miniId: null, _miniKey: '',
@@ -2897,7 +2944,7 @@ const NativeVideo = {
     if(this._syncOn) return;
     this._syncOn = true;
     let raf = 0;
-    const kick = () => { if(!raf) raf = requestAnimationFrame(() => { raf = 0; this.miniSync(); }); };
+    const kick = () => { if(!raf) raf = requestAnimationFrame(() => { raf = 0; this.miniSync(); this.engineSync(); }); };
     const ca = document.getElementById('content-area');
     if(ca) ca.addEventListener('scroll', kick, { passive: true });
     window.addEventListener('resize', kick);
@@ -5842,9 +5889,43 @@ const PlayerModule = {
      Tocar nele / OK no canal que já está tocando = tela cheia; voltar da
      tela cheia = volta pro quadro, sem reiniciar o vídeo. */
   _mini: false, _miniHost: null, _miniReturn: false,
+  _hybrid: false, _hybridPaused: false,
+  _setHybrid(on){
+    const o = qs('#player-overlay');
+    if(this._hybrid && !on) NativeVideo.engineStop();
+    this._hybrid = !!on;
+    this._hybridPaused = false;
+    o.classList.toggle('hybrid', !!on);
+    if(on){ const v = qs('#video-player'); try{ v.pause(); }catch(e){} v.removeAttribute('src'); try{ v.load(); }catch(e){} }
+  },
+  _startHybrid(content, token){
+    this._engine = 'nativo do Android (híbrido)';
+    this.showBuffering();
+    this._updatePlayPauseIcon();
+    let played = false;
+    NativeVideo.engineStart(content, (o) => {
+      if(token !== this.playToken) return;
+      if(o.event === 'playing' || o.event === 'buffered'){
+        this.hideBuffering();
+        if(!played){ played = true; pushDebugLog('📺 Ao vivo tocando no player híbrido (vídeo nativo + controles do app).'); try{ NetStatus.noteOk(); }catch(e){} }
+      }
+      else if(o.event === 'buffering') this.showBuffering();
+      else if(o.event === 'retry'){ this.showBuffering(); pushDebugLog('📺 Nativo: reconectando (tentativa ' + o.n + ' — ' + o.why + ').', true); }
+      else if(o.event === 'error') pushDebugLog('📺 Nativo: erro ' + o.what + '/' + o.extra + '.', true);
+      else if(o.event === 'failed'){
+        // o Android não abre este canal: volta pro player do app (sem perder o lugar)
+        pushDebugLog('📺 O player nativo não abre este canal' + (o.err ? ' (' + o.err + ')' : '') + ' — usando o player do app.', true);
+        content._noNativeMini = true;
+        this._setHybrid(false);
+        this.cleanup();
+        this._startPlayback(content, token);
+      }
+    });
+  },
   isMini(){ return this._mini; },
   isFullOpen(){ const o = qs('#player-overlay'); return !!o && o.style.display === 'flex' && !this._mini; },
   _syncFullClass(){
+    try{ if(this._hybrid) requestAnimationFrame(() => NativeVideo.engineSync()); }catch(e){}
     const full = this.isFullOpen();
     const was = document.documentElement.classList.contains('player-full');
     if(full === was) return;
@@ -5904,10 +5985,10 @@ const PlayerModule = {
     const lite = document.documentElement.classList.contains('lite');
     const clip = (ct || cb) ? 'inset(' + ct + 'px 0 ' + cb + 'px 0' + (lite ? '' : ' round 10px') + ')' : (lite ? 'none' : 'inset(0 round 10px)');
     if(o.style.clipPath !== clip){ o.style.clipPath = clip; o.style.webkitClipPath = clip; }
+    if(this._hybrid) NativeVideo.engineSync();
   },
   expandMini(){
     if(!this._mini) return;
-    if(this.currentContent && NativeVideo.wanted(this.currentContent)){ NativeVideo.play(this.currentContent); return; }
     const o = qs('#player-overlay');
     this._mini = false;
     this._miniReturn = true;
@@ -5941,6 +6022,7 @@ const PlayerModule = {
     this._mini = false; this._miniReturn = false;
     this.playToken++;
     clearTimeout(this._miniMarkT);
+    this._setHybrid(false);
     try{ LiveEpg.stop(); }catch(e){}
     this.cleanup();
     this.hideFallbackBar();
@@ -5954,8 +6036,6 @@ const PlayerModule = {
     const overlay = qs('#player-overlay');
     this._ensureFullClassObserver();
     const mini = !!(opts && opts.mini);
-    // ao vivo em tela cheia no projetor: player nativo do Android (ver NativeVideo)
-    if(!mini && NativeVideo.wanted(content)){ NativeVideo.play(content); return; }
     // OK/clique no canal que JÁ está tocando no quadro: só abre em tela cheia
     if(!mini && this._mini && this.currentContent && content && this.currentContent.id === content.id){ this.expandMini(); return; }
     // Só empilha uma entrada de histórico quando o player estava REALMENTE
@@ -6009,7 +6089,12 @@ const PlayerModule = {
     this._ensurePlayerControls();
     this.cleanup();
     this.hideFallbackBar();
-    this._startPlayback(content, this.playToken);
+    // AO VIVO no APK (projetor): player HÍBRIDO — vídeo nativo do Android atrás,
+    // esta mesma tela de controles por cima (ver NativeVideo.engineStart)
+    const hybrid = !!(content && content.tipo === 'live' && NativeVideo.wanted(content) && !content._noNativeMini);
+    this._setHybrid(hybrid);
+    if(hybrid) this._startHybrid(content, this.playToken);
+    else this._startPlayback(content, this.playToken);
     this._updateNextEpisodeButton(content);
     const video0 = qs('#video-player');
     const speedBtn0 = qs('#player-speed');
@@ -6199,6 +6284,7 @@ const PlayerModule = {
       e.stopPropagation();
       video.muted = !video.muted;
       volumeBtn.innerHTML = video.muted ? this.ICONS.volumeOff : this.ICONS.volumeOn;
+      if(this._hybrid) NativeVideo.engineVolume(video.muted ? 0 : video.volume);
     });
 
     const volumeSlider = qs('#player-volume-slider');
@@ -6208,6 +6294,7 @@ const PlayerModule = {
       video.volume = v;
       video.muted = v === 0;
       volumeBtn.innerHTML = (v === 0 || video.muted) ? this.ICONS.volumeOff : this.ICONS.volumeOn;
+      if(this._hybrid) NativeVideo.engineVolume(v);
     });
     volumeSlider.addEventListener('click', (e) => e.stopPropagation());
 
@@ -6409,6 +6496,7 @@ const PlayerModule = {
   },
 
   seekBy(deltaSeconds){
+    if(this._hybrid) return; // ao vivo nativo: não tem avançar/voltar
     const video = qs('#video-player');
     if(this.currentContent && this.currentContent.tipo === 'live'){
       // Ao vivo: anda dentro da janela bufferizada (não pode ir antes do
@@ -6513,6 +6601,7 @@ const PlayerModule = {
 
   /** Pula pra ponta da transmissão ao vivo e retoma a reprodução. */
   syncToLiveEdge(){
+    if(this._hybrid){ if(this._hybridPaused) this.togglePlayPause(); return; } // nativo sempre na ponta ao vivo
     const video = qs('#video-player');
     const edge = this._getLiveEdgeTime(video);
     if(edge !== null){
@@ -6534,6 +6623,7 @@ const PlayerModule = {
     if(!this.currentContent || this.currentContent.tipo !== 'live') return;
     const btn = qs('#player-live-sync');
     if(!btn) return;
+    if(this._hybrid){ btn.classList.toggle('synced', !this._hybridPaused); return; }
     const video = qs('#video-player');
     const edge = this._getLiveEdgeTime(video);
     // "Em dia" = tocando E a até ~12s da ponta disponível do stream —
@@ -6544,6 +6634,15 @@ const PlayerModule = {
   },
 
   togglePlayPause(){
+    if(this._hybrid){
+      this._hybridPaused = !this._hybridPaused;
+      NativeVideo.enginePause(this._hybridPaused);
+      this.isUserPaused = this._hybridPaused;
+      this._updatePlayPauseIcon();
+      this._showPlayPauseFeedback(!this._hybridPaused);
+      if(this._hybridPaused) this._showControls(); else this._scheduleHideControls();
+      return;
+    }
     const video = qs('#video-player');
     const willPlay = video.paused;
     if(willPlay) video.play().catch(()=>{});
@@ -7132,7 +7231,8 @@ const PlayerModule = {
   _updatePlayPauseIcon(){
     const video = qs('#video-player');
     const btn = qs('#player-playpause');
-    btn.innerHTML = video.paused ? this.ICONS.play : this.ICONS.pause;
+    const paused = this._hybrid ? this._hybridPaused : video.paused;
+    btn.innerHTML = paused ? this.ICONS.play : this.ICONS.pause;
   },
 
   _formatTime(seconds){
@@ -7298,6 +7398,7 @@ const PlayerModule = {
    *  "pular" o buraco pro fim do que já foi baixado (resolve sem reconectar);
    *  parado ~15s: reconecta (e, no ao vivo, tenta PRA SEMPRE). */
   _armLiveWatchdog(content, token){
+    if(this._hybrid) return; // o player nativo tem o próprio vigia
     if(this.stallWatchdog){ clearInterval(this.stallWatchdog); this.stallWatchdog = null; }
     this.lastTimeUpdateAt = Date.now();
     let nudged = false;
@@ -7684,6 +7785,7 @@ const PlayerModule = {
     }
     this._mini = false; this._miniReturn = false;
     clearTimeout(this._miniMarkT);
+    this._setHybrid(false);
     { const o = qs('#player-overlay'); o.classList.remove('mini'); this._clearMiniStyles(o); }
     this.playToken++; // invalidate any pending retries/callbacks
     try{ LiveEpg.stop(); }catch(e){}
@@ -8146,11 +8248,9 @@ const LiveView = {
     const dbl = this._lastAct && this._lastAct.id === content.id && now - this._lastAct.t < 550;
     this._lastAct = dbl ? null : { id: content.id, t: now };
     if(!dbl){
-      if(NativeVideo.wanted(content)) NativeVideo.miniPlay(content);
-      else if(!(PlayerModule.isMini() && PlayerModule.currentContent && PlayerModule.currentContent.id === content.id)) this.play(content);
+      if(!(PlayerModule.isMini() && PlayerModule.currentContent && PlayerModule.currentContent.id === content.id)) this.play(content);
       return;
     }
-    if(NativeVideo.wanted(content)){ NativeVideo.play(content); return; }
     const cc = PlayerModule.currentContent;
     if(!(PlayerModule.isMini() && cc && cc.id === content.id)) this.play(content);
     PlayerModule.expandMini();
@@ -8318,7 +8418,6 @@ async function renderLiveView(container){
         if(document.activeElement !== card || !card.isConnected) return;
         const c = LiveView._byId.get(card.getAttribute('data-cid'));
         const cc = PlayerModule.currentContent;
-        if(c && NativeVideo.wanted(c)){ NativeVideo.miniPlay(c); return; } // prévia no player nativo (sem conversão em JS)
         if(c && !(cc && cc.id === c.id)) LiveView.play(c);
       }, 700);
     });
