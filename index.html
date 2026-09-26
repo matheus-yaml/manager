@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.0.65';
+<script>var APP_VERSION = '1.0.68';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -730,6 +730,23 @@ html.tv .modal-close-x:focus{color:#fff;background:rgba(var(--accent-rgb),.45);o
   padding-top:calc(18px + env(safe-area-inset-top, 0px));
 }
 #player-topbar .ptitle{font-size:15px;font-weight:700;}
+/* Ao vivo: programa passando agora (guia/EPG do servidor) — ver LiveEpg */
+.ptitle-wrap{min-width:0;flex:0 1 auto;display:flex;flex-direction:column;gap:3px;max-width:60vw;}
+#player-epg{min-width:0;}
+#player-epg .epg-now{display:flex;gap:8px;align-items:baseline;font-size:13.5px;color:#fff;font-weight:600;white-space:nowrap;min-width:0;}
+#player-epg .epg-now-title{overflow:hidden;text-overflow:ellipsis;min-width:0;}
+#player-epg .epg-now-title::before{content:"▶ ";color:#ef4444;}
+#player-epg .epg-now-time{color:rgba(255,255,255,.7);font-weight:500;font-size:12px;flex-shrink:0;}
+#player-epg .epg-bar{height:3px;border-radius:2px;background:rgba(255,255,255,.2);margin-top:4px;max-width:260px;overflow:hidden;}
+#player-epg .epg-bar i{display:block;height:100%;width:0;background:#ef4444;}
+#player-epg .epg-next{font-size:12px;color:rgba(255,255,255,.7);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+@media(max-width:640px){
+  .ptitle-wrap{max-width:52vw;}
+  #player-epg .epg-now{font-size:12px;}
+  #player-epg .epg-next{display:none;}
+}
+html.tv #player-epg .epg-now{font-size:13px;}
+html.tv #player-epg .epg-now-time, html.tv #player-epg .epg-next{font-size:12px;}
 #player-close{font-size:22px;background:rgba(255,255,255,.12);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);width:38px;height:38px;border-radius:50%;transition:background .15s;}
 #player-close:hover{background:rgba(255,255,255,.2);}
 #player-back{font-size:20px;background:rgba(255,255,255,.12);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);width:38px;height:38px;border-radius:50%;flex-shrink:0;transition:background .15s;}
@@ -1192,7 +1209,14 @@ html.tv .content-card .info .meta{line-height:16px;}
 <div id="player-overlay">
   <div id="player-topbar">
     <button id="player-back">&#8592;</button>
-    <div class="ptitle" id="player-title"></div>
+    <div class="ptitle-wrap">
+      <div class="ptitle" id="player-title"></div>
+      <div id="player-epg" style="display:none;">
+        <div class="epg-now"><span class="epg-now-title"></span><span class="epg-now-time"></span></div>
+        <div class="epg-bar"><i></i></div>
+        <div class="epg-next"></div>
+      </div>
+    </div>
     <div style="margin-left:auto;display:flex;align-items:center;gap:10px;">
       <button id="player-next-episode" class="btn small" style="display:none;">Próximo Episódio &#9654;</button>
       <button id="player-close">&times;</button>
@@ -2366,6 +2390,140 @@ const UpdateLog = {
   }
 };
 UpdateLog.install();
+
+/* ======================================================================
+   LiveEpg — "o que está passando agora" num canal ao vivo
+   ------------------------------------------------------------------
+   Servidores IPTV no padrão Xtream (a grande maioria: get.php?username=…)
+   têm um guia de programação por canal:
+     /player_api.php?username=U&password=P&action=get_short_epg&stream_id=ID
+   Descobre usuário/senha/ID pelo link do canal (…/live/U/P/ID.ts ou
+   …/U/P/ID) ou pela URL do servidor, pede só os próximos programas desse
+   canal (resposta pequena) e mostra no player:
+     HBO
+     ▶ Homem-Aranha · 12:00–14:10   [barrinha de quanto já passou]
+     A seguir: Duna (14:10)
+   Quando o programa acaba, busca de novo sozinho. Servidor sem guia (ou
+   que não é Xtream): simplesmente não mostra nada.
+   ====================================================================== */
+const LiveEpg = {
+  _token: 0,
+  _timer: null,
+  _barTimer: null,
+  _cache: new Map(), // chave -> { at, list }
+
+  /** { base, user, pass, id } a partir do link do canal / URL do servidor */
+  parse(content){
+    const url = resolveContentUrl(content);
+    let u;
+    try{ u = new URL(url); }catch(e){ return null; }
+    const parts = u.pathname.split('/').filter(Boolean);
+    let user, pass, id;
+    // /live/USER/PASS/ID.ext  ou  /USER/PASS/ID(.ext)
+    if(parts.length >= 4 && parts[parts.length - 4] === 'live'){
+      user = parts[parts.length - 3]; pass = parts[parts.length - 2]; id = parts[parts.length - 1];
+    } else if(parts.length >= 3){
+      user = parts[parts.length - 3]; pass = parts[parts.length - 2]; id = parts[parts.length - 1];
+    }
+    id = id ? id.replace(/\.[a-z0-9]+$/i, '') : '';
+    if(!/^\d+$/.test(id)) return null;
+    // usuário/senha da URL do servidor, se tiver (mais confiável)
+    const srv = State.servers.get(content.serverId);
+    if(srv && srv.url){
+      try{
+        const su = new URL(srv.url);
+        if(su.searchParams.get('username')) user = su.searchParams.get('username');
+        if(su.searchParams.get('password')) pass = su.searchParams.get('password');
+      }catch(e){}
+    }
+    if(!user || !pass) return null;
+    return { base: u.protocol + '//' + u.host, user: decodeURIComponent(user), pass: decodeURIComponent(pass), id };
+  },
+
+  _b64(s){
+    if(!s) return '';
+    try{
+      const bin = atob(s);
+      try{ return decodeURIComponent(escape(bin)); }catch(e){ return bin; }
+    }catch(e){ return s; } // já veio em texto
+  },
+
+  async _fetch(info){
+    const key = info.base + '|' + info.id;
+    const c = this._cache.get(key);
+    if(c && Date.now() - c.at < 5 * 60 * 1000 && c.list.some(p => p.stop * 1000 > Date.now())) return c.list;
+    const url = info.base + '/player_api.php?username=' + encodeURIComponent(info.user) + '&password=' + encodeURIComponent(info.pass) +
+      '&action=get_short_epg&stream_id=' + encodeURIComponent(info.id) + '&limit=4';
+    const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const t = setTimeout(() => { try{ ctl && ctl.abort(); }catch(e){} }, 8000);
+    let j;
+    try{
+      const r = await fetch(url, { cache: 'no-store', signal: ctl ? ctl.signal : undefined });
+      if(!r.ok) throw new Error('HTTP ' + r.status);
+      j = await r.json();
+    } finally { clearTimeout(t); }
+    const raw = (j && (j.epg_listings || j.listings)) || [];
+    const list = raw.map(p => {
+      const start = +p.start_timestamp || Math.floor(Date.parse(String(p.start || '').replace(' ', 'T')) / 1000);
+      const stop = +p.stop_timestamp || +p.end_timestamp || Math.floor(Date.parse(String(p.end || p.stop || '').replace(' ', 'T')) / 1000);
+      return { title: this._b64(p.title).trim(), desc: this._b64(p.description).trim(), start, stop };
+    }).filter(p => p.title && p.start && p.stop).sort((a, b) => a.start - b.start);
+    this._cache.set(key, { at: Date.now(), list });
+    if(this._cache.size > 60) this._cache.delete(this._cache.keys().next().value);
+    return list;
+  },
+
+  _hm(ts){ const d = new Date(ts * 1000); return (d.getHours() < 10 ? '0' : '') + d.getHours() + ':' + (d.getMinutes() < 10 ? '0' : '') + d.getMinutes(); },
+
+  stop(){
+    this._token++;
+    clearTimeout(this._timer); clearInterval(this._barTimer);
+    const box = document.getElementById('player-epg');
+    if(box) box.style.display = 'none';
+  },
+
+  async show(content){
+    this.stop();
+    if(!content || content.tipo !== 'live') return;
+    const info = this.parse(content);
+    if(!info) return;
+    const my = this._token;
+    let list;
+    try{ list = await this._fetch(info); }
+    catch(e){ if(my === this._token) pushDebugLog('📺 Guia do canal indisponível (' + (e && e.message || e) + ').'); return; }
+    if(my !== this._token) return; // trocou de canal/fechou enquanto buscava
+    const now = Date.now() / 1000;
+    let i = list.findIndex(p => p.start <= now && now < p.stop);
+    if(i === -1) i = list.findIndex(p => p.start > now) - 1; // entre programas / relógio levemente fora
+    if(i < 0){
+      if(!list.length){ pushDebugLog('📺 O servidor não tem guia de programação para este canal.'); return; }
+      i = 0;
+    }
+    const cur = list[i], next = list[i + 1];
+    const box = document.getElementById('player-epg');
+    if(!box) return;
+    box.querySelector('.epg-now-title').textContent = cur.title;
+    box.querySelector('.epg-now-time').textContent = this._hm(cur.start) + '–' + this._hm(cur.stop);
+    box.querySelector('.epg-next').textContent = next ? 'A seguir: ' + next.title + ' (' + this._hm(next.start) + ')' : '';
+    box.title = cur.desc || '';
+    const bar = box.querySelector('.epg-bar i');
+    const paint = () => {
+      const pct = Math.max(0, Math.min(100, (Date.now() / 1000 - cur.start) / Math.max(1, cur.stop - cur.start) * 100));
+      bar.style.width = pct.toFixed(1) + '%';
+    };
+    paint();
+    this._barTimer = setInterval(paint, 30000);
+    box.style.display = '';
+    // quando o programa acabar, atualiza (mín. 30s, máx. 30 min)
+    const wait = Math.max(30, Math.min(1800, cur.stop - Date.now() / 1000 + 5)) * 1000;
+    this._timer = setTimeout(() => {
+      if(my !== this._token) return;
+      const k = info.base + '|' + info.id; const c = this._cache.get(k);
+      if(c && !c.list.some(p => p.start > cur.start)) this._cache.delete(k); // só tinha esse: busca de novo
+      this.show(content);
+    }, wait);
+  }
+};
 
 /* ======================================================================
    TvSharp — grade "no pixel" no modo TV
@@ -3724,34 +3882,42 @@ const QueryModule = {
    ====================================================================== */
 const GlobalSearchModule = {
   async search(term, maxPerType){
-    maxPerType = maxPerType || 40;
     const norm = normalizeText(term).trim();
-    const result = { movie:[], live:[], series:[] };
+    // capped[tipo] = servidores que bateram no limite (tem mais resultado lá do que o mostrado)
+    const result = { movie:[], live:[], series:[], capped: { movie:new Set(), live:new Set(), series:new Set() } };
     if(!norm) return result;
 
     const servers = Array.from(State.servers.values()).filter(serverHasBlocks);
+    // Limite POR SERVIDOR (antes era um limite geral de 40 e o 1º servidor
+    // ocupava tudo — os outros apareciam com 0). Total por tipo fica ~120.
+    maxPerType = maxPerType || Math.max(10, Math.min(40, Math.floor(120 / Math.max(1, servers.length))));
 
     const contentScan = async (type) => {
       const tipoInt = TIPO_INT[type];
       const favSet = await QueryModule._favoriteIdSet(type);
       const catNorm = new Map(); // categoria -> normalizada (poucas categorias, muitas linhas)
       for(const srv of servers){
+        let got = 0;
         for(const b of blockKeys(srv, tipoInt)){
-          if(result[type].length >= maxPerType) return;
+          if(result.capped[type].has(srv.id)) break;
           const txt = await IDB.getByKey(STORES.searchBlocks, [srv.id, tipoInt, b]);
           if(!txt) continue;
           const linhas = txt.split('\n');
           const hits = [];
-          for(let i = 0; i < linhas.length && result[type].length + hits.length < maxPerType; i++){
+          for(let i = 0; i < linhas.length; i++){
             const L = linhas[i], tab = L.indexOf('\t');
             const nome = tab >= 0 ? L.slice(0, tab) : L;
-            if(nome.indexOf(norm) !== -1){ hits.push(i); continue; }
-            if(tab >= 0){
+            let hit = nome.indexOf(norm) !== -1;
+            if(!hit && tab >= 0){
               const cat = L.slice(tab + 1);
               let cn = catNorm.get(cat);
               if(cn === undefined){ cn = normalizeText(cat); catNorm.set(cat, cn); }
-              if(cn.indexOf(norm) !== -1) hits.push(i);
+              hit = cn.indexOf(norm) !== -1;
             }
+            if(!hit) continue;
+            // achou mais um além do limite: marca "tem mais" e para este servidor
+            if(got + hits.length >= maxPerType){ result.capped[type].add(srv.id); break; }
+            hits.push(i);
           }
           if(!hits.length) continue;
           const bloco = await IDB.getByKey(STORES.contentBlocks, [srv.id, tipoInt, b]);
@@ -3761,6 +3927,7 @@ const GlobalSearchModule = {
             const c = QueryModule.tupleToContent(bloco[i], tipoInt, srv.id, b, i);
             c.favorito = favSet.has(c.id);
             result[type].push(c);
+            got++;
           }
         }
       }
@@ -3769,16 +3936,17 @@ const GlobalSearchModule = {
     const seriesScan = async () => {
       const favIds = await QueryModule._favoriteIdSet('series');
       for(const srv of servers){
-        for(let b = 0; b < (srv.blocosSeries || 0); b++){
-          if(result.series.length >= maxPerType) return;
+        let got = 0;
+        outer: for(let b = 0; b < (srv.blocosSeries || 0); b++){
           const bloco = await IDB.getByKey(STORES.seriesBlocks, [srv.id, b]);
           if(!bloco) continue;
           for(const t of bloco){
-            if(result.series.length >= maxPerType) return;
             if(normalizeText(t[1]).indexOf(norm) !== -1){
+              if(got >= maxPerType){ result.capped.series.add(srv.id); break outer; }
               const s = QueryModule.seriesTupleToSummary(t, srv.id);
               s.favorito = favIds.has(s.key);
               result.series.push(s);
+              got++;
             }
           }
         }
@@ -3837,7 +4005,7 @@ let lastSearchState = null; // { term, results } — evita repetir a mesma busca
 
 function openSearchPopup(term, initialFilters){
   if(activeSearchOverlay) return activeSearchOverlay; // já tem um aberto, não duplica
-  let currentResults = { movie:[], live:[], series:[] };
+  let currentResults = null; // null = ainda não buscou (chips de servidor sem contador)
   let activeType = (initialFilters && initialFilters.activeType) || 'all';
   let activeServer = (initialFilters && initialFilters.activeServer) || 'all';
   let searchToken = 0;
@@ -3888,23 +4056,49 @@ function openSearchPopup(term, initialFilters){
       series: countByServer(currentResults.series), movie: countByServer(currentResults.movie), live: countByServer(currentResults.live)
     };
     const labels = [['all','Tudo'], ['series','Séries'], ['movie','Filmes'], ['live','Ao Vivo']];
+    const cap = currentResults.capped;
+    const more = (t) => !!cap && (t === 'all' ? ['series','movie','live'].some(more)
+      : (activeServer === 'all' ? cap[t].size > 0 : cap[t].has(activeServer)));
     for(const [key,label] of labels){
-      tabsRow.appendChild(el('button', { class:'chip'+(activeType===key?' active':''), onclick:((k)=>()=>{ activeType=k; renderResults(); })(key) }, [label + ' (' + counts[key] + ')']));
+      tabsRow.appendChild(el('button', { class:'chip'+(activeType===key?' active':''), onclick:((k)=>()=>{ activeType=k; renderResults(); })(key) }, [label + ' (' + counts[key] + (more(key) ? '+' : '') + ')']));
     }
+  }
+
+  // Contador por servidor, respeitando o filtro de tipo (Tudo/Séries/Filmes/Ao Vivo)
+  function countsPerServer(){
+    if(!currentResults) return null;
+    const types = activeType === 'all' ? ['series','movie','live'] : [activeType];
+    const per = new Map(); let total = 0;
+    const capped = new Set();
+    for(const t of types){
+      for(const it of (currentResults[t] || [])){ per.set(it.serverId, (per.get(it.serverId) || 0) + 1); total++; }
+      if(currentResults.capped) currentResults.capped[t].forEach(id => capped.add(id));
+    }
+    return { per, total, capped };
   }
 
   function renderServerChips(){
     serverRow.innerHTML = '';
     if(State.servers.size === 0) return;
-    serverRow.appendChild(el('button', { class:'chip'+(activeServer==='all'?' active':''), onclick:()=>{ activeServer='all'; renderServerChips(); renderResults(); } }, ['Todos os servidores']));
+    const c = countsPerServer();
+    // "40+" = aquele servidor tem mais resultados do que os mostrados (limite por servidor)
+    const suf = (n, plus) => c ? ' (' + n + (plus ? '+' : '') + ')' : '';
+    serverRow.appendChild(el('button', { class:'chip'+(activeServer==='all'?' active':''), onclick:()=>{ activeServer='all'; renderResults(); } }, ['Todos os servidores' + suf(c ? c.total : 0, c && c.capped.size > 0)]));
     for(const [id, s] of State.servers){
-      serverRow.appendChild(el('button', { class:'chip'+(activeServer===id?' active':''), onclick:((sid)=>()=>{ activeServer=sid; renderServerChips(); renderResults(); })(id) }, [s.nome]));
+      const n = c ? (c.per.get(id) || 0) : 0;
+      serverRow.appendChild(el('button', {
+        class:'chip'+(activeServer===id?' active':''),
+        style: (c && n === 0 && activeServer !== id) ? 'opacity:.5;' : '',
+        onclick:((sid)=>()=>{ activeServer=sid; renderResults(); })(id)
+      }, [s.nome + suf(n, c && c.capped.has(id))]));
     }
   }
 
   function renderResults(){
+    if(!currentResults){ renderServerChips(); return; }
     body.innerHTML = '';
     renderTabs();
+    renderServerChips(); // contadores dos servidores acompanham o filtro de tipo
     const groups = [];
     if(activeType==='all' || activeType==='series') groups.push(['Séries', currentResults.series, renderSeriesCard]);
     if(activeType==='all' || activeType==='movie') groups.push(['Filmes', currentResults.movie, renderContentCard]);
@@ -3956,7 +4150,7 @@ function openSearchPopup(term, initialFilters){
   // — inclusive o texto inicial vindo da caixa da topbar — passa por aqui.
   function scheduleSearch(val){
     clearTimeout(debounceT);
-    if(!val){ searchToken++; body.innerHTML = ''; tabsRow.innerHTML=''; renderServerChips(); return; }
+    if(!val){ searchToken++; currentResults = null; body.innerHTML = ''; tabsRow.innerHTML=''; renderServerChips(); return; }
     debounceT = setTimeout(function(){ runSearch(val); }, 500);
   }
 
@@ -4454,11 +4648,54 @@ const ServerModule = {
         }
         if(final && (buf || n === 0)){ await pool.send(serverId, n++, buf); buf = ''; }
       };
+      // Conexão caiu no meio do download: tenta CONTINUAR de onde parou
+      // (pedido "Range: bytes=N-"), sem perder o que já foi baixado e
+      // processado. Só aceita se o servidor responder 206 começando
+      // exatamente no byte N e for o MESMO arquivo (mesmo tamanho total /
+      // ETag / Last-Modified). Lista gerada na hora (ex: get.php) quase
+      // sempre não suporta — aí cai no plano B: recomeçar do zero.
+      const etag0 = response.headers.get('ETag'), lastMod0 = response.headers.get('Last-Modified');
+      const RESUMES = 3, RESUME_WAIT_S = 5;
+      let resumes = 0;
+      const tryResume = async (origErr) => {
+        if(!ServerModule.isRetryableNetworkError(origErr) || resumes >= RESUMES || bytes === 0) return null;
+        resumes++;
+        const why = origErr && (origErr.message || String(origErr));
+        pushDebugLog('Rede: "' + server.nome + '" caiu em ' + formatBytes(bytes) + ' (' + why + ') — tentando continuar de onde parou (' + resumes + '/' + RESUMES + ') em ' + RESUME_WAIT_S + 's.', true);
+        for(let sLeft = RESUME_WAIT_S; sLeft > 0; sLeft--){
+          report({ phase:'download', status:'processing', downloaded: bytes, total: totalBytes, speed: 0,
+            retryIn: sLeft, retryAttempt: resumes, retryMax: RESUMES, retryWhy: String(why), retryResume: true });
+          await new Promise(res => setTimeout(res, 1000));
+        }
+        let r2;
+        try{ r2 = await fetch(server.url, { cache: 'no-store', headers: { 'Range': 'bytes=' + bytes + '-' } }); }
+        catch(e){ return tryResume(e); } // rede ainda fora: gasta mais uma tentativa
+        const cr = r2.headers.get('Content-Range') || '';
+        const m = /^bytes\s+(\d+)-\d+\/(\d+|\*)/i.exec(cr);
+        const sameFile = (!etag0 || !r2.headers.get('ETag') || r2.headers.get('ETag') === etag0) &&
+                         (!lastMod0 || !r2.headers.get('Last-Modified') || r2.headers.get('Last-Modified') === lastMod0) &&
+                         (!totalBytes || !m || m[2] === '*' || +m[2] === totalBytes);
+        if(r2.status === 206 && m && +m[1] === bytes && sameFile && r2.body && r2.body.getReader){
+          pushDebugLog('Rede: "' + server.nome + '" continuou do byte ' + bytes + ' (' + formatBytes(bytes) + ' aproveitados).');
+          return r2.body.getReader();
+        }
+        try{ r2.body && r2.body.cancel && r2.body.cancel(); }catch(e){}
+        pushDebugLog('Rede: o servidor de "' + server.nome + '" não permite continuar (' + (r2.status === 200 ? 'mandou a lista inteira de novo' : 'HTTP ' + r2.status) + ') — recomeçando do zero.', true);
+        return null;
+      };
       if(response.body && response.body.getReader){
-        const reader = response.body.getReader();
+        let reader = response.body.getReader();
         for(;;){
           const tr = performance.now();
-          const { done, value } = await reader.read();
+          let chunk;
+          try{ chunk = await reader.read(); }
+          catch(readErr){
+            const r2 = await tryResume(readErr);
+            if(!r2) throw readErr; // não deu pra continuar: erro vai pro "tentar de novo do zero"
+            reader = r2;
+            continue;
+          }
+          const { done, value } = chunk;
           tNet += performance.now() - tr;
           if(done) break;
           bytes += value.byteLength;
@@ -4996,6 +5233,7 @@ const PlayerModule = {
     }
     overlay.style.display = 'flex';
     overlay.classList.toggle('live-mode', content.tipo === 'live');
+    try{ LiveEpg.show(content); }catch(e){}
     if(wasClosed) pushNavState('player');
 
     this._ensureVideoListeners();
@@ -6545,6 +6783,7 @@ const PlayerModule = {
 
   close(){
     this.playToken++; // invalidate any pending retries/callbacks
+    try{ LiveEpg.stop(); }catch(e){}
     if(document.fullscreenElement) document.exitFullscreen().catch(()=>{});
     this._unlockOrientation();
     this._setNativeImmersive(false);
@@ -7971,7 +8210,11 @@ async function runImportWithProgressModal(servers){
     if(patch.phase === 'download'){
       dotEl.className = 'status-dot processing';
       statusEl.className = 'sp-status proc';
-      if(patch.retryIn){
+      if(patch.retryIn && patch.retryResume){
+        statusEl.textContent = 'Conexão caiu — continuando de onde parou (' + patch.retryAttempt + '/' + patch.retryMax + ') em ' + patch.retryIn + 's';
+        if(patch.total) fillEl.style.width = Math.min(100, (patch.downloaded/patch.total)*100) + '%';
+        detailEl.textContent = formatBytes(patch.downloaded) + ' já baixados' + (patch.retryWhy ? ' • ' + patch.retryWhy : '');
+      } else if(patch.retryIn){
         statusEl.textContent = 'Erro de rede — tentando de novo (' + patch.retryAttempt + '/' + patch.retryMax + ') em ' + patch.retryIn + 's';
         fillEl.style.width = '0%';
         detailEl.textContent = patch.retryWhy || '';
@@ -8083,7 +8326,13 @@ async function runImportWithProgressModal(servers){
     showMinimizedPillDoneThenRemove('Importação concluída: ' + lastCompleted + '/' + lastTotal);
     overlay.remove();
   } else {
-    closeBtnWrap.appendChild(el('button', { class:'btn primary', onclick:()=>{ overlay.remove(); Router.render(); } }, ['Fechar']));
+    const doneBtn = el('button', { class:'btn primary', onclick:()=>{ overlay.remove(); Router.render(); } }, ['Fechar']);
+    closeBtnWrap.appendChild(doneBtn);
+    // controle: foco no "Fechar" — só se a janela ainda está aberta na tela
+    // (se foi minimizada/fechada antes de terminar, não mexe no foco)
+    setTimeout(() => {
+      if(TvNav.on() && overlay.isConnected && overlay.style.display !== 'none' && doneBtn.isConnected) TvNav.focus(doneBtn);
+    }, 150);
   }
 
   Router.render();
@@ -8303,7 +8552,7 @@ async function renderSettingsView(container){
   });
   tvGroup.appendChild(tvSel);
   tvGroup.appendChild(el('div', { style:'font-size:11px;color:var(--text-2);margin-top:4px;' }, [
-    'Agora: ' + (PerfMode.isTv() ? 'ligado' : 'desligado') + '. Setas movem entre os itens; OK abre; segure OK num card pra favoritar; em campo de texto, OK pra digitar.'
+    'Agora: ' + (PerfMode.isTv() ? 'ligado' : 'desligado') + '. Setas movem entre os itens; OK abre; segure OK num card pra ver as opções (favoritar, baixar, remover); em campo de texto, OK pra digitar.'
   ]));
   perfRow.appendChild(tvGroup);
   perfBlock.appendChild(perfRow);
@@ -8940,7 +9189,8 @@ const TvNav = {
 
   /** Camada de cima: janela aberta > busca > player > app. */
   scope(){
-    const modals = document.querySelectorAll('.modal-overlay');
+    // janela escondida (ex: importação minimizada) não conta — senão as setas ficavam presas nela
+    const modals = Array.from(document.querySelectorAll('.modal-overlay')).filter(m => m.style.display !== 'none' && m.getClientRects().length);
     if(modals.length) return modals[modals.length - 1];
     if(activeSearchOverlay && activeSearchOverlay.overlay && activeSearchOverlay.overlay.isConnected) return activeSearchOverlay.overlay;
     const player = document.getElementById('player-overlay');
@@ -9007,12 +9257,24 @@ const TvNav = {
       this.focusDefault(); return;
     }
     const inSidebar = !!cur.closest('#sidebar');
-    // Menu → direita: volta pro último item do conteúdo (se ainda existe)
-    if(inSidebar && dir === 'right' && this._lastContent && this._lastContent.isConnected && scope.contains(this._lastContent)){
-      const r = this._lastContent.getBoundingClientRect();
-      if(r.width > 0){ this.focus(this._lastContent); return; }
+    // Menu → direita: primeiro a pesquisa geral (de lá, ↓ desce pro conteúdo)
+    if(inSidebar && dir === 'right'){
+      const gs = document.getElementById('global-search');
+      if(gs && gs.getClientRects().length && scope.contains(gs)){ this.focus(gs); return; }
     }
-    const target = this.pick(cur, dir, this.candidates(scope));
+    const all = this.candidates(scope);
+    const contentArea = document.getElementById('content-area');
+    let target = null;
+    // Dentro do conteúdo (ou descendo da barra de cima): procura primeiro SÓ no
+    // conteúdo — inclusive o que está rolado pra fora da tela. A pesquisa geral
+    // / barra de cima só recebe o foco quando não há mais nada naquela direção.
+    const inContent = contentArea && contentArea.contains(cur);
+    const inTopbar = !!cur.closest('#topbar');
+    if(contentArea && scope.id === 'app' && (inContent || (inTopbar && dir === 'down'))){
+      target = this.pick(cur, dir, all.filter(c => contentArea.contains(c.el)));
+    }
+    // ↑/↓ no conteúdo nunca pulam pra barra lateral (só ←)
+    if(!target) target = this.pick(cur, dir, (inContent && (dir === 'up' || dir === 'down')) ? all.filter(c => !c.el.closest('#sidebar')) : all);
     if(!target) return;
     // Conteúdo → menu: cai no item ATIVO do menu (não num aleatório)
     if(!inSidebar && target.closest('#sidebar')){
@@ -9044,6 +9306,80 @@ const TvNav = {
         if(first) this.focus(first); else { const n = document.querySelector('#sidebar .nav-item.active'); if(n) this.focus(n); }
       }
     }, 60);
+  },
+
+  /** Segurar OK num card: janelinha com TODOS os botões do card (favoritar,
+   *  baixar, ✕ remover do Continuar Assistindo…), que com o controle não
+   *  dá pra alcançar — eles ficam por cima da capa. */
+  openCardMenu(card){
+    const btns = Array.from(card.querySelectorAll('button')).filter(b => !b.disabled);
+    const label = (b) => {
+      const t = (b.textContent || '').trim();
+      if(t.indexOf('★') !== -1) return '★ Remover dos favoritos';
+      if(t.indexOf('☆') !== -1) return '☆ Adicionar aos favoritos';
+      if(t.indexOf('⬇') !== -1) return '⬇ Baixar';
+      if(b.title) return (t && t.length <= 2 ? t + ' ' : '') + b.title;
+      return t || 'Ação';
+    };
+    const nameEl = card.querySelector('.info .name');
+    const overlay = el('div', { class:'modal-overlay tv-select-overlay' });
+    const box = el('div', { class:'modal-box tv-select-box' });
+    box.appendChild(el('h3', {}, [nameEl ? nameEl.textContent : 'Opções']));
+    const list = el('div', { class:'tv-select-list' });
+    const done = () => { overlay.remove(); };
+    const back = () => { if(card.isConnected) this.focus(card); else this.afterRender(); };
+    const open = el('button', { class:'tv-select-opt' }, ['▶ Abrir']);
+    open.addEventListener('click', () => { done(); card.click(); });
+    list.appendChild(open);
+    for(const b of btns){
+      const o = el('button', { class:'tv-select-opt' }, [label(b)]);
+      o.addEventListener('click', () => {
+        const txt = label(b);
+        done();
+        b.click();
+        if(/favoritos/.test(txt)) this.hint(txt.indexOf('Remover') !== -1 ? '☆ Removido dos favoritos' : '★ Adicionado aos favoritos');
+        setTimeout(back, 120);
+      });
+      list.appendChild(o);
+    }
+    const cancel = el('button', { class:'tv-select-opt' }, ['Cancelar']);
+    cancel.addEventListener('click', () => { done(); back(); });
+    list.appendChild(cancel);
+    box.appendChild(list);
+    overlay.appendChild(box);
+    overlay.addEventListener('click', (e) => { if(e.target === overlay){ done(); back(); } });
+    overlay._tvOpener = card;
+    document.body.appendChild(overlay);
+    setTimeout(() => this.focus(list.querySelector('.tv-select-opt')), 20);
+  },
+
+  /** Janela (popup) apareceu: leva o foco pra dentro dela (senão o foco ficava
+   *  num botão atrás e o OK clicava nele). Ao fechar, devolve pro botão que abriu. */
+  _onModalAdded(ov){
+    const a = document.activeElement;
+    if(!ov._tvOpener && a && a !== document.body && !ov.contains(a)) ov._tvOpener = a;
+    setTimeout(() => {
+      if(!this.on() || !ov.isConnected || ov.style.display === 'none') return;
+      const cur = document.activeElement;
+      if(cur && ov.contains(cur)) return; // a própria janela já pôs o foco onde quer
+      const c = this.candidates(ov);
+      // nada pra focar na janela (ex: importando vários servidores): pelo menos
+      // tira o foco do botão de trás, pra um OK não clicar nele
+      if(!c.length){ try{ if(cur && cur !== document.body) cur.blur(); }catch(e){} return; }
+      // 1º item de verdade (o × de fechar fica pra cima, a uma seta de distância)
+      const first = c.find(x => !x.el.classList.contains('modal-close-x')) || c[0];
+      this.focus(first.el);
+    }, 120);
+  },
+  _onModalRemoved(ov){
+    setTimeout(() => {
+      if(!this.on()) return;
+      const a = document.activeElement;
+      if(a && a !== document.body && a.isConnected && a.getClientRects().length) return;
+      const op = ov._tvOpener;
+      if(op && op.isConnected && op.getClientRects().length && this.scope().contains(op)) this.focus(op);
+      else this.afterRender();
+    }, 80);
   },
 
   hint(text){
@@ -9096,7 +9432,13 @@ const TvNav = {
     try{
       new MutationObserver((muts) => {
         if(!this.on()) return;
-        for(const m of muts) for(const n of m.addedNodes) if(n.nodeType === 1) this.makeFocusable(n);
+        for(const m of muts){
+          for(const n of m.addedNodes) if(n.nodeType === 1){
+            this.makeFocusable(n);
+            if(n.classList.contains('modal-overlay')) this._onModalAdded(n);
+          }
+          for(const n of m.removedNodes) if(n.nodeType === 1 && n.classList && n.classList.contains('modal-overlay')) this._onModalRemoved(n);
+        }
       }).observe(document.body, { childList: true, subtree: true });
     }catch(e){}
     // Campo de texto recebeu foco pelo controle: trava (sem teclado) até apertar OK
@@ -9204,14 +9546,14 @@ const TvNav = {
         clearTimeout(this._okTimer);
         this._okTimer = setTimeout(() => {
           this._okFired = true;
-          // o botão de estrela (o card também pode ter o de baixar, com a mesma classe)
-          const fav = Array.from(a.querySelectorAll('.fav-btn')).find(b => /[★☆]/.test(b.textContent));
-          if(fav){
-            const wasFav = fav.textContent.indexOf('★') !== -1;
-            fav.click();
-            this.hint(wasFav ? '☆ Removido dos favoritos' : '★ Adicionado aos favoritos');
-          }
+          this.openCardMenu(a);
         }, 650);
+        return;
+      }
+      // tecla de menu/opções do controle (quando existe) num card: mesmo menu
+      if((k === 'ContextMenu' || k === 'Menu' || e.keyCode === 93 || e.keyCode === 82) && a && a.classList && a.classList.contains('content-card')){
+        e.preventDefault(); e.stopPropagation();
+        this.openCardMenu(a);
         return;
       }
 
@@ -9234,7 +9576,7 @@ const TvNav = {
     setTimeout(() => {
       if(!this.on()) return;
       try{ if(localStorage.getItem('sm_tv_hint_v1')) return; localStorage.setItem('sm_tv_hint_v1', '1'); }catch(e){}
-      this.hint('Setas navegam • OK abre • segure OK no card pra favoritar');
+      this.hint('Setas navegam • OK abre • segure OK no card: favoritar, remover…');
     }, 1500);
   }
 };
