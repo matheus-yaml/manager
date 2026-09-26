@@ -8,7 +8,32 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>const APP_VERSION = '1.0.57';</script>
+<script>var APP_VERSION = '1.0.60';
+/* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
+   (Configurações), ela fica guardada no localStorage e é carregada aqui no
+   lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
+   Se você abrir um index.html diferente (outra versão), a guardada é descartada. */
+(function(){
+  try{
+    if(window.cordova || window.__SM_OVERRIDE_DONE) return;
+    if(localStorage.getItem('__SM_LOADER_hash')) return; // dentro do carregador do APK
+    var html = localStorage.getItem('sm_browser_override');
+    if(!html) return;
+    var meta = JSON.parse(localStorage.getItem('sm_browser_override_meta') || 'null');
+    if(!meta || meta.base !== APP_VERSION){
+      localStorage.removeItem('sm_browser_override'); localStorage.removeItem('sm_browser_override_meta');
+      return;
+    }
+    window.__SM_OVERRIDE_DONE = true;
+    window.__SM_FILE_VERSION = APP_VERSION;
+    window.__SM_OVERRIDE_META = meta;
+    // versões antigas declaram "const APP_VERSION" (não pode declarar 2x na mesma janela)
+    html = html.replace(/(const|let)\s+APP_VERSION\s*=/, 'var APP_VERSION =');
+    document.write('<plaintext style="display:none">'); // o resto deste arquivo não roda
+    setTimeout(function(){ document.open(); document.write(html); document.close(); }, 0);
+  }catch(e){}
+})();
+</script>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1938,6 +1963,7 @@ const MemMonitor = {
       lines.push('JavaScript da página: ' + this._mb(pm.usedJSHeapSize) + ' em uso (limite ' + this._mb(pm.jsHeapSizeLimit) + ')');
     }
     if(this._storage) lines.push(this._storage);
+    lines.push(UpdateLog.statusLine());
     box.textContent = 'Memória (atualiza a cada 3s)\n' + lines.join('\n');
   }
 };
@@ -2171,6 +2197,254 @@ const MemGuard = {
     State.continueCache = null;
     const imgs = ImageMem.releaseOffscreen();
     pushDebugLog('🧹 Liberando memória (' + reason + '): ' + pages + ' páginas em cache e ' + imgs + ' imagens fora da tela.', true);
+  }
+};
+
+/* ======================================================================
+   LOG DO ATUALIZADOR DO APK (sem mexer no index do APK)
+   ------------------------------------------------------------------
+   O carregador do APK injeta nesta página um "monitor" que, a cada 15s,
+   compara esta versão com a do GitHub — e só escreve no console
+   ("[Manager] ..."). Aqui a gente escuta o console e resume cada
+   verificação numa linha do painel de diagnóstico, + um status fixo
+   (última checagem, resultado, versão salva no aparelho).
+   ====================================================================== */
+const UpdateLog = {
+  last: null,        // { at, result: 'ok'|'mudou'|'erro'|'sem-hash', detail }
+  started: false,
+  _cycle: null,
+  _savedDate: null,
+  _fmt(a){
+    if(a instanceof Error) return a.message;
+    if(a && typeof a === 'object'){ try{ return a.message || JSON.stringify(a); }catch(e){ return String(a); } }
+    return String(a);
+  },
+  _onLine(args){
+    const first = String(args[0] || '');
+    if(first.indexOf('[Manager]') !== 0) {
+      // console.warn(error) solto logo depois de "Falha na verificação"
+      if(this._cycle && this._cycle.failed && !this._cycle.err) this._cycle.err = args.map(a => this._fmt(a)).join(' ');
+      return;
+    }
+    const txt = args.map(a => this._fmt(a)).join(' ').replace('[Manager] ', '');
+    const hhmm = new Date().toLocaleTimeString();
+    if(/Monitor de atualização iniciado/.test(txt)){ this.started = true; pushDebugLog('🔄 Atualizador do APK ativo (checa o GitHub a cada 15s).'); return; }
+    if(/VERIFICANDO ATUALIZAÇÃO/.test(txt)){ this._cycle = { at: hhmm }; return; }
+    const c = this._cycle || (this._cycle = { at: hhmm });
+    let m;
+    if((m = /Código recebido:\s*(\d+)/.exec(txt))) c.size = +m[1];
+    else if((m = /Hash local:\s*(\S+)/.exec(txt))) c.local = m[1];
+    else if((m = /Hash GitHub:\s*(\S+)/.exec(txt))) c.remote = m[1];
+    else if(/Hash local não encontrado/.test(txt)){
+      this.last = { at: c.at, result: 'sem-hash', detail: 'sem versão salva no aparelho pra comparar' };
+      pushDebugLog('🔄 ' + c.at + ' — não deu pra comparar: nenhuma versão salva no aparelho.', true);
+    } else if(/Nenhuma alteração/.test(txt)){
+      this.last = { at: c.at, result: 'ok', detail: 'igual ao GitHub' + (c.size ? ' (' + Math.round(c.size / 1024) + ' KB)' : '') };
+      // "sem mudanças" a cada 15s lotaria o painel: registra só a 1ª e depois a cada 5 min
+      if(!this._lastOkLog || Date.now() - this._lastOkLog > 300000){
+        this._lastOkLog = Date.now();
+        pushDebugLog('🔄 ' + c.at + ' — verificado: sem versão nova no GitHub' + (c.remote ? ' (hash ' + c.remote.slice(0, 8) + '…)' : '') + '.');
+      }
+    } else if(/ALTERAÇÃO DETECTADA/.test(txt)){
+      if(c.flagged) return; c.flagged = true;
+      this.last = { at: c.at, result: 'mudou', detail: 'versão nova encontrada — aplicando' };
+      pushDebugLog('🔄 ' + c.at + ' — VERSÃO NOVA no GitHub' + (c.size ? ' (' + Math.round(c.size / 1024) + ' KB)' : '') + '. Aplicando e recarregando…', true);
+      // a página vai recarregar: guarda o aviso pra aparecer na versão nova
+      try{ localStorage.setItem('sm_last_update', JSON.stringify({ from: APP_VERSION, at: Date.now() })); }catch(e){}
+    } else if(/Falha na verificação/.test(txt)){
+      c.failed = true;
+      setTimeout(() => {
+        this.last = { at: c.at, result: 'erro', detail: c.err || 'falha ao verificar' };
+        pushDebugLog('🔄 ' + c.at + ' — falha ao verificar atualização: ' + (c.err || 'sem detalhes') + '. O app continua normal.', true);
+      }, 50);
+    } else if(/erro|falha|error/i.test(txt) && !/continuará funcionando/.test(txt)){
+      pushDebugLog('🔄 ' + txt, true);
+    }
+  },
+  install(){
+    if(this._installed) return;
+    this._installed = true;
+    // acabou de ser atualizado pelo carregador? (aviso guardado antes de recarregar)
+    try{
+      const prev = JSON.parse(localStorage.getItem('sm_last_update') || 'null');
+      if(prev){
+        localStorage.removeItem('sm_last_update');
+        const when = new Date(prev.at).toLocaleString();
+        this.updatedFrom = prev.from !== APP_VERSION ? { from: prev.from, when } : null;
+        pushDebugLog('🔄 Atualizado ' + (prev.manual ? 'manualmente ' : 'automaticamente ') + (prev.from !== APP_VERSION ? 'da v' + prev.from + ' para a v' + APP_VERSION : '(mesmo número de versão, conteúdo diferente)') + ' em ' + when + '.');
+      }
+    }catch(e){}
+    ['log', 'warn', 'error'].forEach((k) => {
+      const orig = console[k] ? console[k].bind(console) : function(){};
+      console[k] = (...args) => {
+        try{ UpdateLog._onLine(args); }catch(e){}
+        return orig(...args);
+      };
+    });
+    // Quando o carregador gravou a versão que está no aparelho (banco dele, só leitura)
+    if(window.cordova && window.indexedDB){
+      try{
+        const r = indexedDB.open('__ManagerLoaderDB');
+        r.onsuccess = () => {
+          const db = r.result;
+          try{
+            if(!db.objectStoreNames.contains('data')){ db.close(); return; }
+            const g = db.transaction('data').objectStore('data').get('date');
+            g.onsuccess = () => { if(g.result) this._savedDate = new Date(g.result); db.close(); };
+            g.onerror = () => db.close();
+          }catch(e){ db.close(); }
+        };
+      }catch(e){}
+    }
+  },
+  statusLine(){
+    const parts = [];
+    if(this.last){
+      const label = { ok:'✓ em dia', mudou:'↻ versão nova, aplicando', erro:'✗ erro', 'sem-hash':'? sem versão salva' }[this.last.result] || this.last.result;
+      parts.push('Atualização: ' + label + ' (' + this.last.at + ')' + (this.last.result === 'erro' ? ' — ' + this.last.detail : ''));
+    } else if(this.started){
+      parts.push('Atualização: aguardando 1ª checagem…');
+    } else {
+      parts.push(window.cordova ? 'Atualização: sem monitor (ainda não começou)' : 'Atualização: automática só no APK — no navegador use o botão abaixo');
+    }
+    if(window.__SM_OVERRIDE_META) parts.push('rodando v' + APP_VERSION + ' baixada manualmente (o arquivo aberto é a v' + window.__SM_FILE_VERSION + ')');
+    else parts.push('rodando v' + APP_VERSION + (this.updatedFrom ? ' (veio da v' + this.updatedFrom.from + ')' : '') + (this._savedDate ? ', salva no aparelho em ' + this._savedDate.toLocaleString() : ''));
+    return parts.join(' • ');
+  }
+};
+UpdateLog.install();
+
+/* ======================================================================
+   ATUALIZAÇÃO MANUAL (Configurações) — sem mexer no index do APK
+   ------------------------------------------------------------------
+   Baixa o index.html de uma URL (padrão: a mesma do GitHub que o
+   atualizador automático usa), confere se é mesmo o app, grava no mesmo
+   lugar onde o carregador do APK guarda a versão (banco
+   __ManagerLoaderDB + cópia no localStorage) e recarrega.
+   - URL padrão: grava junto o "hash" do conteúdo, igual o carregador faz.
+   - URL diferente: mantém o hash que já estava salvo, então o atualizador
+     automático NÃO desfaz a versão manual a cada 15s — ela fica até sair
+     uma versão NOVA no GitHub (aí o automático assume de novo).
+   A URL digitada fica salva, mas só é usada por este botão.
+   ====================================================================== */
+const ManualUpdate = {
+  DEFAULT_URL: 'https://raw.githubusercontent.com/matheus-yaml/manager/refs/heads/main/index.html',
+  KEY: 'sm_manual_update_url',
+  getUrl(){ try{ return localStorage.getItem(this.KEY) || this.DEFAULT_URL; }catch(e){ return this.DEFAULT_URL; } },
+  setUrl(u){ try{ if(!u || u === this.DEFAULT_URL) localStorage.removeItem(this.KEY); else localStorage.setItem(this.KEY, u); }catch(e){} },
+  inApk(){ return !!window.cordova; }, // no APK grava onde o carregador guarda a versão
+  overrideActive(){ return !!window.__SM_OVERRIDE_META; },
+  revertToFile(){
+    try{ localStorage.removeItem('sm_browser_override'); localStorage.removeItem('sm_browser_override_meta'); }catch(e){}
+    pushDebugLog('🔄 Voltando para a versão do arquivo (v' + (window.__SM_FILE_VERSION || APP_VERSION) + ')…');
+    setTimeout(() => location.reload(), 300);
+  },
+  _saveBrowser(html, ver, url){
+    try{
+      localStorage.setItem('sm_browser_override', html);
+      localStorage.setItem('sm_browser_override_meta', JSON.stringify({ base: window.__SM_FILE_VERSION || APP_VERSION, ver, url, at: Date.now() }));
+      return true;
+    }catch(e){
+      try{ localStorage.removeItem('sm_browser_override'); localStorage.removeItem('sm_browser_override_meta'); }catch(_){}
+      return false;
+    }
+  },
+  async sha256(text){ // MESMA conta do carregador (makeHash)
+    if(typeof crypto !== 'undefined' && crypto.subtle){
+      const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+      return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+    let h = 0; for(let i = 0; i < text.length; i++){ h = ((h << 5) - h) + text.charCodeAt(i); h |= 0; }
+    return String(h);
+  },
+  _openLoaderDB(){
+    return new Promise((resolve) => {
+      try{
+        const r = indexedDB.open('__ManagerLoaderDB');
+        r.onsuccess = () => { const db = r.result; if(db.objectStoreNames.contains('data')) resolve(db); else { db.close(); resolve(null); } };
+        r.onerror = () => resolve(null);
+      }catch(e){ resolve(null); }
+    });
+  },
+  async _storedHash(){
+    const db = await this._openLoaderDB();
+    if(db){
+      const h = await new Promise((res) => { try{ const g = db.transaction('data').objectStore('data').get('hash'); g.onsuccess = () => res(g.result || null); g.onerror = () => res(null); }catch(e){ res(null); } });
+      db.close();
+      if(h) return h;
+    }
+    try{ return localStorage.getItem('__SM_LOADER_hash'); }catch(e){ return null; }
+  },
+  async _save(html, hash){
+    const db = await this._openLoaderDB();
+    let ok = false;
+    if(db){
+      ok = await new Promise((res) => {
+        try{
+          const tx = db.transaction('data', 'readwrite');
+          const st = tx.objectStore('data');
+          st.put(html, 'html'); st.put(hash, 'hash'); st.put(Date.now(), 'date');
+          tx.oncomplete = () => res(true); tx.onerror = tx.onabort = () => res(false);
+        }catch(e){ res(false); }
+      });
+      db.close();
+    }
+    try{
+      localStorage.setItem('__SM_LOADER_html', html);
+      localStorage.setItem('__SM_LOADER_hash', hash);
+      localStorage.setItem('__SM_LOADER_date', String(Date.now()));
+      ok = true;
+    }catch(e){}
+    return ok;
+  },
+  /** onStatus(texto, erro?) */
+  async run(url, onStatus){
+    url = (url || '').trim() || this.DEFAULT_URL;
+    const isDefault = url === this.DEFAULT_URL;
+    this.setUrl(url);
+    onStatus('Baixando ' + url + ' …');
+    pushDebugLog('🔄 Atualização manual: baixando ' + url);
+    let html;
+    try{
+      const resp = await fetch(url + (url.indexOf('?') === -1 ? '?' : '&') + 't=' + Date.now(), { cache: 'no-store' });
+      if(!resp.ok) throw new Error('HTTP ' + resp.status);
+      html = await resp.text();
+    }catch(err){
+      const msg = 'Não consegui baixar: ' + (err && err.message || err);
+      onStatus(msg, true); pushDebugLog('🔄 Atualização manual: ' + msg, true);
+      return false;
+    }
+    // confere se é mesmo o app (e não uma página de erro/login)
+    const vm = /APP_VERSION\s*=\s*['"]([^'"]+)['"]/.exec(html);
+    if(!vm || html.length < 20000 || !/<html/i.test(html)){
+      const msg = 'O arquivo baixado não parece ser o app (' + Math.round(html.length / 1024) + ' KB, sem APP_VERSION). Nada foi alterado.';
+      onStatus(msg, true); pushDebugLog('🔄 Atualização manual: ' + msg, true);
+      return false;
+    }
+    const newVer = vm[1];
+    if(!confirm('Instalar a versão v' + newVer + ' (' + Math.round(html.length / 1024) + ' KB)?\nVocê está na v' + APP_VERSION + '. O app vai recarregar.')){
+      onStatus('Cancelado. Nada foi alterado.');
+      return false;
+    }
+    if(!this.inApk()){
+      if(!this._saveBrowser(html, newVer, url)){ onStatus('Sem espaço no navegador para guardar a versão nova.', true); return false; }
+      try{ localStorage.setItem('sm_last_update', JSON.stringify({ from: APP_VERSION, at: Date.now(), manual: true })); }catch(e){}
+      pushDebugLog('🔄 Atualização manual: v' + newVer + ' guardada no navegador — recarregando…');
+      onStatus('Versão v' + newVer + ' instalada. Recarregando…');
+      setTimeout(() => location.reload(), 600);
+      return true;
+    }
+    const contentHash = await this.sha256(html);
+    // URL padrão: hash real (igual ao carregador). URL própria: mantém o hash
+    // salvo, pro atualizador automático não desfazer a versão manual.
+    const hash = isDefault ? contentHash : ((await this._storedHash()) || contentHash);
+    const ok = await this._save(html, hash);
+    if(!ok){ onStatus('Não consegui gravar a versão nova no aparelho.', true); return false; }
+    try{ localStorage.setItem('sm_last_update', JSON.stringify({ from: APP_VERSION, at: Date.now(), manual: true })); }catch(e){}
+    pushDebugLog('🔄 Atualização manual: v' + newVer + ' gravada — recarregando…');
+    onStatus('Versão v' + newVer + ' instalada. Recarregando…');
+    setTimeout(() => location.reload(), 600);
+    return true;
   }
 };
 
@@ -7564,6 +7838,51 @@ async function renderSettingsView(container){
   debugToggleRow.appendChild(el('span', {}, ['Ativar painel de diagnóstico nesta sessão']));
   debugBlock.appendChild(debugToggleRow);
   container.appendChild(debugBlock);
+
+  // Atualização do app (manual) — ver ManualUpdate
+  const updBlock = el('div', { class:'settings-block' });
+  updBlock.appendChild(el('h3', {}, ['Atualização do app']));
+  updBlock.appendChild(el('p', { style:'font-size:12.5px;color:var(--text-2);margin-bottom:10px;' }, [
+    UpdateLog.statusLine()
+  ]));
+  {
+    updBlock.appendChild(el('p', { style:'font-size:12px;color:var(--text-2);margin-bottom:10px;' }, [
+      ManualUpdate.inApk()
+        ? 'A atualização automática (GitHub, a cada 15s) continua funcionando normalmente. A URL abaixo só é usada por este botão — se for diferente da padrão, a versão baixada fica até sair uma versão nova no GitHub.'
+        : 'No navegador a versão baixada fica guardada e é aberta no lugar do arquivo. Se você abrir um index.html de outra versão, vale o arquivo novo.'
+    ]));
+    const urlGroup = el('div', { class:'form-group', style:'min-width:100%;' });
+    urlGroup.appendChild(el('label', {}, ['URL do index.html (atualização manual)']));
+    const urlInput = el('input', { type:'text', style:'width:100%;' });
+    urlInput.value = ManualUpdate.getUrl();
+    urlGroup.appendChild(urlInput);
+    updBlock.appendChild(urlGroup);
+    const updStatus = el('div', { style:'font-size:12px;color:var(--text-2);margin-top:8px;min-height:1.3em;overflow-wrap:anywhere;' });
+    const row = el('div', { style:'display:flex;gap:10px;flex-wrap:wrap;margin-top:6px;' });
+    const goBtn = el('button', { class:'btn primary' }, ['⬇ Baixar e atualizar agora']);
+    goBtn.addEventListener('click', async () => {
+      goBtn.disabled = true;
+      const setStatus = (t, err) => { updStatus.textContent = t; updStatus.style.color = err ? 'var(--danger)' : 'var(--text-2)'; };
+      const ok = await ManualUpdate.run(urlInput.value, setStatus);
+      if(!ok) goBtn.disabled = false;
+    });
+    const resetBtn = el('button', { class:'btn' }, ['↺ URL padrão']);
+    resetBtn.addEventListener('click', () => {
+      ManualUpdate.setUrl(ManualUpdate.DEFAULT_URL);
+      urlInput.value = ManualUpdate.DEFAULT_URL;
+      updStatus.style.color = 'var(--text-2)';
+      updStatus.textContent = 'URL voltou para a padrão (GitHub).';
+    });
+    row.appendChild(goBtn); row.appendChild(resetBtn);
+    if(!ManualUpdate.inApk() && ManualUpdate.overrideActive()){
+      const backBtn = el('button', { class:'btn' }, ['⟲ Voltar para a v' + window.__SM_FILE_VERSION + ' (arquivo)']);
+      backBtn.addEventListener('click', () => { if(confirm('Voltar para a versão do arquivo (v' + window.__SM_FILE_VERSION + ')? O app vai recarregar.')) ManualUpdate.revertToFile(); });
+      row.appendChild(backBtn);
+    }
+    updBlock.appendChild(row);
+    updBlock.appendChild(updStatus);
+  }
+  container.appendChild(updBlock);
 
   // Desempenho: ajustável por aparelho. Padrão = o que funciona bem num
   // computador normal; reduza em TVs/projetores Android mais fracos.
