@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.0.93';
+<script>var APP_VERSION = '1.0.95';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -31,6 +31,67 @@
     html = html.replace(/(const|let)\s+APP_VERSION\s*=/, 'var APP_VERSION =');
     document.write('<plaintext style="display:none">'); // o resto deste arquivo não roda
     setTimeout(function(){ document.open(); document.write(html); document.close(); }, 0);
+  }catch(e){}
+})();
+/* "Quem está pesando?" — mede quanto tempo cada timer/observador do app
+   leva. O que passar de 30 ms entra num placar, e o painel de diagnóstico
+   mostra os mais pesados a cada 10s junto do resumo de travadas (ver
+   PerfMode.watchLongTasks). Custa só 2 leituras de relógio por chamada. */
+(function(){
+  if(window.__SM_PROF) return;
+  var P = window.__SM_PROF = { acc: new Map(), enabled: false };
+  function label(fn, kind){
+    var t = '';
+    try{ t = fn.name || String(fn).replace(/\s+/g, ' ').slice(0, 70); }catch(e){}
+    return kind + ': ' + t;
+  }
+  P.wrap = function(fn, kind){
+    if(typeof fn !== 'function') return fn;
+    var lb = null;
+    return function(){
+      if(!P.enabled) return fn.apply(this, arguments); // diagnóstico desligado: não mede nada
+      var t0 = performance.now();
+      try{ return fn.apply(this, arguments); }
+      finally{
+        var d = performance.now() - t0;
+        if(d > 30){
+          if(!lb) lb = label(fn, kind);
+          var a = P.acc.get(lb) || { n: 0, t: 0, max: 0 };
+          a.n++; a.t += d; if(d > a.max) a.max = d;
+          P.acc.set(lb, a);
+        }
+      }
+    };
+  };
+  P.top = function(k){
+    var arr = [];
+    P.acc.forEach(function(v, key){ arr.push([key, v]); });
+    arr.sort(function(a, b){ return b[1].t - a[1].t; });
+    P.acc = new Map();
+    return arr.slice(0, k || 3);
+  };
+  try{
+    var st = window.setTimeout, si = window.setInterval, raf = window.requestAnimationFrame;
+    window.setTimeout = function(fn, ms){ var a = Array.prototype.slice.call(arguments); a[0] = P.wrap(fn, 'timer'); return st.apply(window, a); };
+    P.si = si;
+    window.setInterval = function(fn, ms){
+      // checagem de atualização do CARREGADOR do APK (setInterval(checkUpdate, 15s)):
+      // em vez de rodar a cada 15s, o app agenda no intervalo das Configurações
+      // (ver UpdateCheck) — sem mexer no index do APK
+      if(fn && fn.name === 'checkUpdate' && ms >= 5000 && !window.__SM_UPD_FN){
+        window.__SM_UPD_FN = fn;
+        try{ if(window.__SM_onUpdCheck) window.__SM_onUpdCheck(fn); }catch(e){}
+        return -1;
+      }
+      var a = Array.prototype.slice.call(arguments); a[0] = P.wrap(fn, 'intervalo'); return si.apply(window, a);
+    };
+    if(raf) window.requestAnimationFrame = function(fn){ return raf.call(window, P.wrap(fn, 'quadro')); };
+    ['MutationObserver', 'ResizeObserver', 'IntersectionObserver'].forEach(function(n){
+      var O = window[n]; if(!O) return;
+      var W = function(cb, opt){ return new O(P.wrap(cb, n), opt); };
+      W.prototype = O.prototype;
+      window[n] = W;
+    });
   }catch(e){}
 })();
 </script>
@@ -2060,7 +2121,7 @@ function renderDebugPanel(){
   let panel = document.getElementById('debug-panel');
   if(!panel){
     panel = el('div', { id:'debug-panel', style:
-      'position:fixed;bottom:10px;right:10px;z-index:100000;width:min(520px,94vw);height:min(56vh,440px);min-width:220px;min-height:120px;resize:both;' +
+      'position:fixed;bottom:10px;right:10px;z-index:100000;width:min(560px,94vw);height:min(82vh,640px);min-width:220px;min-height:160px;resize:both;' +
       'background:rgba(10,11,18,.92);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);border:1px solid rgba(255,255,255,.15);' +
       'border-radius:10px;font-family:monospace;font-size:11px;color:#8fd; display:flex;flex-direction:column;overflow:hidden;box-shadow:0 12px 32px -8px rgba(0,0,0,.6);'
     });
@@ -2078,6 +2139,7 @@ function renderDebugPanel(){
     const closeBtn = el('span', { style:'cursor:pointer;color:#888;font-size:15px;line-height:1;padding:0 2px;', title:'Fechar (desliga o painel — pode religar em Configurações)' }, ['×']);
     closeBtn.addEventListener('click', () => {
       State.ui.debugPanelEnabled = false;
+      PerfMode.stopDiag();
       removeDebugPanel();
       const checkbox = document.getElementById('debug-panel-toggle');
       if(checkbox) checkbox.checked = false;
@@ -2104,7 +2166,7 @@ function renderDebugPanel(){
 /** Mover (arrastando o título) e redimensionar (canto) o painel — mouse ou
  *  dedo. A posição/tamanho ficam salvos pra próxima vez. */
 const DebugPanelDrag = {
-  KEY: 'sm_debug_panel_box',
+  KEY: 'sm_debug_panel_box2', // (2: painel ficou mais alto — tamanho antigo salvo não vale mais)
   attach(panel, handle){
     try{
       const b = JSON.parse(localStorage.getItem(this.KEY) || 'null');
@@ -2363,22 +2425,38 @@ const PerfMode = {
       return 'vídeo ' + (pm._mini ? 'no quadro' : 'em tela cheia') + ' via ' + (pm._engine || '?');
     }catch(e){ return '?'; }
   },
+  /** Só com o painel de diagnóstico ligado: medir travadas e "quem está pesando". */
+  stopDiag(){
+    try{ if(this._ltObs) this._ltObs.disconnect(); }catch(e){}
+    clearInterval(this._ltInt); this._ltObs = null; this._ltInt = null;
+    if(window.__SM_PROF){ window.__SM_PROF.enabled = false; window.__SM_PROF.acc = new Map(); }
+  },
   watchLongTasks(){
+    if(this._ltObs) return;
+    if(window.__SM_PROF) window.__SM_PROF.enabled = true;
     // "Travadas" do JavaScript (> 200ms sem responder) — o que se sente como lentidão.
     try{
       // Travada grande (≥ 600 ms) aparece na hora; as menores viram um resumo a
       // cada 10s, junto com o que o player estava fazendo (pra achar o culpado)
       const acc = { n: 0, total: 0, max: 0 };
-      new PerformanceObserver((list) => {
+      this._ltObs = new PerformanceObserver((list) => {
         for(const e of list.getEntries()){
           if(e.duration < 100) continue;
           acc.n++; acc.total += e.duration; acc.max = Math.max(acc.max, e.duration);
           if(e.duration >= 600) pushDebugLog('🐢 Travada de ' + Math.round(e.duration) + ' ms (tela: ' + (State.ui && State.ui.currentView) + ', ' + PerfMode._playerDesc() + ')', true);
         }
-      }).observe({ type:'longtask', buffered:true });
-      setInterval(() => {
-        if(!acc.n) return;
+      });
+      this._ltObs.observe({ type:'longtask' });
+      this._ltInt = setInterval(() => {
+        if(!acc.n){ try{ window.__SM_PROF && window.__SM_PROF.top(); }catch(e){} return; }
         pushDebugLog('🐢 Últimos 10s: ' + acc.n + ' travada(s), ' + Math.round(acc.total) + ' ms no total (maior ' + Math.round(acc.max) + ' ms) • ' + PerfMode._playerDesc(), acc.total > 1500);
+        // quem do app estava rodando nesse tempo (o que não aparece aqui é o
+        // navegador desenhando a tela ou o próprio Android)
+        try{
+          const top = window.__SM_PROF ? window.__SM_PROF.top(3) : [];
+          if(top.length) pushDebugLog('🔎 Mais pesados do app (10s): ' + top.map(([k, v]) => k + ' — ' + v.n + '× ' + Math.round(v.t) + ' ms (maior ' + Math.round(v.max) + ')').join(' | '));
+          else pushDebugLog('🔎 Nenhum código do app passou de 30 ms — as travadas vêm do navegador desenhando a tela ou do Android.');
+        }catch(e){}
         acc.n = 0; acc.total = 0; acc.max = 0;
       }, 10000);
     }catch(e){}
@@ -2744,7 +2822,7 @@ const UpdateLog = {
     }
     const txt = args.map(a => this._fmt(a)).join(' ').replace('[Manager] ', '');
     const hhmm = new Date().toLocaleTimeString();
-    if(/Monitor de atualização iniciado/.test(txt)){ this.started = true; pushDebugLog('🔄 Atualizador do APK ativo (checa o GitHub a cada 15s).'); return; }
+    if(/Monitor de atualização iniciado/.test(txt)){ this.started = true; pushDebugLog('🔄 Atualizador do APK ativo (checa o GitHub a cada ' + UpdateCheck.label(UpdateCheck.seconds()) + ').'); return; }
     if(/VERIFICANDO ATUALIZAÇÃO/.test(txt)){ this._cycle = { at: hhmm }; return; }
     const c = this._cycle || (this._cycle = { at: hhmm });
     let m;
@@ -3096,6 +3174,12 @@ const NativeVideo = {
     setInterval(kick, 1500); // rede de segurança (barato: só manda se mudou)
   },
   probe(){
+    try{
+      if(window.cordova && window.cordova.callbackFromNative && !window.cordova.__profWrapped && window.__SM_PROF){
+        window.cordova.callbackFromNative = window.__SM_PROF.wrap(window.cordova.callbackFromNative, 'resposta do Android');
+        window.cordova.__profWrapped = true;
+      }
+    }catch(e){}
     return new Promise((res) => {
       if(this._avail !== null) return res(this._avail);
       if(!(window.cordova && typeof window.cordova.exec === 'function')){ this._avail = false; return res(false); }
@@ -3577,6 +3661,36 @@ const NetStatus = {
   }
 };
 
+/* ======================================================================
+   INTERVALO DA CHECAGEM DE ATUALIZAÇÃO (Configurações)
+   ------------------------------------------------------------------
+   O carregador do APK checa o GitHub a cada 15s (baixa o app inteiro,
+   ~540 KB por HTTPS, e calcula a "impressão digital") — no projetor isso
+   pesa na rede e no processador o tempo todo. O setInterval dele é
+   interceptado (ver o script do topo) e reagendado aqui, no intervalo
+   escolhido (padrão 1 min). "Nunca" = só pelo botão de atualizar.
+   ====================================================================== */
+const UpdateCheck = {
+  fn: null, id: null,
+  seconds(){ const v = State.settings && State.settings.updateCheckSec; return (v === 0 || v > 0) ? v : 60; },
+  attach(fn){ this.fn = fn; this.schedule(); },
+  schedule(){
+    if(this.id){ clearInterval(this.id); this.id = null; }
+    if(!this.fn) return;
+    const sec = this.seconds();
+    if(sec > 0){
+      const si = (window.__SM_PROF && window.__SM_PROF.si) || window.setInterval;
+      this.id = si.call(window, this.fn, sec * 1000);
+    }
+  },
+  label(sec){ return sec === 0 ? 'nunca (só manual)' : sec < 60 ? sec + 's' : sec < 3600 ? (sec / 60) + ' min' : (sec / 3600) + ' h'; }
+};
+window.__SM_onUpdCheck = (fn) => UpdateCheck.attach(fn);
+if(window.__SM_UPD_FN) UpdateCheck.attach(window.__SM_UPD_FN);
+
+/* ======================================================================
+   INTERVALO DA CHECAGEM — fim
+   ====================================================================== */
 /* ======================================================================
    ATUALIZAÇÃO MANUAL (Configurações) — sem mexer no index do APK
    ------------------------------------------------------------------
@@ -9787,6 +9901,7 @@ async function renderSettingsView(container){
   debugCheckbox.checked = State.ui.debugPanelEnabled;
   debugCheckbox.addEventListener('change', function(){
     State.ui.debugPanelEnabled = debugCheckbox.checked;
+    if(State.ui.debugPanelEnabled) PerfMode.watchLongTasks(); else PerfMode.stopDiag();
     if(State.ui.debugPanelEnabled){
       // Nunca abre vazio: registra a ativação + um resumo do ambiente.
       pushDebugLog('Aparelho: ' + PerfMode.deviceSummary());
@@ -9810,9 +9925,28 @@ async function renderSettingsView(container){
   {
     updBlock.appendChild(el('p', { style:'font-size:12px;color:var(--text-2);margin-bottom:10px;' }, [
       ManualUpdate.inApk()
-        ? 'A atualização automática (GitHub, a cada 15s) continua funcionando normalmente. A URL abaixo só é usada por este botão — se for diferente da padrão, a versão baixada fica até sair uma versão nova no GitHub.'
+        ? 'A atualização automática (GitHub) continua funcionando no intervalo escolhido abaixo. A URL só é usada pelo botão — se for diferente da padrão, a versão baixada fica até sair uma versão nova no GitHub.'
         : 'No navegador a versão baixada fica guardada e é aberta no lugar do arquivo. Se você abrir um index.html de outra versão, vale o arquivo novo.'
     ]));
+    if(ManualUpdate.inApk()){
+      const ivGroup = el('div', { class:'form-group', style:'max-width:320px;' });
+      ivGroup.appendChild(el('label', {}, ['Procurar versão nova a cada']));
+      const ivSel = el('select', { 'aria-label':'Procurar versão nova a cada' });
+      [[15,'15 segundos (antigo)'],[60,'1 minuto (padrão)'],[300,'5 minutos'],[900,'15 minutos'],[3600,'1 hora'],[0,'Nunca (só pelo botão)']].forEach(([v,l]) => ivSel.appendChild(el('option', { value:String(v) }, [l])));
+      ivSel.value = String(UpdateCheck.seconds());
+      ivSel.addEventListener('change', async () => {
+        State.settings.updateCheckSec = +ivSel.value;
+        await IDB.put(STORES.settings, State.settings);
+        UpdateCheck.schedule();
+        showToast('Checagem de atualização: ' + UpdateCheck.label(UpdateCheck.seconds()) + '.', 'success');
+      });
+      ivGroup.appendChild(ivSel);
+      ivGroup.appendChild(el('div', { style:'font-size:11px;color:var(--text-2);margin-top:4px;' }, [
+        'Cada checagem baixa o app inteiro do GitHub (~0,5 MB). No projetor, checar menos vezes alivia a rede e o processador durante o vídeo.' +
+        (UpdateCheck.fn ? '' : ' (o atualizador do APK ainda não começou)')
+      ]));
+      updBlock.appendChild(ivGroup);
+    }
     const urlGroup = el('div', { class:'form-group', style:'min-width:100%;' });
     urlGroup.appendChild(el('label', {}, ['URL do index.html (atualização manual)']));
     const urlInput = el('input', { type:'text', style:'width:100%;' });
@@ -11272,7 +11406,6 @@ function showFatalDbScreen(err){
 async function initApp(){
   const tBoot = performance.now();
   PerfMode.apply(); // antes das configurações (usa 'auto') — evita o 1º quadro pesado
-  PerfMode.watchLongTasks();
   BootProgress.start();
   try{
     State.db = await IDB.open();
@@ -11294,6 +11427,7 @@ async function initApp(){
       State.settings = { ...DEFAULT_SETTINGS };
       await IDB.put(STORES.settings, State.settings);
     }
+    try{ UpdateCheck.schedule(); }catch(e){} // intervalo da checagem de atualização salvo
   }catch(err){
     State.settings = { ...DEFAULT_SETTINGS };
   }
