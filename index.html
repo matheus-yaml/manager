@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.0.92';
+<script>var APP_VERSION = '1.0.93';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -2851,16 +2851,20 @@ const NetSpeed = {
       window.cordova.exec((o) => {
         this._ok = true;
         const now = performance.now();
-        const app = +o.app;
-        if(this._last && app >= this._last.app){
+        // O player NATIVO do Android baixa o vídeo por outro processo do sistema
+        // (o "servidor de mídia"), que NÃO entra na conta deste app — por isso
+        // aqui vale o total do APARELHO (no projetor quase tudo é o vídeo).
+        const app = +o.app, total = +o.total;
+        if(this._last && total >= this._last.total){
           const dt = (now - this._last.t) / 1000;
           if(dt > 0.5){
-            this.mbps = (app - this._last.app) * 8 / dt / 1e6;
+            this.mbps = (total - this._last.total) * 8 / dt / 1e6;
+            this.appMbps = app >= this._last.app ? (app - this._last.app) * 8 / dt / 1e6 : null;
             this.hist.push(this.mbps); if(this.hist.length > 30) this.hist.shift(); // último minuto
             this.render();
           }
         }
-        this._last = { t: now, app };
+        this._last = { t: now, app, total };
       }, () => { this._ok = false; const e = document.getElementById('net-speed'); if(e) e.style.display = 'none'; }, 'ManagerPip', 'netStats', []);
     }catch(e){ this._ok = false; }
   },
@@ -2876,12 +2880,13 @@ const NetSpeed = {
     const playing = !!(PlayerModule.currentContent && document.getElementById('player-overlay').style.display === 'flex');
     e.textContent = '↓ ' + this.fmt(this.mbps) + (playing ? '  (vídeo)' : '');
     e.classList.toggle('low', playing && this.mbps != null && this.mbps < 1.5);
-    e.title = 'Velocidade que este app está recebendo da internet (média do último minuto: ' + this.fmt(this.avg()) + ')';
+    e.title = 'Velocidade que o aparelho está recebendo da internet (média do último minuto: ' + this.fmt(this.avg()) + ')';
   },
   statusLine(){
     if(!this._ok) return null;
     const h = this.hist;
-    return 'Rede (este app): agora ' + this.fmt(this.mbps) + ' • média 1 min ' + this.fmt(this.avg()) + ' • mínima ' + this.fmt(h.length ? Math.min.apply(null, h) : null);
+    return 'Rede (aparelho): agora ' + this.fmt(this.mbps) + ' • média 1 min ' + this.fmt(this.avg()) + ' • mínima ' + this.fmt(h.length ? Math.min.apply(null, h) : null) +
+      (this.appMbps != null ? ' • só a página do app: ' + this.fmt(this.appMbps) : '');
   }
 };
 
