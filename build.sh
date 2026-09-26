@@ -92,6 +92,7 @@ import android.content.DialogInterface;
 import android.widget.FrameLayout;
 import android.widget.TextView;
 import android.widget.VideoView;
+import android.net.TrafficStats;
 import android.view.ViewGroup;
 import org.apache.cordova.PluginResult;
 import org.apache.cordova.CallbackContext;
@@ -156,6 +157,17 @@ public class ManagerPip extends CordovaPlugin {
         // ---------- PLAYER NATIVO (tela cheia, fora do WebView) ----------
         // O Android toca o stream sozinho (TS ou HLS, com o chip de vídeo) —
         // sem JavaScript convertendo o vídeo. Voltar fecha e devolve pro app.
+        // bytes recebidos pela rede (este app, inclusive o player nativo, e o
+        // aparelho todo) — o app calcula a velocidade a cada 2s (rodapé)
+        if ("netStats".equals(action)) {
+            try {
+                JSONObject o = new JSONObject();
+                o.put("app", TrafficStats.getUidRxBytes(android.os.Process.myUid()));
+                o.put("total", TrafficStats.getTotalRxBytes());
+                callback.success(o);
+            } catch (Throwable t) { callback.error(t.getClass().getSimpleName() + ": " + t.getMessage()); }
+            return true;
+        }
         if ("hasNativePlayer".equals(action)) {
             callback.success(1);
             return true;
