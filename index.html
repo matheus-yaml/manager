@@ -60,6 +60,7 @@ canvas{width:100%;height:70px;display:block;background:#0d0f19;border-radius:8px
   <button id="btnCopy">📋 Copiar resultado</button>
   <label class="opt"><input type="checkbox" id="optParallel" checked> Baixar ao mesmo tempo</label>
   <label class="opt"><input type="checkbox" id="optNeutral" checked> Incluir servidor neutro (Cloudflare)</label>
+  <label class="opt"><input type="checkbox" id="optLive"> Simular ao vivo (6 Mbps cada, como um canal FHD)</label>
   <label class="opt" id="optLockWrap"><input type="checkbox" id="optLock" checked> Trava do Wi-Fi (alto desempenho)</label>
 </div>
 
@@ -74,7 +75,7 @@ canvas{width:100%;height:70px;display:block;background:#0d0f19;border-radius:8px
 </div>
 
 <div class="card" style="margin-top:10px;">
-  <h2>📡 Wi-Fi do aparelho</h2>
+  <h2>📡 Wi-Fi do aparelho <span id="wifiState" style="margin-left:auto;font-size:13px;"></span></h2>
   <canvas id="wifiCanvas"></canvas>
   <div class="small" id="wifiInfo">Só aparece no APK com o plugin atualizado (ManagerPip com wifiInfo).</div>
 </div>
@@ -106,7 +107,8 @@ const DEFAULT_TARGETS = [
 const NEUTRAL = { name: 'Neutro (Cloudflare)', url: 'https://speed.cloudflare.com/__down?bytes=50000000', neutral: true };
 const HISTORY_SEC = 180;      // gráfico: últimos 3 minutos
 const STALL_ABORT_SEC = 20;   // sem dados por 20s = considera conexão morta e reconecta
-const RESTART_WAIT_MS = 2000; // pausa entre um download completo e o próximo
+const RESTART_WAIT_MS = 2000;
+const LIVE_MBPS = () => (document.getElementById('optLive') && document.getElementById('optLive').checked) ? 6 : 0; // pausa entre um download completo e o próximo
 
 /* ================= ESTADO (só em memória) ================= */
 let running = false;
@@ -201,6 +203,11 @@ async function runTarget(t){
         if(!firstByte){ firstByte = now(); t.ttfb.push(firstByte - t.connStart); if(t.ttfb.length > 50) t.ttfb.shift(); }
         t.bytesThisSec += n; t.bytesTotal += n; t.connBytes += n; t.lastByteAt = now();
         if(!running || !t.active){ try{ reader.cancel(); }catch(e){} break; }
+        // "Simular ao vivo": lê devagar (6 Mbps) — o TCP segura o resto, igual a um player
+        if(LIVE_MBPS()){
+          const ahead = (t.connBytes * 8 / (LIVE_MBPS() * 1e6)) * 1000 - (now() - firstByte);
+          if(ahead > 20) await new Promise(r => setTimeout(r, Math.min(ahead, 1000)));
+        }
       }
       if(finished){
         t.completes++;
@@ -251,14 +258,14 @@ function tick(){
 
 /* ============ APAGÃO GERAL: todos sem dados ao mesmo tempo ============ */
 const blackouts = []; // {start, end, dur, rssiStart}
-let boStart = 0, boSecs = 0;
+let boStart = 0, boSecs = 0, boWifiBad = '';
 function checkBlackout(){
   const act = targets.filter(t => t.active && t.status !== 'parado');
   if(act.length < 2) return;
   const allZero = act.every(t => t.zeroRun >= 1);
   if(allZero){
     boSecs++;
-    if(!boStart) boStart = now() - 1000;
+    if(!boStart){ boStart = now() - 1000; boWifiBad = wifiStat.bad ? 'Wi-Fi fora' : ''; }
   } else if(boStart){
     const dur = boSecs; boSecs = 0;
     if(dur >= 3){
@@ -267,7 +274,9 @@ function checkBlackout(){
       blackouts.push(b);
       log('⛔ APAGÃO GERAL: todos ficaram ' + dur + 's sem dados (' + fmtT(b.start) + '–' + fmtT(b.end) + ')' +
         (prev ? ' • ' + fmtDur(b.start - prev.start) + ' depois do anterior' : ' • primeiro') +
-        (b.rssi != null ? ' • sinal ' + b.rssi + ' dBm' : ''), 'e');
+        (b.rssi != null ? ' • sinal ' + b.rssi + ' dBm' : '') +
+        (wifiLast && wifiLast.state != null ? (boWifiBad ? ' • 📶 Wi-Fi CAIU junto (' + boWifiBad + ')' : ' • 📶 Wi-Fi continuou conectado') : ''), 'e');
+      b.wifiBad = boWifiBad;
     }
     boStart = 0;
   }
@@ -277,7 +286,9 @@ function blackoutSummary(){
   const gaps = [];
   for(let i = 1; i < blackouts.length; i++) gaps.push(Math.round((blackouts[i].start - blackouts[i - 1].start) / 1000));
   const durs = blackouts.map(b => b.dur);
-  return blackouts.length + ' apagão(ões) geral(is): duração ' + durs.join('s, ') + 's' +
+  const known = wifiLast && wifiLast.state != null;
+  const withDrop = blackouts.filter(b => b.wifiBad).length;
+  return blackouts.length + ' apagão(ões) geral(is)' + (known ? ' (' + withDrop + ' com queda do Wi-Fi, ' + (blackouts.length - withDrop) + ' com Wi-Fi conectado)' : '') + ': duração ' + durs.join('s, ') + 's' +
     (gaps.length ? ' • intervalo entre eles: ' + gaps.map(g => fmtDur(g * 1000)).join(', ') : '');
 }
 
@@ -304,9 +315,11 @@ function wifiEvents(o){
 async function wifiPoll(){
   try{
     const o = parseW(await pip('wifiInfo'));
-    wifiOk = true; wifiLast = o;
+    wifiOk = true;
+    wifiTrack(o);
+    wifiLast = o;
     wifiEvents(o);
-    if(o.rssi != null){ wifiHist.push(o.rssi); if(wifiHist.length > 90) wifiHist.shift(); }
+    if(o.rssi != null){ wifiHist.push(o.rssi); if(wifiHist.length > 180) wifiHist.shift(); }
     $('wifiInfo').textContent =
       'Sinal: ' + (o.rssi != null ? o.rssi + ' dBm (' + sigLabel(o.rssi) + ')' : '?') +
       ' • faixa: ' + band(o.freq) + (o.freq ? ' (' + o.freq + ' MHz)' : '') +
@@ -319,6 +332,44 @@ async function wifiPoll(){
     clearInterval(wifiTimer); wifiTimer = null;
   }
 }
+/* Estado da conexão Wi-Fi (plugin novo): detecta queda/reconexão/sem internet
+   comparando cada leitura (1s) com a anterior. */
+const wifiStat = { drops: 0, noNet: 0, reconn: 0, bad: false, badSince: 0 };
+const STATE_PT = { COMPLETED: 'conectado', SCANNING: 'procurando rede', ASSOCIATING: 'associando', ASSOCIATED: 'associado',
+  AUTHENTICATING: 'autenticando', FOUR_WAY_HANDSHAKE: 'negociando senha', GROUP_HANDSHAKE: 'negociando senha',
+  DISCONNECTED: 'DESCONECTADO', INACTIVE: 'inativo', DORMANT: 'dormindo', INTERFACE_DISABLED: 'Wi-Fi desligado', UNINITIALIZED: 'iniciando' };
+function wifiBadReason(o){
+  if(o.wifiOn === false) return 'Wi-Fi desligado';
+  if(o.state && o.state !== 'COMPLETED') return 'Wi-Fi ' + (STATE_PT[o.state] || o.state);
+  if(o.connected === false) return 'sem rede ativa';
+  if(o.link != null && o.link <= 0) return 'link com o roteador em 0';
+  if(o.validated === false) return 'conectado mas SEM INTERNET';
+  return '';
+}
+function wifiTrack(o){
+  const p = wifiLast;
+  const reason = wifiBadReason(o);
+  if(reason && !wifiStat.bad){
+    wifiStat.bad = true; wifiStat.badSince = now();
+    if(/SEM INTERNET/.test(reason)) wifiStat.noNet++; else wifiStat.drops++;
+    log('📶 WI-FI CAIU: ' + reason + (o.rssi != null ? ' • sinal ' + o.rssi + ' dBm' : ''), 'e');
+  } else if(!reason && wifiStat.bad){
+    wifiStat.bad = false;
+    log('📶 Wi-Fi voltou ao normal depois de ' + fmtDur(now() - wifiStat.badSince) + '.');
+  }
+  if(boStart && reason) boWifiBad = reason; // o apagão atual teve queda do Wi-Fi
+  if(p && p.netId != null && o.netId != null && p.netId !== o.netId && o.netId !== -1 && p.netId !== -1){ wifiStat.reconn++; log('📶 Wi-Fi trocou de rede (id ' + p.netId + ' → ' + o.netId + ').', 'w'); }
+  if(p && p.ip && o.ip && p.ip !== o.ip){ wifiStat.reconn++; log('📶 Endereço IP mudou (reconectou ao roteador).', 'w'); }
+  const st = $('wifiState');
+  if(st){
+    st.textContent = reason ? '🔴 ' + reason : (o.state ? '🟢 conectado' + (o.validated ? ' • internet ok' : '') : '');
+    st.style.color = reason ? 'var(--bad)' : 'var(--ok)';
+  }
+}
+function wifiStatSummary(){
+  if(!wifiLast || wifiLast.state == null) return '';
+  return 'Wi-Fi: caiu ' + wifiStat.drops + 'x, sem internet ' + wifiStat.noNet + 'x, reconectou ' + wifiStat.reconn + 'x' + (wifiStat.bad ? ' (fora agora)' : '');
+}
 function drawRssi(){
   const cv = $('wifiCanvas'); const dpr = window.devicePixelRatio || 1;
   const w = Math.round(cv.clientWidth * dpr), h = Math.round(cv.clientHeight * dpr); if(!w || !h) return;
@@ -326,7 +377,7 @@ function drawRssi(){
   const lo = -95, hi = -30; const y = (v) => h - ((Math.max(lo, Math.min(hi, v)) - lo) / (hi - lo)) * (h - 4 * dpr);
   g.fillStyle = 'rgba(248,113,113,.12)'; g.fillRect(0, y(-75), w, h - y(-75));
   g.strokeStyle = '#34d399'; g.lineWidth = 1.5 * dpr; g.beginPath();
-  wifiHist.forEach((v, i) => { const x = (90 - wifiHist.length + i) / 90 * w; i ? g.lineTo(x, y(v)) : g.moveTo(x, y(v)); });
+  wifiHist.forEach((v, i) => { const x = (180 - wifiHist.length + i) / 180 * w; i ? g.lineTo(x, y(v)) : g.moveTo(x, y(v)); });
   g.stroke();
   g.fillStyle = '#a9afc0'; g.font = (10 * dpr) + 'px sans-serif'; g.fillText('sinal (dBm) • faixa vermelha = fraco', 4 * dpr, 11 * dpr);
 }
@@ -335,7 +386,7 @@ async function applyLock(){
   try{ const o = parseW(await pip('wifiLock', [on])); wifiEvents(o); log('📡 Trava do Wi-Fi ' + (o.lock ? 'LIGADA (Android não deve economizar energia no Wi-Fi)' : 'desligada') + '.'); }
   catch(e){ if(window.cordova) log('Trava do Wi-Fi indisponível: ' + (e && e.message || e) + ' (APK sem o plugin novo).', 'w'); }
 }
-function wifiStart(){ if(window.cordova && !wifiTimer && wifiOk !== false){ wifiPoll(); wifiTimer = setInterval(wifiPoll, 2000); } }
+function wifiStart(){ if(window.cordova && !wifiTimer && wifiOk !== false){ wifiPoll(); wifiTimer = setInterval(wifiPoll, 1000); } }
 window.addEventListener('offline', () => log('🌐 Navegador: SEM INTERNET (evento offline)', 'e'));
 window.addEventListener('online', () => log('🌐 Navegador: internet voltou (evento online)'));
 
@@ -469,6 +520,7 @@ function verdict(){
     parts.push(t.name + ': média <b>' + fmtMbps(a) + '</b>, ' + t.gaps3 + ' buraco(s) ≥3s, ' + t.drops + ' queda(s).');
   });
   if(blackouts.length || boStart) parts.push('⛔ ' + blackoutSummary() + (boStart ? ' <b>(apagão acontecendo agora)</b>' : ''));
+  if(wifiStatSummary()) parts.push('📶 ' + wifiStatSummary());
   if(wifiLast && wifiLast.rssi != null) parts.push('📡 Wi-Fi: ' + wifiLast.rssi + ' dBm (' + sigLabel(wifiLast.rssi) + '), ' + band(wifiLast.freq) + ', trava ' + (wifiLast.lock ? 'ligada' : 'desligada') + '.');
   if(secs >= 120){
     const iptvBad = iptv.filter(t => t.gaps3 + t.drops > 0);
@@ -489,7 +541,7 @@ function start(){
   running = true;
   if(!startedAt) startedAt = now();
   const parallel = $('optParallel').checked;
-  log('▶ Teste iniciado (' + (parallel ? 'todos ao mesmo tempo' : 'um de cada vez, 60s cada') + ').');
+  log('▶ Teste iniciado (' + (parallel ? 'todos ao mesmo tempo' : 'um de cada vez, 60s cada') + (LIVE_MBPS() ? ', simulando ao vivo a ' + LIVE_MBPS() + ' Mbps cada' : ', sem limite') + ').');
   targets.forEach(t => { t.active = false; });
   if(parallel){
     targets.forEach(t => { t.active = true; runTarget(t); });
@@ -527,6 +579,7 @@ function resetAll(){
   logLines.length = 0; $('log').innerHTML = '';
   pingHist.length = 0; devHist.length = 0; devLast = null;
   blackouts.length = 0; boStart = 0; boSecs = 0; wifiHist.length = 0;
+  wifiStat.drops = wifiStat.noNet = wifiStat.reconn = 0;
   startedAt = 0;
   $('verdict').textContent = 'Tudo apagado.';
   log('🗑 Resultados apagados.');
@@ -547,7 +600,7 @@ function copyResult(){
       ', buracos ≥1s ' + t.gaps1 + ' / ≥3s ' + t.gaps3 + ' / ≥5s ' + t.gaps5 + ' (maior ' + t.longestGap + 's), quedas ' + t.drops +
       ', conexões ' + t.conn + ', completos ' + t.completes + ', baixado ' + fmtMB(t.bytesTotal));
   });
-  lines.push('', blackoutSummary(), 'Wi-Fi: ' + $('wifiInfo').textContent, $('pingInfo').textContent, $('devInfo').textContent, '', 'Eventos:');
+  lines.push('', blackoutSummary(), wifiStatSummary(), 'Wi-Fi: ' + $('wifiInfo').textContent, $('pingInfo').textContent, $('devInfo').textContent, '', 'Eventos:');
   logLines.forEach(l => lines.push(l.line));
   const txt = lines.join('\n');
   const ok = () => log('📋 Resultado copiado.');
@@ -589,6 +642,7 @@ $('btnCopy').addEventListener('click', copyResult);
 $('optNeutral').addEventListener('change', () => { const r = running; stop(); setupTargets(); if(r) start(); });
 $('optParallel').addEventListener('change', () => { if(running){ stop(); start(); } });
 $('optLock').addEventListener('change', applyLock);
+$('optLive').addEventListener('change', () => { log($('optLive').checked ? '🎬 Simulando ao vivo: cada servidor limitado a 6 Mbps (carga leve, igual assistir).' : '🎬 Sem limite: baixando no máximo (teste de estresse).'); if(running){ stop(); start(); } });
 
 $('env').textContent = (window.cordova ? 'APK' : 'navegador') + ' • ' + (window.devicePixelRatio || 1) + 'x • ' + (navigator.hardwareConcurrency || '?') + ' núcleos';
 document.addEventListener('deviceready', () => { $('env').textContent = 'APK (ponte Android ok) • ' + (window.devicePixelRatio || 1) + 'x • ' + (navigator.hardwareConcurrency || '?') + ' núcleos'; applyLock(); wifiStart(); }, false);
