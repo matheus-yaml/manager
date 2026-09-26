@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.0.74';
+<script>var APP_VERSION = '1.0.75';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -260,7 +260,7 @@ html.tv .live-side-back:focus{outline:3px solid #fff;outline-offset:1px;}
 /* player embutido: fica parado no topo enquanto a lista de canais rola */
 .live-player{position:-webkit-sticky;position:sticky;top:-24px;z-index:4;display:flex;gap:16px;align-items:stretch;
   margin:0 -28px 14px;padding:10px 28px 12px;background:var(--bg-0);border-bottom:1px solid var(--border);}
-.lp-screen{position:relative;flex:0 0 auto;width:min(52%,560px);border-radius:10px;overflow:hidden;background:#000;}
+.lp-screen{position:relative;flex:0 0 auto;width:min(66%,760px);border-radius:10px;overflow:hidden;background:#000;}
 .lp-screen::before{content:"";display:block;padding-top:56.25%;}
 .lp-empty{position:absolute;top:0;left:0;right:0;bottom:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;color:var(--text-2);font-size:13px;text-align:center;padding:10px;}
 .lp-empty b{font-size:30px;}
@@ -278,7 +278,8 @@ html.tv .live-side-back:focus{outline:3px solid #fff;outline-offset:1px;}
   .lp-name{font-size:15px;}
 }
 html.tv .live-player{top:-12px;margin:0 -16px 10px;padding:8px 16px 10px;gap:12px;}
-html.tv .lp-screen{width:min(50%,420px);}
+html.tv .lp-screen{width:58%;}
+html.tv .lp-info{gap:4px;}
 html.tv .lp-name{font-size:16px;}
 /* canais em "fichas" compactas (logo + nome) — cabe bem mais na tela */
 .live-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px;}
@@ -2295,7 +2296,18 @@ const CoverSharp = {
     this._pump();
   },
   _pump(){
-    while(this._running < this.MAX && this._queue.length){
+    // com vídeo tocando, 1 capa por vez e só quando o navegador estiver ocioso
+    const busyVideo = typeof PlayerModule !== 'undefined' && PlayerModule.currentContent;
+    const max = busyVideo ? 1 : this.MAX;
+    if(busyVideo && this._running < max && this._queue.length && !this._idleWait && window.requestIdleCallback){
+      this._idleWait = true;
+      requestIdleCallback(() => { this._idleWait = false; this._pumpNow(max); }, { timeout: 1500 });
+      return;
+    }
+    this._pumpNow(max);
+  },
+  _pumpNow(max){
+    while(this._running < max && this._queue.length){
       const [img, url] = this._queue.shift();
       if(!img.isConnected){ img._csBusy = false; continue; }
       this._running++;
@@ -2926,7 +2938,7 @@ const NetStatus = {
   },
   async _httpsTime(){
     const u = ManualUpdate.DEFAULT_URL + '?net=' + Date.now();
-    const r = await this._fetch(u, { method: 'HEAD' }, 8000);
+    const r = await this._fetch(u, { method: 'HEAD' }, 12000);
     let server = null;
     const exp = Date.parse(r.headers.get('expires') || '');
     const m = /max-age=(\d+)/.exec(r.headers.get('cache-control') || '');
@@ -2945,9 +2957,23 @@ const NetStatus = {
     try{ await this._fetch('https://www.google.com/generate_204?t=' + Date.now(), { mode: 'no-cors' }, 6000); return true; }catch(e){}
     return false;
   },
+  /** Sinal de que a internet está funcionando AGORA (vídeo recebendo dados,
+   *  download/guia que respondeu…). Com isso o status não fica vermelho à
+   *  toa quando a rede está ocupada com um canal ao vivo. */
+  _lastOk: 0, _fails: 0, _lastFull: 0,
+  noteOk(){
+    this._lastOk = Date.now();
+    if(this.state && this.state.kind === 'bad' && !this.state.clock){ this._fails = 0; this.check(); }
+  },
   async check(){
     if(this._busy) return this.state;
+    // rede comprovadamente ativa há pouco (ex: canal tocando): não precisa
+    // gastar banda testando — só faz a checagem completa (hora certa etc.) a cada 5 min
+    if(this.state && Date.now() - this._lastOk < 20000 && Date.now() - this._lastFull < 300000 && this.state.kind !== 'bad'){
+      return this.state;
+    }
     this._busy = true;
+    this._lastFull = Date.now();
     const now = Date.now();
     let st;
     try{
@@ -2957,7 +2983,14 @@ const NetStatus = {
         let httpsOk = false, server = null;
         try{ server = await this._httpsTime(); httpsOk = true; }catch(e){}
         if(!httpsOk){ try{ server = await this._httpTime(); }catch(e){} }
-        const net = httpsOk || !!server || await this._hasNetwork();
+        const net = httpsOk || !!server || await this._hasNetwork() || Date.now() - this._lastOk < 20000;
+        if(net) this._fails = 0;
+        if(!net && ++this._fails < 2 && this.state && this.state.kind !== 'bad'){
+          // 1ª falha: pode ser só a rede ocupada — confere de novo em 8s antes de ficar vermelho
+          this._busy = false;
+          setTimeout(() => this.check(), 8000);
+          return this.state;
+        }
         if(!net){
           st = { kind: 'bad', text: 'Sem internet', sub: 'nenhum site respondeu' };
         } else if(server && Math.abs(now - server) > this.TOLERANCE){
@@ -2992,6 +3025,7 @@ const NetStatus = {
   _tickClock(){
     const c = document.getElementById('sidebar-clock');
     if(!c) return;
+    if(typeof PlayerModule !== 'undefined' && PlayerModule.isFullOpen && PlayerModule.isFullOpen()) return; // escondido atrás do vídeo: não redesenha (menos trabalho = menos engasgo)
     const d = new Date(), p = (n) => (n < 10 ? '0' : '') + n;
     const txt = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'][d.getDay()] + ' ' + p(d.getDate()) + '/' + p(d.getMonth() + 1) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
     if(c.textContent !== txt) c.textContent = txt;
@@ -3033,7 +3067,7 @@ const NetStatus = {
     window.addEventListener('online', () => this.check());
     window.addEventListener('offline', () => this.check());
     document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible') this.check(); });
-    const every = () => (typeof PerfMode !== 'undefined' && PerfMode.isLite && PerfMode.isLite()) ? 120000 : 60000;
+    const every = () => (typeof PerfMode !== 'undefined' && PerfMode.isLite && PerfMode.isLite()) ? 45000 : 30000;
     const loop = () => { this._timer = setTimeout(() => { if(document.visibilityState !== 'hidden') this.check(); loop(); }, every()); };
     setTimeout(() => this.check(), 1500);
     loop();
@@ -5526,8 +5560,11 @@ const PlayerModule = {
     o.style.width = r.width + 'px'; o.style.height = r.height + 'px';
     o.style.right = 'auto'; o.style.bottom = 'auto';
     const ct = Math.max(0, Math.round(ca.top - r.top)), cb = Math.max(0, Math.round(r.bottom - ca.bottom));
-    const clip = 'inset(' + ct + 'px 0 ' + cb + 'px 0 round 10px)';
-    o.style.clipPath = clip; o.style.webkitClipPath = clip;
+    // recorte só quando precisa (quadro parcialmente fora da área); no modo
+    // leve sem cantos arredondados — máscara em cima do vídeo pesa na GPU fraca
+    const lite = document.documentElement.classList.contains('lite');
+    const clip = (ct || cb) ? 'inset(' + ct + 'px 0 ' + cb + 'px 0' + (lite ? '' : ' round 10px') + ')' : (lite ? 'none' : 'inset(0 round 10px)');
+    if(o.style.clipPath !== clip){ o.style.clipPath = clip; o.style.webkitClipPath = clip; }
   },
   expandMini(){
     if(!this._mini) return;
@@ -6843,7 +6880,9 @@ const PlayerModule = {
   _ensureVideoListeners(){
     if(this._videoListenersReady) return;
     const video = qs('#video-player');
-    video.addEventListener('playing', ()=> this.hideBuffering());
+    video.addEventListener('playing', ()=> { this.hideBuffering(); try{ NetStatus.noteOk(); }catch(e){} });
+    // vídeo recebendo dados = internet funcionando (no máx. 1 aviso a cada 5s)
+    video.addEventListener('progress', ()=> { const n = Date.now(); if(n - (this._lastNetNote || 0) > 5000){ this._lastNetNote = n; try{ NetStatus.noteOk(); }catch(e){} } });
     video.addEventListener('waiting', ()=> this.showBuffering());
     video.addEventListener('timeupdate', ()=>{
       this.lastTimeUpdateAt = Date.now();
@@ -6913,7 +6952,24 @@ const PlayerModule = {
     const looksHls = /\.m3u8(\?|$)/i.test(url);
 
     if(looksHls && window.Hls && Hls.isSupported()){
-      this.hls = new Hls();
+      // Ajustes pra aparelho fraco (projetor/TV): buffer limitado (memória
+      // constante), sem "baixa latência" (evita saltos/engasgos) e resolução
+      // limitada ao tamanho do player — com várias qualidades disponíveis,
+      // não decodifica 1080p pra mostrar numa tela de 960x540 (o que mais trava).
+      const lite = PerfMode.isLite();
+      this.hls = new Hls({
+        enableWorker: true,
+        lowLatencyMode: false,
+        capLevelToPlayerSize: true,
+        backBufferLength: lite ? 10 : 30,
+        maxBufferLength: lite ? 20 : 30,
+        maxMaxBufferLength: lite ? 40 : 60,
+        maxBufferSize: (lite ? 30 : 60) * 1000 * 1000,
+        liveSyncDurationCount: 3,
+        liveMaxLatencyDurationCount: 10,
+        fragLoadingMaxRetry: 4,
+        manifestLoadingMaxRetry: 3
+      });
       this.hls.loadSource(url);
       this.hls.attachMedia(video);
       this.hls.on(Hls.Events.MANIFEST_PARSED, ()=>{
@@ -7627,21 +7683,23 @@ const LiveView = {
     PlayerModule.open(content, { mini: true, host });
     this.markPlaying();
   },
+  /** Clique/OK num canal = tela cheia (o foco já toca no quadro). Toca no
+   *  quadro primeiro e expande — assim o Voltar devolve pro quadro sem reiniciar. */
   activate(content){
-    if(PlayerModule.isMini() && PlayerModule.currentContent && PlayerModule.currentContent.id === content.id){ PlayerModule.expandMini(); return; }
-    this.play(content);
+    clearTimeout(this._focusT);
+    const cc = PlayerModule.currentContent;
+    if(!(PlayerModule.isMini() && cc && cc.id === content.id)) this.play(content);
+    PlayerModule.expandMini();
   },
   markPlaying(){
     const cc = PlayerModule.currentContent;
     const id = (PlayerModule.isMini() || PlayerModule._miniReturn) && cc ? cc.id : null;
     document.querySelectorAll('.live-grid .content-card').forEach(c => c.classList.toggle('playing', !!id && c.getAttribute('data-cid') === id));
     const nameEl = document.getElementById('lp-name'), subEl = document.getElementById('lp-sub'), empty = document.querySelector('.lp-empty');
-    const fsBtn = document.getElementById('lp-full');
     if(nameEl) nameEl.textContent = id ? resolveContentName(cc) : 'Nenhum canal tocando';
     if(subEl) subEl.textContent = id ? (getServerName(cc.serverId) + (cc.categoria ? ' • ' + cc.categoria : '')) :
-      (TvNav.on() ? 'Pare o foco num canal pra assistir aqui • OK de novo = tela cheia' : 'Toque num canal pra assistir aqui • toque de novo (ou no vídeo) = tela cheia');
+      (TvNav.on() ? 'Pare o foco num canal pra assistir aqui • OK = tela cheia' : 'Toque num canal pra assistir em tela cheia');
     if(empty) empty.style.display = id ? 'none' : '';
-    if(fsBtn) fsBtn.style.display = id ? '' : 'none';
     if(!id) document.querySelectorAll('#lp-epg').forEach(b => { b.style.display = 'none'; });
     else try{ LiveEpg.paintAll(); }catch(e){}
   }
@@ -7748,9 +7806,6 @@ async function renderLiveView(container){
   const epg = el('div', { id:'lp-epg', class:'epg-box', style:'display:none;' });
   epg.innerHTML = '<div class="epg-now"><span class="epg-now-title"></span><span class="epg-now-time"></span></div><div class="epg-bar"><i></i></div><div class="epg-next"></div>';
   info.appendChild(epg);
-  const actions = el('div', { class:'lp-actions' });
-  actions.appendChild(el('button', { class:'btn primary', id:'lp-full', style:'display:none;', onclick:()=>PlayerModule.expandMini() }, ['⛶ Tela cheia']));
-  info.appendChild(actions);
   lp.appendChild(screen); lp.appendChild(info);
   container.appendChild(lp);
 
