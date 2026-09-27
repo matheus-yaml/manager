@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.4.0';
+<script>var APP_VERSION = '1.4.2';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -5843,10 +5843,18 @@ const ServerModule = {
     const report = (patch) => { if(statusCallback) statusCallback(patch); };
     const tStart = performance.now();
     const serverId = server.id;
-    let pool = null;
+    let pool = null, genTick = null;
     Purger.cancel(serverId); // servidor voltou: a importação já apaga o conteúdo antigo dele
     try{
-      report({ phase:'download', status:'processing', downloaded:0, total:null, speed:0 });
+      // etapas até o 1º dado: aparecem na tela e o tempo de cada uma vai pro diagnóstico
+      const stg = { t: performance.now(), name: '', marks: [] };
+      const stage = (txt) => {
+        const now = performance.now();
+        if(stg.name) stg.marks.push(stg.name + ' ' + Math.round(now - stg.t) + ' ms');
+        stg.name = txt.replace(/\.\.\.$/, '').toLowerCase(); stg.t = now;
+        report({ phase:'download', status:'processing', downloaded:0, total:null, speed:0, stage: txt });
+      };
+      stage('Limpando conteúdo antigo...');
 
       // 1) apaga TUDO do servidor (cru + prontos + séries) — os blocos novos são numerados do zero
       await new Promise((resolve, reject) => {
@@ -5860,6 +5868,7 @@ const ServerModule = {
       // 2) resumo acumulado (o que cada worker devolve)
       const acc = { cnt:[0,0,0], blocks:[[],[],[]], grupos:[new Map(),new Map(),new Map()], series:new Map(), done:0 };
       const N = this._workersPerImport || this.workersTotal();
+      stage('Preparando processamento...');
       // fila de blocos maior: o download continua puxando enquanto os workers
       // processam (antes, com 2 na fila, a rede parava a cada pouco = velocidade oscilando)
       pool = BlockSyncWorker.createPool(N, (d) => {
@@ -5892,6 +5901,7 @@ const ServerModule = {
       const hctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
       const htimer = hctl ? setTimeout(() => { try{ hctl.abort(); }catch(e){} }, 7000) : null;
       let response;
+      stage('Conectando ao servidor...');
       const tReq = performance.now();
       try{ response = await fetch(server.url, { cache: 'no-store', signal: hctl ? hctl.signal : undefined }); }
       catch(fe){ clearTimeout(htimer); if(fe && fe.name === 'AbortError') throw new TypeError('network: o servidor não respondeu em 7s'); throw fe; }
@@ -5900,7 +5910,18 @@ const ServerModule = {
       pushDebugLog('⏱ "' + server.nome + '": o servidor respondeu em ' + Math.round(tResp - tReq) + ' ms (desde o clique na importação: ' + Math.round(tResp - tStart) + ' ms) • ' + (/^https:/i.test(server.url) ? 'https' : 'http') + ' • Wi-Fi: ' + ((typeof SysMon !== 'undefined' && SysMon._band) || '?') + '.', (tResp - tReq) > 5000);
       let firstDataLogged = false;
       if(!response.ok){ const err = new Error('HTTP ' + response.status); err.status = response.status; throw err; }
+      // respondeu, mas a lista ainda não começou a chegar (servidor IPTV montando): conta os segundos
+      stage('Servidor montando a lista...');
+      const tGen = Date.now();
+      genTick = setInterval(() => {
+        if(firstDataLogged){ clearInterval(genTick); return; }
+        report({ phase:'download', status:'processing', downloaded:0, total:null, speed:0, stage: 'Servidor montando a lista... ' + Math.round((Date.now() - tGen) / 1000) + 's' });
+      }, 1000);
       const totalBytes = parseInt(response.headers.get('Content-Length'), 10) || null;
+      // servidor IPTV quase nunca informa o tamanho: estima pelo tamanho da última vez
+      // (guardado no servidor e também por URL, pra valer mesmo se o servidor for apagado e cadastrado de novo)
+      let estBytes = server.lastBytes || null;
+      if(!estBytes){ try{ estBytes = (JSON.parse(localStorage.getItem('sm_list_sizes') || '{}'))[server.url] || null; }catch(e){} }
       let tNet = 0, tWaitPool = 0; // onde o tempo foi: esperando a REDE x esperando o PROCESSAMENTO
       let n = 0, bytes = 0, buf = '', lastReport = 0, lastBytes = 0, lastTime = Date.now(), speed = 0;
       const dec = new TextDecoder('utf-8');
@@ -5910,7 +5931,7 @@ const ServerModule = {
         lastReport = now;
         const dt = (now - lastTime) / 1000;
         if(dt > 0.3){ speed = (bytes - lastBytes) / dt; lastBytes = bytes; lastTime = now; }
-        report({ phase:'download', status:'processing', downloaded: bytes, total: totalBytes, estTotal: totalBytes ? null : (server.lastBytes || null), speed: speed,
+        report({ phase:'download', status:'processing', downloaded: bytes, total: totalBytes, estTotal: totalBytes ? null : estBytes, speed: speed,
           counts: { live: acc.cnt[0], movie: acc.cnt[1], series: acc.cnt[2] }, seriesCount: acc.series.size, blocksDone: acc.done });
         MemGuard.logDuring('"' + server.nome + '" baixando+processando ' + formatBytes(bytes) + ' (' + acc.done + ' blocos prontos)');
       };
@@ -6001,7 +6022,12 @@ const ServerModule = {
           }
           const { done, value } = chunk;
           tNet += performance.now() - tr;
-          if(!firstDataLogged && value){ firstDataLogged = true; pushDebugLog('⏱ "' + server.nome + '": 1º dado chegou ' + Math.round(performance.now() - tResp) + ' ms depois da resposta.'); }
+          if(!firstDataLogged && value){
+            firstDataLogged = true; clearInterval(genTick);
+            stg.marks.push(stg.name + ' ' + Math.round(performance.now() - stg.t) + ' ms');
+            const tot = Math.round(performance.now() - tStart);
+            pushDebugLog('⏱ "' + server.nome + '": até o 1º dado ' + tot + ' ms → ' + stg.marks.join(' • '), tot > 5000);
+          }
           if(done) break;
           bytes += value.byteLength;
           buf += dec.decode(value, { stream: true });
@@ -6086,6 +6112,11 @@ const ServerModule = {
       // campos do formato antigo (compactação por prefixo) — não existem mais
       delete server.urlPrefixes; delete server.logoPrefixes; delete server.legacyFormat;
       try{ await IDB.put(STORES.servers, server); }catch(e){}
+      try{
+        const sz = JSON.parse(localStorage.getItem('sm_list_sizes') || '{}'); sz[server.url] = bytes;
+        const ks = Object.keys(sz); if(ks.length > 60) delete sz[ks[0]];
+        localStorage.setItem('sm_list_sizes', JSON.stringify(sz));
+      }catch(e){}
 
       QueryModule.invalidateCaches();
       State.pageCache.clear();
@@ -6096,6 +6127,7 @@ const ServerModule = {
       report({ phase:'process', status:'done', processed: total, total: total, counts: result.counts, seriesCount: result.seriesCount });
       return { ok:true, count: total };
     }catch(err){
+      if(genTick) clearInterval(genTick);
       if(pool){ try{ pool.abort(); }catch(e){} }
       const retryable = ServerModule.isRetryableNetworkError(err);
       // vai tentar de novo (ver importServerContent): não marca erro ainda
@@ -10469,6 +10501,14 @@ async function runImportWithProgressModal(servers){
       if(listWrap.lastElementChild !== item){ const hf = document.activeElement === item; listWrap.appendChild(item); if(hf){ try{ item.focus(); }catch(e){} } }
       return;
     }
+    if(patch.phase === 'download' && patch.stage){
+      dotEl.className = 'status-dot processing';
+      statusEl.className = 'sp-status proc';
+      statusEl.textContent = patch.stage;
+      fillEl.style.width = '0%';
+      detailEl.textContent = '';
+      return;
+    }
     if(patch.phase === 'download'){
       dotEl.className = 'status-dot processing';
       statusEl.className = 'sp-status proc';
@@ -10484,6 +10524,7 @@ async function runImportWithProgressModal(servers){
         let pct = 0, pctTxt = '';
         if(patch.total){ pct = Math.min(100, (patch.downloaded/patch.total)*100); pctTxt = ' ' + Math.floor(pct) + '%'; }
         else if(patch.estTotal){ pct = Math.min(99, (patch.downloaded/patch.estTotal)*100); pctTxt = ' ≈' + Math.floor(pct) + '%'; } // estimado pelo tamanho da última vez
+        else if(patch.downloaded){ pctTxt = ' ' + formatBytes(patch.downloaded); } // 1ª vez: servidor não diz o tamanho → mostra quanto já veio
         statusEl.textContent = patch.status === 'done' ? 'Download concluído, na fila' : (patch.counts ? 'Baixando e processando...' : 'Baixando...') + (patch.status === 'done' ? '' : pctTxt);
         fillEl.style.width = (patch.status==='done' ? 100 : pct) + '%';
         detailEl.textContent = formatBytes(patch.downloaded) + (patch.total ? ' / ' + formatBytes(patch.total) : patch.estTotal ? ' / ~' + formatBytes(patch.estTotal) : '') + (patch.speed ? '  •  ' + formatSpeed(patch.speed) : '') +
