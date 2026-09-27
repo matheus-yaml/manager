@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.5.2';
+<script>var APP_VERSION = '1.5.3';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -2591,7 +2591,14 @@ const PerfMode = {
 const CoverSharp = {
   on(){ return document.documentElement.classList.contains('tv') && !!document.createElement('canvas').getContext; },
   _cache: new Map(),   // url|WxH -> blob URL (LRU)
-  _queue: [], _running: 0, MAX: 2, CACHE_MAX: 250,
+  _queue: [], _running: 0, MAX: 3, CACHE_MAX: 250,
+  _noCors: new Set(), // servidores de imagem que recusam CORS: vai direto sem (antes baixava 2x cada capa)
+  _host(u){ const m = /^https?:\/\/([^\/?#]+)/i.exec(u); return m ? m[1] : ''; },
+  /** Capa saiu da tela antes de ser processada: tira da fila (rolagem rápida não trava a fila). */
+  cancel(img){
+    const i = this._queue.findIndex(q => q[0] === img);
+    if(i >= 0){ this._queue.splice(i, 1); img._csBusy = false; }
+  },
   render(img, url){
     img._csBusy = true;
     this._queue.push([img, url]);
@@ -2639,8 +2646,12 @@ const CoverSharp = {
     const hit = this._cache.get(key);
     if(hit){ this._cache.delete(key); this._cache.set(key, hit); img.src = hit; return; }
     let im, tainted = false;
-    try{ im = await this._load(url, true); }
-    catch(e){ im = await this._load(url, false); tainted = true; } // sem CORS (ou falhou de vez → catch lá fora usa a <img> normal)
+    const host = this._host(url);
+    if(this._noCors.has(host)){ im = await this._load(url, false); tainted = true; }
+    else{
+      try{ im = await this._load(url, true); }
+      catch(e){ im = await this._load(url, false); tainted = true; this._noCors.add(host); } // sem CORS (ou falhou de vez → catch lá fora usa a <img> normal)
+    }
     if(!img.isConnected) return;
     // recorte igual ao object-fit:cover — ou, com object-fit:contain (logos
     // dos canais no Ao Vivo), a imagem inteira centralizada com fundo transparente
@@ -2725,6 +2736,8 @@ const ImageMem = {
         if(e.isIntersecting){
           if(CoverSharp.on()){ if(!img.hasAttribute('src') && !img._csBusy && !img._csCanvas) CoverSharp.render(img, url); }
           else if(img.getAttribute('src') !== url) img.src = url;
+        } else if(img._csBusy && !img.hasAttribute('src')){
+          CoverSharp.cancel(img); // ainda na fila: não processa capa que já saiu da tela
         } else if(PerfMode.isLite()){
           // capa já reduzida (pequena, ~100 KB) fica: soltar e recarregar custa mais
           // (rede/processador) do que guarda. Só solta imagem grande original.
@@ -3953,6 +3966,12 @@ const NetStatus = {
   _qBusy: false, _qFails: 0,
   async quick(){
     if(this._qBusy || this._busy || document.visibilityState === 'hidden') return;
+    // dados chegando agora (vídeo, download, capas): a internet está funcionando —
+    // não precisa mandar o pedido de teste (economiza 1 pedido de rede por segundo)
+    if(typeof NetSpeed !== 'undefined' && NetSpeed._ok && NetSpeed.mbps > 0.2 && !(this.state && this.state.kind === 'bad')){
+      this._qFails = 0; this._lastOk = Date.now();
+      return;
+    }
     this._qBusy = true;
     let ok = false;
     try{ await this._fetch('http://connectivitycheck.gstatic.com/generate_204?q=' + Date.now(), { mode: 'no-cors', cache: 'no-store' }, 3000); ok = true; }catch(e){}
@@ -4024,7 +4043,15 @@ const UpdateCheck = {
     const sec = this.seconds();
     if(sec > 0){
       const si = (window.__SM_PROF && window.__SM_PROF.si) || window.setInterval;
-      this.id = si.call(window, this.fn, sec * 1000);
+      // não baixa o app de novo (~650 KB + conta) enquanto importa servidores ou toca vídeo
+      const fn = this.fn;
+      this.id = si.call(window, function(){
+        try{
+          if(State.ui && State.ui.isImporting) return;
+          if(typeof PlayerModule !== 'undefined' && PlayerModule.currentContent) return;
+        }catch(e){}
+        return fn.apply(this, arguments);
+      }, sec * 1000);
     }
   },
   label(sec){ return sec === 0 ? 'nunca (só manual)' : sec < 60 ? sec + 's' : sec < 3600 ? (sec / 60) + ' min' : (sec / 3600) + ' h'; }
@@ -4632,6 +4659,17 @@ const IDB = {
    * séries) — 1 delete por faixa de chave [serverId, ...] em cada store,
    * numa transação só. */
   /** Até `count` chaves dentro da faixa (pra apagar aos poucos). */
+  /** Chaves e valores de uma faixa, numa leitura só (em vez de 1 leitura por bloco). */
+  getRangeKV(storeName, range, count){
+    return new Promise((resolve, reject)=>{
+      try{
+        const st = IDB.tx([storeName]).objectStore(storeName);
+        const rk = st.getAllKeys(range, count), rv = st.getAll(range, count);
+        rv.onsuccess = ()=> resolve({ keys: rk.result || [], vals: rv.result || [] });
+        rk.onerror = rv.onerror = (e)=> reject(e.target.error);
+      }catch(err){ reject(err); }
+    });
+  },
   getKeysInRange(storeName, range, count){
     return new Promise((resolve, reject)=>{
       try{
@@ -4746,7 +4784,7 @@ function blockKeys(srv, t){
 const QueryModule = {
   // seriesKey -> resumo da série (cache só de leitura; limpo a cada import/exclusão)
   _seriesCache: new Map(),
-  invalidateCaches(){ this._seriesCache.clear(); this._seriesCountCache.clear(); this._epCache.clear(); },
+  invalidateCaches(){ this._seriesCache.clear(); this._seriesCountCache.clear(); this._epCache.clear(); try{ GlobalSearchModule.invalidate(); }catch(e){} },
 
   /** Bloco de EPISÓDIOS [servidor, 2, b] como lista de tuplas (mesmo formato de sempre:
    * id, nome, categoria, url, capa, série, temporada, episódio). Importação nova grava
@@ -5202,8 +5240,29 @@ const QueryModule = {
    de conteúdo quando já sabe que tem resultado dentro dele.
    ====================================================================== */
 const GlobalSearchModule = {
+  // nomes de série já normalizados, por servidor (normalizar 30 mil nomes a cada busca pesava muito)
+  _seriesNorm: new Map(),
+  invalidate(){ this._seriesNorm.clear(); },
+  async warm(){
+    for(const srv of State.servers.values()){
+      if(!serverHasBlocks(srv) || this._seriesNorm.has(srv.id)) continue;
+      const { vals } = await IDB.getRangeKV(STORES.seriesBlocks, IDBKeyRange.bound([srv.id], [srv.id, []]));
+      if(this._seriesNorm.has(srv.id)) continue;
+      const tuples = [], names = [];
+      for(const bloco of vals) if(bloco) for(const t of bloco){ tuples.push(t); names.push(this._norm(t[1])); }
+      this._seriesNorm.set(srv.id, { names, tuples: PerfMode.isLite() ? null : tuples });
+    }
+  },
+  _norm(str){ // = normalizeText, sem o normalize('NFD') caro na maioria dos casos
+    let x = String(str || '').toLowerCase();
+    if(!/[^\x00-\x7f]/.test(x)) return x;
+    x = x.replace(/[àáâãäåèéêëìíîïòóôõöùúûüçñýÿ]/g, c => 'aaaaaaeeeeiiiiooooouuuucnyy'['àáâãäåèéêëìíîïòóôõöùúûüçñýÿ'.indexOf(c)]);
+    return /[^\x00-\x7f]/.test(x) ? normalizeText(x) : x;
+  },
+  _seq: 0,
   async search(term, maxPerType){
     const norm = normalizeText(term).trim();
+    const my = ++this._seq, stale = () => my !== this._seq; // busca nova começou: a antiga para na hora
     // capped[tipo] = servidores que bateram no limite (tem mais resultado lá do que o mostrado)
     const result = { movie:[], live:[], series:[], capped: { movie:new Set(), live:new Set(), series:new Set() } };
     if(!norm) return result;
@@ -5212,70 +5271,100 @@ const GlobalSearchModule = {
     // Limite POR SERVIDOR (antes era um limite geral de 40 e o 1º servidor
     // ocupava tudo — os outros apareciam com 0). Total por tipo fica ~120.
     maxPerType = maxPerType || Math.max(10, Math.min(40, Math.floor(120 / Math.max(1, servers.length))));
+    const catNorm = new Map(); // categoria -> normalizada (poucas categorias, muitas linhas)
 
-    const contentScan = async (type) => {
+    // 1 servidor, 1 tipo: lê TODOS os textos de busca numa leitura só (antes: 1 leitura por bloco)
+    const contentScan = async (type, srv, favSet, out) => {
       const tipoInt = TIPO_INT[type];
-      const favSet = await QueryModule._favoriteIdSet(type);
-      const catNorm = new Map(); // categoria -> normalizada (poucas categorias, muitas linhas)
-      for(const srv of servers){
-        let got = 0;
-        for(const b of blockKeys(srv, tipoInt)){
-          if(result.capped[type].has(srv.id)) break;
-          const txt = await IDB.getByKey(STORES.searchBlocks, [srv.id, tipoInt, b]);
-          if(!txt) continue;
-          const linhas = txt.split('\n');
-          const hits = [];
-          for(let i = 0; i < linhas.length; i++){
-            const L = linhas[i], tab = L.indexOf('\t');
-            const nome = tab >= 0 ? L.slice(0, tab) : L;
-            let hit = nome.indexOf(norm) !== -1;
-            if(!hit && tab >= 0){
-              const cat = L.slice(tab + 1);
-              let cn = catNorm.get(cat);
-              if(cn === undefined){ cn = normalizeText(cat); catNorm.set(cat, cn); }
-              hit = cn.indexOf(norm) !== -1;
-            }
-            if(!hit) continue;
-            // achou mais um além do limite: marca "tem mais" e para este servidor
-            if(got + hits.length >= maxPerType){ result.capped[type].add(srv.id); break; }
-            hits.push(i);
+      const valid = new Set(blockKeys(srv, tipoInt));
+      const hi = [srv.id, tipoInt, []];
+      let lo = [srv.id, tipoInt], loOpen = false, got = 0, stop = false;
+      // lê os textos de busca em lotes de 8 blocos por leitura (antes: 1 leitura por bloco);
+      // para assim que bater o limite (não lê o resto)
+      while(!stop){
+        const { keys, vals } = await IDB.getRangeKV(STORES.searchBlocks, IDBKeyRange.bound(lo, hi, loOpen, false), 8);
+        if(stale()) return;
+        if(!keys.length) break;
+        lo = keys[keys.length - 1]; loOpen = true;
+      for(let x = 0; x < keys.length && !stop; x++){
+        const b = keys[x][2], txt = vals[x];
+        if(!txt || !valid.has(b)) continue; // sobra antiga ainda não apagada
+        const linhas = txt.split('\n');
+        const idxs = [];
+        let capped = false;
+        for(let i = 0; i < linhas.length; i++){
+          const L = linhas[i], tab = L.indexOf('\t');
+          const nome = tab >= 0 ? L.slice(0, tab) : L;
+          let hit = nome.indexOf(norm) !== -1;
+          if(!hit && tab >= 0){
+            const cat = L.slice(tab + 1);
+            let cn = catNorm.get(cat);
+            if(cn === undefined){ cn = this._norm(cat); catNorm.set(cat, cn); }
+            hit = cn.indexOf(norm) !== -1;
           }
-          if(!hits.length) continue;
-          const bloco = await IDB.getByKey(STORES.contentBlocks, [srv.id, tipoInt, b]);
-          if(!bloco) continue;
-          for(const i of hits){
-            if(!bloco[i]) continue;
-            const c = QueryModule.tupleToContent(bloco[i], tipoInt, srv.id, b, i);
-            c.favorito = favSet.has(c.id);
-            result[type].push(c);
-            got++;
-          }
+          if(!hit) continue;
+          // achou mais um além do limite: marca "tem mais" e para este servidor
+          if(got + idxs.length >= maxPerType){ result.capped[type].add(srv.id); capped = true; break; }
+          idxs.push(i);
         }
+        if(!idxs.length){ if(capped) stop = true; continue; }
+        const bloco = await IDB.getByKey(STORES.contentBlocks, [srv.id, tipoInt, b]);
+        if(stale()) return;
+        if(!bloco) continue;
+        for(const i of idxs){
+          if(!bloco[i]) continue;
+          const c = QueryModule.tupleToContent(bloco[i], tipoInt, srv.id, b, i);
+          c.favorito = favSet.has(c.id);
+          out.push(c);
+          got++;
+        }
+        if(capped) stop = true;
+      }
       }
     };
 
-    const seriesScan = async () => {
-      const favIds = await QueryModule._favoriteIdSet('series');
-      for(const srv of servers){
-        let got = 0;
-        outer: for(let b = 0; b < (srv.blocosSeries || 0); b++){
-          const bloco = await IDB.getByKey(STORES.seriesBlocks, [srv.id, b]);
-          if(!bloco) continue;
-          for(const t of bloco){
-            if(normalizeText(t[1]).indexOf(norm) !== -1){
-              if(got >= maxPerType){ result.capped.series.add(srv.id); break outer; }
-              const s = QueryModule.seriesTupleToSummary(t, srv.id);
-              s.favorito = favIds.has(s.key);
-              result.series.push(s);
-              got++;
-            }
-          }
-        }
+    const seriesScan = async (srv, favIds, out) => {
+      let cache = this._seriesNorm.get(srv.id);
+      if(!cache){
+        const { vals } = await IDB.getRangeKV(STORES.seriesBlocks, IDBKeyRange.bound([srv.id], [srv.id, []]));
+        if(stale()) return;
+        const tuples = [], names = [];
+        for(const bloco of vals) if(bloco) for(const t of bloco){ tuples.push(t); names.push(this._norm(t[1])); }
+        // guarda só os nomes normalizados + a posição (as tuplas são relidas quando precisa)
+        cache = { names, tuples: PerfMode.isLite() ? null : tuples };
+        this._seriesNorm.set(srv.id, cache);
+        if(!cache.tuples) cache._tmp = tuples; // usa nesta busca e solta
+      }
+      let got = 0;
+      const want = [];
+      for(let i = 0; i < cache.names.length; i++){
+        if(cache.names[i].indexOf(norm) === -1) continue;
+        if(got >= maxPerType){ result.capped.series.add(srv.id); break; }
+        want.push(i); got++;
+      }
+      let tuples = cache.tuples || cache._tmp;
+      if(!tuples && want.length){
+        const { vals } = await IDB.getRangeKV(STORES.seriesBlocks, IDBKeyRange.bound([srv.id], [srv.id, []]));
+        if(stale()) return;
+        tuples = []; for(const bloco of vals) if(bloco) for(const t of bloco) tuples.push(t);
+      }
+      cache._tmp = null;
+      for(const i of want){
+        const s = QueryModule.seriesTupleToSummary(tuples[i], srv.id);
+        s.favorito = favIds.has(s.key);
+        out.push(s);
       }
     };
 
-    // As três varreduras rodam em paralelo (leituras não bloqueiam entre si).
-    await Promise.all([contentScan('movie'), contentScan('live'), seriesScan()]);
+    const [favMovie, favLive, favSeries] = await Promise.all([QueryModule._favoriteIdSet('movie'), QueryModule._favoriteIdSet('live'), QueryModule._favoriteIdSet('series')]);
+    // tudo em paralelo: tipos e servidores
+    const jobs = [], bk = servers.map(() => ({ movie: [], live: [], series: [] }));
+    servers.forEach((srv, i) => {
+      jobs.push(contentScan('movie', srv, favMovie, bk[i].movie), contentScan('live', srv, favLive, bk[i].live), seriesScan(srv, favSeries, bk[i].series));
+    });
+    await Promise.all(jobs);
+    // junta na ordem dos servidores (igual antes, mesmo lendo tudo em paralelo)
+    for(const b of bk){ result.movie.push(...b.movie); result.live.push(...b.live); result.series.push(...b.series); }
     return result;
   }
 };
@@ -5495,6 +5584,7 @@ function openSearchPopup(term, initialFilters){
   }
 
   activeSearchOverlay = { overlay, input, close: closePopup, getFilters: () => ({ activeType, activeServer }) };
+  setTimeout(() => { try{ GlobalSearchModule.warm(); }catch(e){} }, 50); // prepara os nomes de série enquanto a pessoa digita
   return activeSearchOverlay;
 }
 
@@ -5848,7 +5938,17 @@ const ServerModule = {
    * importManyServersPipelined, que divide os núcleos entre as importações
    * que rodam ao mesmo tempo). */
   _workersPerImport: 0,
+  /** Escolha da pessoa em Configurações: 'auto' ou 1..4. Sem escolha: projetor/TV = 1, demais = automático. */
+  workersChoice(){
+    const v = (State.settings.performance || {}).workers;
+    if(v === 'auto') return 'auto';
+    const n = parseInt(v, 10);
+    if(n >= 1 && n <= 4) return n;
+    return PerfMode.isTvDevice() ? 1 : 'auto';
+  },
   workersTotal(){
+    const ch = this.workersChoice();
+    if(ch !== 'auto') return ch;
     const cores = navigator.hardwareConcurrency || 2;
     if(PerfMode.isLite()){
       // projetor/TV: sem vídeo tocando, usa TODOS os núcleos pra processar a lista
@@ -6023,7 +6123,7 @@ const ServerModule = {
         if(firstDataLogged){ clearInterval(genTick); return; }
         report({ phase:'download', status:'processing', downloaded:0, total:null, speed:0, stage: 'Servidor montando a lista... ' + Math.round((Date.now() - tGen) / 1000) + 's' });
       }, 1000);
-      const totalBytes = parseInt(response.headers.get('Content-Length'), 10) || null;
+      let totalBytes = parseInt(response.headers.get('Content-Length'), 10) || null;
       // servidor IPTV quase nunca informa o tamanho: estima pelo tamanho da última vez
       // (guardado no servidor e também por URL, pra valer mesmo se o servidor for apagado e cadastrado de novo)
       let estBytes = server.lastBytes || null;
@@ -6067,7 +6167,20 @@ const ServerModule = {
       };
       const concat = (a, b) => { if(!a || !a.length) return b; if(!b || !b.length) return a; const r = new Uint8Array(a.length + b.length); r.set(a, 0); r.set(b, a.length); return r; };
       const conns = Math.max(1, Math.min(6, parseInt((State.settings.performance || {}).downloadConnections, 10) || DEFAULT_SETTINGS.performance.downloadConnections));
-      const sizeKnown = totalBytes || estBytes || 0;
+      let sizeKnown = totalBytes || estBytes || 0;
+      // 1ª vez (tamanho desconhecido): pergunta o tamanho com um pedido de 1 byte ("Range: bytes=0-0").
+      // Servidor que aceita responde "Content-Range: bytes 0-0/N" → dá pra dividir em partes e mostrar a % certa.
+      if(!sizeKnown && conns > 1 && response.body && response.body.getReader){
+        const pc = typeof AbortController !== 'undefined' ? new AbortController() : null;
+        const pt = pc ? setTimeout(() => { try{ pc.abort(); }catch(e){} }, 7000) : null;
+        try{
+          const pr = await fetch(server.url, { cache: 'no-store', signal: pc ? pc.signal : undefined, headers: { 'Range': 'bytes=0-0' } });
+          const m = /^bytes\s+0-0\/(\d+)/i.exec(pr.headers.get('Content-Range') || '');
+          try{ pr.body && pr.body.cancel && pr.body.cancel(); }catch(e){}
+          if(pr.status === 206 && m && +m[1] > 0){ totalBytes = +m[1]; sizeKnown = totalBytes; }
+        }catch(e){}
+        clearTimeout(pt);
+      }
       const K = (conns > 1 && sizeKnown >= 8 * CH && response.body && response.body.getReader) ? Math.min(conns, Math.floor(sizeKnown / (4 * CH))) : 1;
       const bounds = []; for(let k = 0; k < K; k++) bounds.push(Math.floor(sizeKnown * k / K));
       let effK = K; // vira 1 se o servidor não aceitar as partes
@@ -6253,7 +6366,9 @@ const ServerModule = {
               resolveDecision();
               await run0;
             } else {
-              pushDebugLog('⚡ "' + server.nome + '": baixando em ' + K + ' partes ao mesmo tempo (' + formatBytes(sizeKnown) + (totalBytes ? '' : ' estimado') + ').');
+              // as outras conexões dizem o tamanho REAL da lista ("Content-Range: .../N") → % exata
+              if(!totalBytes && totals.size === 1) totalBytes = Array.from(totals)[0];
+              pushDebugLog('⚡ "' + server.nome + '": baixando em ' + K + ' partes ao mesmo tempo (' + formatBytes(totalBytes || sizeKnown) + (totalBytes ? '' : ' estimado') + ').');
               decided = true; s0.overflow = []; resolveDecision();
               for(const seg of extras){ seg.reader = seg.resp.body.getReader(); seg.resp = null; segs.push(seg); }
               // se alguma falhar de vez, cancela as outras (erro vai pra tentativa normal)
@@ -6422,6 +6537,16 @@ const ServerModule = {
         const r = await ServerModule._importOnce(job.s, (patch) => upd(job.s, patch), !last);
         if(!r.ok && r.retryable && !last){
           job.why = r.error && (r.error.status ? 'HTTP ' + r.error.status : (r.error.message || String(r.error)));
+          // "network error" (conexão caiu no meio, parada, sem resposta): tenta DE NOVO na hora, ele mesmo.
+          // Outros erros (ex.: "Failed to fetch" = nem conectou, HTTP 5xx): vai pro fim da fila.
+          const msg = String(job.why || '');
+          if(/network/i.test(msg) && !/failed to fetch/i.test(msg)){
+            job.retryAt = Date.now() + 1000;
+            pushDebugLog('Rede: "' + job.s.nome + '" falhou (' + job.why + ') — tentando de novo agora (tentativa ' + job.tries + ' de ' + MAX + ').', true);
+            upd(job.s, { phase:'download', status:'processing', downloaded:0, total:null, speed:0, retryIn: 1, retryAttempt: job.tries, retryMax: MAX - 1, retryWhy: job.why });
+            queue.unshift(job);
+            continue;
+          }
           job.retryAt = Date.now() + WAIT_MS;
           pushDebugLog('Rede: "' + job.s.nome + '" falhou (' + job.why + ') — vai pro fim da fila (tentativa ' + job.tries + ' de ' + MAX + '); ' + (queue.length ? 'o próximo servidor tenta agora.' : 'só falta ele: tenta de novo em 5s.'), true);
           try{ MemGuard.cleanBeforeRetry('"' + job.s.nome + '" foi pro fim da fila'); }catch(e){}
@@ -10768,11 +10893,11 @@ async function runImportWithProgressModal(servers){
       } else {
         let pct = 0, pctTxt = '';
         if(patch.total){ pct = Math.min(100, (patch.downloaded/patch.total)*100); pctTxt = ' ' + Math.floor(pct) + '%'; }
-        else if(patch.estTotal){ pct = Math.min(99, (patch.downloaded/patch.estTotal)*100); pctTxt = ' ≈' + Math.floor(pct) + '%'; } // estimado pelo tamanho da última vez
+        else if(patch.estTotal){ pct = Math.min(99, (patch.downloaded/patch.estTotal)*100); pctTxt = ' ' + Math.floor(pct) + '%'; } // estimado pelo tamanho da última vez
         else if(patch.downloaded){ pctTxt = ' ' + formatBytes(patch.downloaded); } // 1ª vez: servidor não diz o tamanho → mostra quanto já veio
         statusEl.textContent = patch.status === 'done' ? 'Download concluído, na fila' : (patch.counts ? 'Baixando e processando...' : 'Baixando...') + (patch.status === 'done' ? '' : pctTxt);
         fillEl.style.width = (patch.status==='done' ? 100 : pct) + '%';
-        detailEl.textContent = formatBytes(patch.downloaded) + (patch.total ? ' / ' + formatBytes(patch.total) : patch.estTotal ? ' / ~' + formatBytes(patch.estTotal) : '') + (patch.speed ? '  •  ' + formatSpeed(patch.speed) : '') +
+        detailEl.textContent = formatBytes(patch.downloaded) + (patch.total ? ' / ' + formatBytes(patch.total) : patch.estTotal ? ' / ' + formatBytes(patch.estTotal) : '') + (patch.speed ? '  •  ' + formatSpeed(patch.speed) : '') +
           (patch.counts ? '  •  Filmes: ' + patch.counts.movie + '  Séries: ' + (patch.seriesCount || 0) + '  Ao Vivo: ' + patch.counts.live : '');
       }
     } else if(patch.phase === 'cleanup'){
@@ -11093,6 +11218,21 @@ async function renderSettingsView(container){
 
   const perfRow = el('div', { class:'form-row' });
   perfRow.appendChild(makePerfField('Servidores importando ao mesmo tempo', 'maxConcurrentProcessing', 'Mínimo 1 — use 1 em aparelhos fracos' + (PerfMode.isLite() ? ' (no modo leve o padrão é 1)' : ''), 1));
+  {
+    const g = el('div', { class:'form-group' });
+    g.appendChild(el('label', {}, ['Processadores (workers) por download']));
+    const sel = el('select', {});
+    [['auto','Automático'],['1','1'],['2','2'],['3','3'],['4','4']].forEach(([v, t]) => sel.appendChild(el('option', { value: v }, [t])));
+    sel.value = String(ServerModule.workersChoice());
+    sel.addEventListener('change', async function(){
+      State.settings.performance = Object.assign({}, State.settings.performance || DEFAULT_SETTINGS.performance, { workers: sel.value === 'auto' ? 'auto' : parseInt(sel.value, 10) });
+      await IDB.put(STORES.settings, State.settings);
+      showToast('Configuração salva.', 'success');
+    });
+    g.appendChild(sel);
+    g.appendChild(el('div', { style:'font-size:11px;color:var(--text-2);margin-top:4px;' }, ['Quantos processadores interpretam a lista enquanto baixa. Padrão: 1 no projetor/TV, automático nos demais.']));
+    perfRow.appendChild(g);
+  }
   perfRow.appendChild(makePerfField('Conexões por download', 'downloadConnections', 'Baixa a lista em partes ao mesmo tempo (1 a 6). Padrão 4. Servidor que não aceita: usa 1 sozinho.', 1));
   // Modo leve: sem desfoque/sombras/animações (TV e projetor ficam bem mais leves)
   const liteGroup = el('div', { class:'form-group' });
