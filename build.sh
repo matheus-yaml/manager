@@ -54,6 +54,7 @@ cat > "$PIP/plugin.xml" <<'PIPEOF'
     <config-file target="res/xml/config.xml" parent="/*">
       <feature name="ManagerPip">
         <param name="android-package" value="com.manager.pip.ManagerPip" />
+        <param name="onload" value="true" />
       </feature>
     </config-file>
     <edit-config file="AndroidManifest.xml" target="/manifest/application/activity[@android:name='MainActivity']" mode="merge">
@@ -568,6 +569,27 @@ public class ManagerPip extends CordovaPlugin {
     private FrameLayout mBox;
     private VideoView mView;
     private ExoMini mExo;
+    /** Cor de fundo do app. O WebView do Cordova é BRANCO por padrão: com a
+     *  página transparente (buraco do ao vivo) qualquer instante sem o vídeo
+     *  por trás aparecia branco. Pinta tudo por trás com a cor do app. */
+    private int mAppBg = 0xFF0B0D16;
+
+    private void paintAppBg(Activity act, ViewGroup content) {
+        try { if (content != null) content.setBackgroundColor(mAppBg); } catch (Throwable ignore) {}
+        try { act.getWindow().setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(mAppBg)); } catch (Throwable ignore) {}
+    }
+
+    @Override
+    protected void pluginInitialize() {
+        // ao abrir o app: fundo escuro em vez do branco padrão do WebView
+        final Activity act = cordova.getActivity();
+        act.runOnUiThread(new Runnable() {
+            public void run() {
+                try { webView.getView().setBackgroundColor(mAppBg); } catch (Throwable ignore) {}
+                paintAppBg(act, (ViewGroup) act.findViewById(android.R.id.content));
+            }
+        });
+    }
     private String mVvUrl;          // ExoPlayer com reserva (projetor, ao vivo)
     private CallbackContext mCb;
     private String mUrl;
@@ -599,7 +621,8 @@ public class ManagerPip extends CordovaPlugin {
             mBox.setBackgroundColor(Color.BLACK);
             mBox.setFocusable(false);
             content.addView(mBox, 0, new FrameLayout.LayoutParams(1, 1, Gravity.TOP | Gravity.LEFT));
-            try { content.setBackgroundColor(Color.parseColor(bg == null ? "#0B0D16" : bg)); } catch (Throwable t) { content.setBackgroundColor(0xFF0B0D16); }
+            try { mAppBg = Color.parseColor(bg == null ? "#0B0D16" : bg); } catch (Throwable t) { mAppBg = 0xFF0B0D16; }
+            paintAppBg(act, content);
             try { webView.getView().setBackgroundColor(Color.TRANSPARENT); } catch (Throwable ignore) {}
         }
         if (url.equals(mUrl) && (mView != null || mExo != null)) return; // já tocando esse canal
@@ -820,7 +843,8 @@ public class ManagerPip extends CordovaPlugin {
         if (mView != null) { try { mView.stopPlayback(); } catch (Throwable ignore) {} mView = null; }
         if (mExo != null) { try { mExo.release(); } catch (Throwable ignore) {} mExo = null; }
         if (mBox != null) { try { ((ViewGroup) mBox.getParent()).removeView(mBox); } catch (Throwable ignore) {} mBox = null; }
-        try { webView.getView().setBackgroundColor(Color.BLACK); } catch (Throwable ignore) {}
+        // volta a cor do app (não branco nem preto) — a página pode ainda estar transparente por um instante
+        try { webView.getView().setBackgroundColor(mAppBg); } catch (Throwable ignore) {}
         mUrl = null;
         if (mCb != null) mSend("{\"event\":" + q(reason) + ",\"played\":" + mPlayed + "}", false);
     }
