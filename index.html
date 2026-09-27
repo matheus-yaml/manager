@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.2.8';
+<script>var APP_VERSION = '1.2.9';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -10066,6 +10066,16 @@ function updateMinimizedPillText(text){
   if(label) label.textContent = text;
 }
 
+/** Quantos servidores importam ao mesmo tempo. Aparelho fraco (modo leve) usa
+ *  1 por padrão — mas se a pessoa escolheu um número nas configurações, vale o
+ *  que ela escolheu (antes o "3" escolhido virava 1 no projetor). */
+function effectiveMaxProcessing(){
+  const perf = State.settings.performance || {};
+  const v = perf.maxConcurrentProcessing || DEFAULT_SETTINGS.performance.maxConcurrentProcessing;
+  if(PerfMode.isLite() && !perf.maxConcurrentProcessingSet && v === DEFAULT_SETTINGS.performance.maxConcurrentProcessing) return 1;
+  return v;
+}
+
 async function runImportWithProgressModal(servers){
   if(State.ui.isImporting){ showToast('Já existe uma importação em andamento.', 'error'); return; }
   State.ui.isImporting = true;
@@ -10260,9 +10270,7 @@ async function runImportWithProgressModal(servers){
   }
 
   try{
-    let configuredMaxProcessing = (State.settings.performance && State.settings.performance.maxConcurrentProcessing) || DEFAULT_SETTINGS.performance.maxConcurrentProcessing;
-    // Aparelho fraco com o valor padrão (3): importa 1 servidor por vez (menos memória, menos travadas).
-    if(PerfMode.isLite() && configuredMaxProcessing === DEFAULT_SETTINGS.performance.maxConcurrentProcessing) configuredMaxProcessing = 1;
+    const configuredMaxProcessing = effectiveMaxProcessing();
     pushDebugLog('Importação: ' + configuredMaxProcessing + ' servidor(es) ao mesmo tempo.');
     await ServerModule.importManyServersPipelined(servers, configuredMaxProcessing, updateServerUI, updateOverallUI, onFirstSuccess);
   }catch(err){
@@ -10485,12 +10493,14 @@ async function renderSettingsView(container){
     const group = el('div', { class:'form-group' });
     group.appendChild(el('label', {}, [label]));
     const input = el('input', { type:'number', min: String(min !== undefined ? min : 0) });
-    input.value = perf[key];
+    input.value = key === 'maxConcurrentProcessing' ? effectiveMaxProcessing() : perf[key]; // mostra o valor que vale de verdade
     input.addEventListener('change', async function(){
       let v = parseInt(input.value, 10);
       if(isNaN(v) || v < (min !== undefined ? min : 0)) v = DEFAULT_SETTINGS.performance[key];
       input.value = v;
-      State.settings.performance = Object.assign({}, State.settings.performance || DEFAULT_SETTINGS.performance, { [key]: v });
+      const patch = { [key]: v };
+      if(key === 'maxConcurrentProcessing') patch.maxConcurrentProcessingSet = true; // escolhido pela pessoa: respeita (inclusive no projetor)
+      State.settings.performance = Object.assign({}, State.settings.performance || DEFAULT_SETTINGS.performance, patch);
       await IDB.put(STORES.settings, State.settings);
       showToast('Configuração salva.', 'success');
     });
@@ -10500,7 +10510,7 @@ async function renderSettingsView(container){
   }
 
   const perfRow = el('div', { class:'form-row' });
-  perfRow.appendChild(makePerfField('Servidores importando ao mesmo tempo', 'maxConcurrentProcessing', 'Mínimo 1 — use 1 em aparelhos fracos', 1));
+  perfRow.appendChild(makePerfField('Servidores importando ao mesmo tempo', 'maxConcurrentProcessing', 'Mínimo 1 — use 1 em aparelhos fracos' + (PerfMode.isLite() ? ' (no modo leve o padrão é 1)' : ''), 1));
   // Modo leve: sem desfoque/sombras/animações (TV e projetor ficam bem mais leves)
   const liteGroup = el('div', { class:'form-group' });
   liteGroup.appendChild(el('label', {}, ['Modo leve (visual simples, mais rápido)']));
