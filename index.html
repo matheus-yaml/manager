@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.0.99';
+<script>var APP_VERSION = '1.1.2';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -1353,7 +1353,7 @@ html.tv .content-card .info .meta{line-height:16px;}
       <div id="live-cat-list" class="live-cat-list"></div>
     </div>
     <div id="sidebar-search-counters" class="search-counters" style="display:none;"></div>
-    <div class="footer-mini"><div class="net-row"><div id="net-status" class="net-status" tabindex="0" role="button" title="Toque para verificar de novo"><span class="dot"></span><span class="txt">Verificando internet…</span></div><span id="sidebar-clock" class="sidebar-clock"></span></div><div id="net-speed" class="net-speed" style="display:none;"></div>StreamManager &middot; <span id="app-version-label">v1.0.0</span></div>
+    <div class="footer-mini"><div class="net-row"><div id="net-status" class="net-status" tabindex="0" role="button" title="Toque para verificar de novo"><span class="dot"></span><span class="txt">Verificando internet…</span></div><span id="sidebar-clock" class="sidebar-clock"></span></div><div id="net-speed" class="net-speed" style="display:none;"></div><div id="sys-stats" class="net-speed" style="display:none;"></div>StreamManager &middot; <span id="app-version-label">v1.0.0</span></div>
   </nav>
 
   <div id="main">
@@ -1920,6 +1920,7 @@ const DEFAULT_SETTINGS = {
     liveEngine: 'auto',         // 'auto' | 'native' | 'js' — (antigo) HLS nativo dentro do WebView
     wifiLock: true,             // APK: Wi-Fi em alto desempenho (ver WifiLock)
     liveReserveSec: 10,         // projetor: reserva do ExoPlayer no ao vivo (segundos guardados antes de tocar)
+    nativeLivePhone: false,     // celular (APK): ao vivo no ExoPlayer — desligado por padrão
     nativeLive: true            // projetor: ao vivo no player nativo do Android (ver NativeVideo)
   }
 
@@ -2920,6 +2921,37 @@ UpdateLog.install();
    "↓ 5,2 Mbps". Com um canal tocando, é a velocidade real que o vídeo está
    recebendo — se cair abaixo do que o canal precisa, vem o "Carregando".
    ====================================================================== */
+/* ============ SYSMON (rodapé da barra lateral) ============
+   "CPU 23% · 329 MB livres" — só no APK (plugin ManagerPip, ação sysStats).
+   CPU do aparelho todo (/proc/stat); se o Android bloquear, CPU do app. */
+const SysMon = {
+  _t: null, _last: null,
+  start(){
+    const go = () => { if(this._t || !(window.cordova && window.cordova.exec)) return; this.poll(); this._t = setInterval(() => this.poll(), 3000); };
+    if(window.cordova) go(); else document.addEventListener('deviceready', go, { once: true });
+  },
+  poll(){
+    if(document.visibilityState === 'hidden') return;
+    try{
+      window.cordova.exec((o) => {
+        try{ o = typeof o === 'string' ? JSON.parse(o) : o; }catch(e){ return; }
+        const now = Date.now(), prev = this._last;
+        this._last = { t: now, idle: o.cpuIdle, tot: o.cpuTotal, self: o.selfTicks };
+        let cpu = null;
+        if(prev){
+          if(o.cpuTotal != null && prev.tot != null && o.cpuTotal > prev.tot) cpu = 100 * (1 - (o.cpuIdle - prev.idle) / (o.cpuTotal - prev.tot));
+          else if(o.selfTicks != null && prev.self != null) cpu = 100 * (o.selfTicks - prev.self) / (((now - prev.t) / 1000) * 100 * (o.cores || 1));
+        }
+        const el = document.getElementById('sys-stats');
+        if(!el) return;
+        const mem = Math.round((o.avail || 0) / 1048576) + ' MB livres';
+        el.textContent = (cpu != null ? 'CPU ' + Math.max(0, Math.min(100, Math.round(cpu))) + '% · ' : '') + mem;
+        el.style.display = '';
+      }, () => { clearInterval(this._t); this._t = null; }, 'ManagerPip', 'sysStats', []);
+    }catch(e){}
+  }
+};
+
 const NetSpeed = {
   mbps: null, hist: [], _last: null, _ok: null,
   start(){
@@ -3220,8 +3252,13 @@ const NativeVideo = {
   /** Usar o player nativo pra este conteúdo? */
   wanted(content){
     if(!this._avail || !content || content.tipo !== 'live' || content._noNative) return false;
-    if(!PerfMode.isTvDevice()) return false; // só no projetor/TV
-    return ((State.settings && State.settings.performance) || {}).nativeLive !== false; // ligado por padrão (Configurações › Desempenho)
+    return this.enabledHere();
+  },
+  /** Configurações › Desempenho. Projetor/TV: ligado por padrão (nativeLive).
+   *  Celular/outros: desligado por padrão, liga pela opção (nativeLivePhone). */
+  enabledHere(){
+    const perf = (State.settings && State.settings.performance) || {};
+    return PerfMode.isTvDevice() ? perf.nativeLive !== false : perf.nativeLivePhone === true;
   },
   play(content){
     const name = resolveContentName(content);
@@ -8071,8 +8108,8 @@ const PlayerModule = {
     return s;
   },
   _reserveLabel(buf, reserve, played){
-    const have = Math.min(reserve || 0, Math.max(0, buf || 0)) / 1000, tot = (reserve || 0) / 1000;
-    return (played ? 'Enchendo a reserva de novo: ' : 'Enchendo a reserva: ') + Math.floor(have) + ' de ' + Math.round(tot) + 's';
+    const pct = reserve > 0 ? Math.min(99, Math.max(0, Math.round((buf || 0) / reserve * 100))) : 0;
+    return 'Carregando buffer… ' + pct + '%';
   },
   hideBuffering(){
     const b = qs('#player-buffering');
@@ -10179,36 +10216,39 @@ async function renderSettingsView(container){
   ]));
   perfRow.appendChild(tvGroup);
   // Projetor/TV: ao vivo no player nativo do Android (ver NativeVideo / player híbrido)
-  if(PerfMode.isTvDevice()){
+  // Celular (APK): mesma opção, desligada por padrão
+  if(PerfMode.isTvDevice() || window.cordova){
+    const tvDev = PerfMode.isTvDevice();
+    const natKey = tvDev ? 'nativeLive' : 'nativeLivePhone';
     const engGroup = el('div', { class:'form-group' });
     const lab = el('label', { style:'display:flex;align-items:center;gap:8px;cursor:pointer;' });
     const chk = el('input', { type:'checkbox' });
-    chk.checked = perf.nativeLive !== false;
+    chk.checked = NativeVideo.enabledHere();
     chk.addEventListener('change', async () => {
-      State.settings.performance = Object.assign({}, State.settings.performance || DEFAULT_SETTINGS.performance, { nativeLive: chk.checked });
+      State.settings.performance = Object.assign({}, State.settings.performance || DEFAULT_SETTINGS.performance, { [natKey]: chk.checked });
       await IDB.put(STORES.settings, State.settings);
       showToast('Player nativo no ao vivo ' + (chk.checked ? 'ligado' : 'desligado') + ' — vale a partir do próximo canal.', 'success');
     });
     lab.appendChild(chk);
-    lab.appendChild(document.createTextNode('Player nativo no ao vivo (projetor)'));
+    lab.appendChild(document.createTextNode('Player nativo no ao vivo' + (tvDev ? ' (projetor)' : ' (ExoPlayer)')));
     engGroup.appendChild(lab);
     // reserva do ExoPlayer
     const resRow = el('div', { style:'display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap;' });
-    resRow.appendChild(el('span', { style:'font-size:13px;' }, ['Reserva do ao vivo:']));
+    resRow.appendChild(el('span', { style:'font-size:13px;' }, ['Buffer do ao vivo:']));
     const resSel = el('select', {});
     [[5,'5 segundos'],[10,'10 segundos (padrão)'],[15,'15 segundos'],[20,'20 segundos'],[30,'30 segundos']].forEach(([v,l]) => resSel.appendChild(el('option', { value:String(v) }, [l])));
     resSel.value = String(NativeVideo.reserveSec());
     resSel.addEventListener('change', async () => {
       State.settings.performance = Object.assign({}, State.settings.performance || DEFAULT_SETTINGS.performance, { liveReserveSec: parseInt(resSel.value, 10) });
       await IDB.put(STORES.settings, State.settings);
-      showToast('Reserva do ao vivo: ' + resSel.value + 's — vale a partir do próximo canal.', 'success');
+      showToast('Buffer do ao vivo: ' + resSel.value + 's — vale a partir do próximo canal.', 'success');
     });
     resRow.appendChild(resSel);
     engGroup.appendChild(resRow);
     engGroup.appendChild(el('div', { style:'font-size:11px;color:var(--text-2);margin-top:4px;' }, [
       (NativeVideo._avail === false ? '⚠ Este APK não tem o player nativo (gere o APK com o build.sh novo). ' : '') +
       'O Android toca os canais ao vivo com o ExoPlayer (chip de vídeo, sem conversão em JavaScript) — bem mais leve. ' +
-      'A reserva guarda alguns segundos de vídeo antes de começar: o canal demora esse tempo pra abrir e fica esse tanto atrás do ao vivo, mas passa por cima das quedas rápidas de rede/servidor sem travar. ' +
+      'O buffer guarda alguns segundos de vídeo antes de começar: o canal demora esse tempo pra abrir e fica esse tanto atrás do ao vivo, mas passa por cima das quedas rápidas de rede/servidor sem travar. ' +
       'Desmarcando, o ao vivo volta pro player do app. Filmes e séries continuam no player do app.'
     ]));
     perfRow.appendChild(engGroup);
@@ -11612,6 +11652,7 @@ async function initApp(){
   if(versionLabel) versionLabel.textContent = 'v' + APP_VERSION;
   try{ NetStatus.start(); NetStatus.startClock(); }catch(e){}
   try{ NetSpeed.start(); }catch(e){}
+  try{ SysMon.start(); }catch(e){}
   setTimeout(() => { NativeVideo.probe(); }, 1200);
   try{ TvSharp.init(); }catch(e){}
   // Busca os dados do Dashboard ANTES de mostrar a tela — assim ela já abre
