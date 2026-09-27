@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.3.0';
+<script>var APP_VERSION = '1.3.4';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -4135,7 +4135,7 @@ const ManualUpdate = {
       return false;
     }
     const newVer = vm[1];
-    if(!confirm('Instalar a versão v' + newVer + ' (' + Math.round(html.length / 1024) + ' KB)?\nVocê está na v' + APP_VERSION + '. O app vai recarregar.')){
+    if(!(await appConfirm('Instalar a versão v' + newVer + ' (' + Math.round(html.length / 1024) + ' KB)?\nVocê está na v' + APP_VERSION + '. O app vai recarregar.', { title:'Atualizar o app', okText:'Instalar' }))){
       onStatus('Cancelado. Nada foi alterado.');
       return false;
     }
@@ -4584,6 +4584,26 @@ const IDB = {
   /** Apaga TUDO de um servidor nas stores em bloco (cru, conteúdo, busca,
    * séries) — 1 delete por faixa de chave [serverId, ...] em cada store,
    * numa transação só. */
+  /** Até `count` chaves dentro da faixa (pra apagar aos poucos). */
+  getKeysInRange(storeName, range, count){
+    return new Promise((resolve, reject)=>{
+      try{
+        const req = IDB.tx([storeName]).objectStore(storeName).getAllKeys(range, count);
+        req.onsuccess = ()=> resolve(req.result || []);
+        req.onerror = (e)=> reject(e.target.error);
+      }catch(err){ reject(err); }
+    });
+  },
+  deleteRange(storeName, range){
+    return new Promise((resolve, reject)=>{
+      try{
+        const tx = IDB.tx([storeName], 'readwrite', { durability: 'relaxed' });
+        tx.objectStore(storeName).delete(range);
+        tx.oncomplete = ()=> resolve();
+        tx.onerror = tx.onabort = (e)=> reject(tx.error || (e && e.target && e.target.error));
+      }catch(err){ reject(err); }
+    });
+  },
   deleteServerBlocks(serverId){
     return new Promise((resolve, reject)=>{
       try{
@@ -5641,9 +5661,8 @@ const ServerModule = {
   },
 
   async deleteServer(serverId){
-    // Tudo do servidor mora em chaves [serverId, ...] — 1 delete por faixa
-    // em cada store de bloco, sem precisar saber id por id.
-    await IDB.deleteServerBlocks(serverId);
+    // Os blocos (a parte pesada: dezenas de MB) são apagados em SEGUNDO PLANO
+    // pelo Purger — aqui só o que é pequeno, e o servidor some na hora.
     // Progresso/favoritos: o id de conteúdo começa com o serverId (ver
     // stableContentId) e a chave de série com "serverId::".
     const belongs = (id) => serverIdFromContentId(id) === serverId || serverIdFromSeriesKey(id) === serverId;
@@ -5655,6 +5674,7 @@ const ServerModule = {
 
     await IDB.delete(STORES.servers, serverId);
     State.servers.delete(serverId);
+    Purger.add(serverId);
     QueryModule.invalidateCaches();
     State.pageCache.clear(); State.dashboardCache = null; State.favoritesCache = null; State.continueCache = null;
   },
@@ -5810,6 +5830,7 @@ const ServerModule = {
     const tStart = performance.now();
     const serverId = server.id;
     let pool = null;
+    Purger.cancel(serverId); // servidor voltou: a importação já apaga o conteúdo antigo dele
     try{
       report({ phase:'download', status:'processing', downloaded:0, total:null, speed:0 });
 
@@ -5930,23 +5951,32 @@ const ServerModule = {
         // quando o Wi-Fi troca de faixa: não dá erro, só para) — derruba e
         // segue o caminho normal de "continuar de onde parou" / tentar de novo.
         const STALL_MS = PerfMode.isTvDevice() ? 15000 : 25000;
-        const readWithWatch = (rd) => new Promise((resolve, reject) => {
-          let done = false;
-          const t = setTimeout(() => { if(done) return; done = true; try{ rd.cancel(); }catch(e){} reject(new TypeError('network: download parado há ' + Math.round(STALL_MS / 1000) + 's (conexão morta)')); }, STALL_MS);
-          // rede caiu/voltou enquanto espera: não adianta esperar o tempo todo
-          const off = NetEvents.backAt;
-          const iv = setInterval(() => { if(!done && NetEvents.backAt > off && NetEvents.backAt - off > 0 && Date.now() - lastDataAt > 3000){ done = true; clearTimeout(t); clearInterval(iv); try{ rd.cancel(); }catch(e){} reject(new TypeError('network: a rede caiu e voltou — reconectando')); } }, 500);
-          rd.read().then(v => { if(done) return; done = true; clearTimeout(t); clearInterval(iv); resolve(v); }, e => { if(done) return; done = true; clearTimeout(t); clearInterval(iv); reject(e); });
-        });
-        let lastDataAt = Date.now();
+        // UM cronômetro só por download (leve): confere 1x/s se a leitura atual
+        // está parada. Só conta enquanto ESPERA A REDE (não quando o download
+        // está esperando o processamento ou a limpeza).
+        let reading = false, readStart = 0, stallWhy = null, curReader = reader;
+        const watch = setInterval(() => {
+          if(!reading || stallWhy) return;
+          const idle = Date.now() - readStart;
+          if(idle > STALL_MS) stallWhy = 'download parado há ' + Math.round(STALL_MS / 1000) + 's (conexão morta)';
+          else if(NetEvents.backAt > readStart && idle > 3000) stallWhy = 'a rede caiu e voltou — reconectando';
+          if(stallWhy){ try{ curReader.cancel(); }catch(e){} }
+        }, 1000);
+        try{
         for(;;){
           const tr = performance.now();
           let chunk;
-          try{ chunk = await readWithWatch(reader); if(chunk && chunk.value) lastDataAt = Date.now(); }
+          try{
+            reading = true; readStart = Date.now();
+            chunk = await reader.read();
+            reading = false;
+            if(stallWhy){ const w = stallWhy; stallWhy = null; throw new TypeError('network: ' + w); }
+          }
           catch(readErr){
+            reading = false; stallWhy = null;
             const r2 = await tryResume(readErr);
             if(!r2) throw readErr; // não deu pra continuar: erro vai pro "tentar de novo do zero"
-            reader = r2; lastDataAt = Date.now();
+            reader = r2; curReader = r2;
             continue;
           }
           const { done, value } = chunk;
@@ -5957,6 +5987,7 @@ const ServerModule = {
           await drain(false);
           progress(false);
         }
+        } finally { clearInterval(watch); }
         buf += dec.decode();
       } else {
         buf = await response.text();
@@ -6093,6 +6124,60 @@ const ServerModule = {
     await Promise.all(running);
     ServerModule._workersPerImport = 0;
     return results;
+  }
+};
+
+/* ======================================================================
+   PURGER — apaga o conteúdo pesado de servidores excluídos EM SEGUNDO PLANO
+   ----------------------------------------------------------------------
+   Excluir um servidor era lento (e travava o app): dezenas de MB de blocos
+   apagados numa operação só, segurando o banco. Agora:
+    - o servidor some na hora (registro pequeno, progresso e favoritos);
+    - os blocos são apagados aos poucos (lotes pequenos, transações curtas),
+      com pausas maiores se tiver vídeo tocando;
+    - a fila fica salva: se o app fechar no meio, continua na próxima abertura;
+    - se o mesmo servidor for importado de novo, a limpeza dele é cancelada
+      (a importação já apaga o que precisa).
+   ====================================================================== */
+const Purger = {
+  KEY: 'sm_purge_pending', _q: null, _running: false, _cancel: new Set(),
+  _load(){ if(this._q) return; try{ this._q = JSON.parse(localStorage.getItem(this.KEY) || '[]') || []; }catch(e){ this._q = []; } },
+  _save(){ try{ localStorage.setItem(this.KEY, JSON.stringify(this._q)); }catch(e){} },
+  add(id){ this._load(); if(this._q.indexOf(id) === -1) this._q.push(id); this._save(); this.run(); },
+  cancel(id){ this._load(); if(this._q.indexOf(id) === -1) return; this._q = this._q.filter(x => x !== id); this._cancel.add(id); this._save(); },
+  pending(){ this._load(); return this._q.length; },
+  async run(){
+    this._load();
+    if(this._running || !this._q.length) return;
+    this._running = true;
+    const stores = [STORES.rawBlocks, STORES.contentBlocks, STORES.searchBlocks, STORES.seriesBlocks];
+    try{
+      while(this._q.length){
+        const id = this._q[0];
+        this._cancel.delete(id);
+        const t0 = performance.now(); let n = 0;
+        const range = IDBKeyRange.bound([id], [id, []]);
+        for(const st of stores){
+          for(;;){
+            if(this._cancel.has(id)) break;
+            const keys = await IDB.getKeysInRange(st, range, 25);
+            if(!keys.length || this._cancel.has(id)) break; // reimportado no meio: não mexe mais
+            // apaga do 1º ao último desse lote numa transação curta
+            await IDB.deleteRange(st, IDBKeyRange.bound(keys[0], keys[keys.length - 1]));
+            n += keys.length;
+            // respira: deixa o app (e o vídeo) usarem o banco/processador
+            const playing = typeof PlayerModule !== 'undefined' && PlayerModule.currentContent;
+            await new Promise(r => setTimeout(r, playing ? 120 : 15));
+          }
+          if(this._cancel.has(id)) break;
+        }
+        if(this._cancel.has(id)){ this._cancel.delete(id); continue; } // reimportado: parou
+        this._q = this._q.filter(x => x !== id); this._save();
+        pushDebugLog('🧹 Conteúdo de servidor excluído apagado em segundo plano: ' + n + ' blocos em ' + Math.round(performance.now() - t0) + ' ms.');
+      }
+    }catch(err){
+      pushDebugLog('🧹 Limpeza em segundo plano parou (' + (err && err.message || err) + ') — continua na próxima abertura.', true);
+    }finally{ this._running = false; }
   }
 };
 
@@ -7099,6 +7184,11 @@ const PlayerModule = {
         showAndSchedule();
       } else if(TvNav.on() && document.activeElement && document.activeElement.closest && document.activeElement.closest('#player-controls-bottom, #player-topbar')){
         return; // modo TV com foco nos botões: setas andam entre eles (TvNav)
+      } else if(TvNav.isOk(e) && !e.repeat && this.currentContent && this.currentContent.tipo !== 'live'){
+        // filme/série: botão do meio (OK) pausa / continua
+        e.preventDefault(); e.stopPropagation();
+        this.togglePlayPause();
+        showAndSchedule();
       } else if(e.key === 'ArrowRight'){
         this.seekBy(10);
         showAndSchedule();
@@ -10064,12 +10154,36 @@ async function updateSingleServer(serverId, btnEl){
   Router.render();
 }
 
-function confirmDeleteServer(serverId){
+/** Confirmação do próprio app (no lugar do confirm() do sistema, que no
+ *  projetor não dá pra usar com o controle). Promise<boolean>. */
+function appConfirm(message, opts){
+  opts = opts || {};
+  return new Promise(resolve => {
+    const prevFocus = document.activeElement;
+    const overlay = el('div', { class:'modal-overlay' });
+    const box = el('div', { class:'modal-box', style:'max-width:440px;' });
+    box.appendChild(el('h3', {}, [opts.title || 'Confirmar']));
+    box.appendChild(el('p', { style:'margin:6px 0 18px;line-height:1.45;color:var(--text-1);white-space:pre-line;' }, [message]));
+    const done = (v) => { overlay.remove(); resolve(v); try{ if(prevFocus && prevFocus.isConnected) TvNav.on() ? TvNav.focus(prevFocus) : prevFocus.focus(); }catch(e){} };
+    const cancel = el('button', { class:'btn', type:'button', onclick:()=>done(false) }, [opts.cancelText || 'Cancelar']);
+    const ok = el('button', { class:'btn ' + (opts.danger ? 'danger' : 'primary'), type:'button', onclick:()=>done(true) }, [opts.okText || 'Sim']);
+    box.appendChild(el('div', { style:'display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap;' }, [cancel, ok]));
+    overlay.appendChild(box);
+    overlay.addEventListener('click', (e) => { if(e.target === overlay) done(false); });
+    qs('#modal-root').appendChild(overlay);
+    // foco começa no "Cancelar" (mais seguro); ←/→ troca
+    setTimeout(() => { try{ TvNav.on() ? TvNav.focus(cancel) : cancel.focus(); }catch(e){ cancel.focus(); } }, 30);
+  });
+}
+
+async function confirmDeleteServer(serverId){
   const server = State.servers.get(serverId);
   if(!server) return;
-  if(!confirm('Excluir o servidor "' + server.nome + '"? Todos os conteúdos relacionados serão removidos permanentemente.')) return;
+  if(!(await appConfirm('Excluir o servidor "' + server.nome + '"?\nTodos os conteúdos relacionados serão removidos permanentemente.', { title:'Excluir servidor', okText:'Sim, excluir', danger:true }))) return;
+  const tDel = performance.now();
   ServerModule.deleteServer(serverId).then(()=>{
-    showToast('Servidor excluído.', 'success');
+    pushDebugLog('🗑 Servidor "' + server.nome + '" excluído em ' + Math.round(performance.now() - tDel) + ' ms (o conteúdo é apagado em segundo plano).');
+    showToast('Servidor excluído.', 'success'); // o espaço é liberado em segundo plano (Purger)
     Router.render();
   }).catch(()=>{
     showToast('Erro ao excluir servidor.', 'error');
@@ -10585,7 +10699,7 @@ async function renderSettingsView(container){
     row.appendChild(goBtn); row.appendChild(resetBtn); row.appendChild(cleanBtn);
     if(!ManualUpdate.inApk() && ManualUpdate.overrideActive()){
       const backBtn = el('button', { class:'btn' }, ['⟲ Voltar para a v' + window.__SM_FILE_VERSION + ' (arquivo)']);
-      backBtn.addEventListener('click', () => { if(confirm('Voltar para a versão do arquivo (v' + window.__SM_FILE_VERSION + ')? O app vai recarregar.')) ManualUpdate.revertToFile(); });
+      backBtn.addEventListener('click', async () => { if(await appConfirm('Voltar para a versão do arquivo (v' + window.__SM_FILE_VERSION + ')? O app vai recarregar.', { title:'Voltar versão', okText:'Voltar' })) ManualUpdate.revertToFile(); });
       row.appendChild(backBtn);
     }
     updBlock.appendChild(row);
@@ -12090,6 +12204,7 @@ async function initApp(){
   try{ NetStatus.start(); NetStatus.startClock(); }catch(e){}
   try{ NetSpeed.start(); }catch(e){}
   try{ SysMon.start(); }catch(e){}
+  setTimeout(() => { try{ Purger.run(); }catch(e){} }, 8000); // limpeza pendente de servidor excluído
   setTimeout(() => { NativeVideo.probe(); }, 1200);
   try{ TvSharp.init(); }catch(e){}
   // Busca os dados do Dashboard ANTES de mostrar a tela — assim ela já abre
