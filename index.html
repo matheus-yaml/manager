@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.0.97';
+<script>var APP_VERSION = '1.0.98';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -2289,6 +2289,7 @@ const MemMonitor = {
     lines.push(UpdateLog.statusLine());
     lines.push(NetStatus.statusLine());
     try{ const ns = NetSpeed.statusLine(); if(ns) lines.push(ns); }catch(e){}
+    try{ const rs = PlayerModule.reserveStatus(); if(rs) lines.push(rs); }catch(e){}
     // quanto as imagens da tela ocupam (bitmap = largura x altura x 4 bytes)
     try{
       let n = 0, bytes = 0;
@@ -2424,7 +2425,8 @@ const PerfMode = {
     try{
       const pm = PlayerModule, o = document.getElementById('player-overlay');
       if(!pm.currentContent || !o || o.style.display !== 'flex') return 'sem vídeo';
-      return 'vídeo ' + (pm._mini ? 'no quadro' : 'em tela cheia') + ' via ' + (pm._engine || '?');
+      return 'vídeo ' + (pm._mini ? 'no quadro' : 'em tela cheia') + ' via ' + (pm._engine || '?') +
+        (pm._nativeEngine === 'exoplayer' && pm._reserveBuf != null ? ', guardado ' + (pm._reserveBuf / 1000).toFixed(1).replace('.', ',') + 's' : '');
     }catch(e){ return '?'; }
   },
   /** Só com o painel de diagnóstico ligado: medir travadas e "quem está pesando". */
@@ -6185,7 +6187,7 @@ const PlayerModule = {
   },
   _startHybrid(content, token){
     this._engine = 'nativo do Android (híbrido)';
-    this._nativeEngine = null; this._reserveBuf = null;
+    this._nativeEngine = null; this._reserveBuf = null; this._resSamples = []; this._resWarnAt = 0;
     this.showBuffering();
     this._updatePlayPauseIcon();
     let played = false;
@@ -6200,6 +6202,7 @@ const PlayerModule = {
       }
       else if(o.event === 'stat'){
         this._reserveBuf = o.buf;
+        this._reserveTrack(o);
         // enchendo a reserva (no começo ou depois de um engasgo): mostra o progresso
         if(o.state === 2 && !this._hybridPaused) this.showBuffering(this._reserveLabel(o.buf, o.reserve, o.played));
       }
@@ -8000,6 +8003,37 @@ const PlayerModule = {
     b.style.display = 'flex';
     const sp = b.querySelector('span');
     if(sp) sp.textContent = label || 'Carregando stream...';
+  },
+  /** Acompanha a reserva do ExoPlayer: se ela cai enquanto toca, o servidor
+   *  está mandando o vídeo mais devagar do que ele toca (a reserva não segura). */
+  _reserveTrack(o){
+    const now = Date.now(), a = this._resSamples || (this._resSamples = []);
+    a.push({ t: now, buf: o.buf, st: o.state, reserve: o.reserve });
+    while(a.length && now - a[0].t > 30000) a.shift();
+    const tr = this._reserveTrend();
+    if(tr && tr.rate < -0.08 && now - (this._resWarnAt || 0) > 60000){
+      this._resWarnAt = now;
+      pushDebugLog('⚠ A reserva está esvaziando (' + tr.rate.toFixed(2).replace('.', ',') + 's por segundo, guardado ' + (o.buf / 1000).toFixed(1).replace('.', ',') + 's): o vídeo chega mais devagar do que toca — rede agora ' + NetSpeed.fmt(NetSpeed.mbps) + ', média 1 min ' + NetSpeed.fmt(NetSpeed.avg()) + '. Canal pesado demais pra essa conexão ou servidor lento.', true);
+    }
+  },
+  /** Variação da reserva (s por segundo) nos últimos ~20s em que o vídeo esteve tocando. */
+  _reserveTrend(){
+    const a = (this._resSamples || []).filter(x => x.st === 3);
+    if(a.length < 4) return null;
+    const f = a[0], l = a[a.length - 1], dt = (l.t - f.t) / 1000;
+    if(dt < 6) return null;
+    return { rate: (l.buf - f.buf) / 1000 / dt, secs: dt };
+  },
+  reserveStatus(){
+    if(!this._hybrid || this._nativeEngine !== 'exoplayer' || this._reserveBuf == null) return '';
+    const res = NativeVideo.reserveSec(), tr = this._reserveTrend();
+    let s = 'Reserva do ao vivo: ' + (this._reserveBuf / 1000).toFixed(1).replace('.', ',') + 's guardados (meta ' + res + 's)';
+    if(tr){
+      if(tr.rate < -0.08) s += ' • CAINDO ' + Math.abs(tr.rate).toFixed(2).replace('.', ',') + 's/s (o vídeo chega mais devagar do que toca)';
+      else if(tr.rate > 0.08) s += ' • enchendo';
+      else s += ' • estável (o vídeo chega no ritmo certo)';
+    }
+    return s;
   },
   _reserveLabel(buf, reserve, played){
     const have = Math.min(reserve || 0, Math.max(0, buf || 0)) / 1000, tot = (reserve || 0) / 1000;
