@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.5.0';
+<script>var APP_VERSION = '1.5.1';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -4164,24 +4164,26 @@ const ManualUpdate = {
       onStatus(msg, true); pushDebugLog('🔄 Atualização manual: ' + msg, true);
       return false;
     }
-    // confere se é mesmo o app (e não uma página de erro/login)
-    const vm = /APP_VERSION\s*=\s*['"]([^'"]+)['"]/.exec(html);
-    if(!vm || html.length < 20000 || !/<html/i.test(html)){
-      const msg = 'O arquivo baixado não parece ser o app (' + Math.round(html.length / 1024) + ' KB, sem APP_VERSION). Nada foi alterado.';
+    // qualquer arquivo é aceito (com ou sem APP_VERSION) — só um arquivo vazio é recusado
+    if(!html || !html.trim()){
+      const msg = 'O arquivo baixado está vazio. Nada foi alterado.';
       onStatus(msg, true); pushDebugLog('🔄 Atualização manual: ' + msg, true);
       return false;
     }
-    const newVer = vm[1];
-    if(!(await appConfirm('Instalar a versão v' + newVer + ' (' + Math.round(html.length / 1024) + ' KB)?\nVocê está na v' + APP_VERSION + '. O app vai recarregar.', { title:'Atualizar o app', okText:'Instalar' }))){
+    const vm = /APP_VERSION\s*=\s*['"]([^'"]+)['"]/.exec(html);
+    const newVer = vm ? vm[1] : null;
+    const verLbl = newVer ? 'v' + newVer : 'sem versão';
+    const verTxt = newVer ? 'a versão v' + newVer : 'este arquivo (sem número de versão)';
+    if(!(await appConfirm('Instalar ' + verTxt + ' (' + Math.round(html.length / 1024) + ' KB)?\nVocê está na v' + APP_VERSION + '. O app vai recarregar.', { title:'Atualizar o app', okText:'Instalar' }))){
       onStatus('Cancelado. Nada foi alterado.');
       return false;
     }
     if(!this.inApk()){
-      if(!this._saveBrowser(html, newVer, url)){ onStatus('Sem espaço no navegador para guardar a versão nova.', true); return false; }
+      if(!this._saveBrowser(html, newVer || 'sem versão', url)){ onStatus('Sem espaço no navegador para guardar a versão nova.', true); return false; }
       try{ localStorage.setItem('sm_last_update', JSON.stringify({ from: APP_VERSION, at: Date.now(), manual: true })); }catch(e){}
       onStatus('Limpando cache…'); await this.clearCaches();
-      pushDebugLog('🔄 Atualização manual: v' + newVer + ' guardada no navegador — recarregando…');
-      onStatus('Versão v' + newVer + ' instalada. Recarregando…');
+      pushDebugLog('🔄 Atualização manual: ' + verLbl + ' guardada no navegador — recarregando…');
+      onStatus('Arquivo (' + verLbl + ') instalado. Recarregando…');
       setTimeout(() => location.reload(), 600);
       return true;
     }
@@ -4193,8 +4195,8 @@ const ManualUpdate = {
     if(!ok){ onStatus('Não consegui gravar a versão nova no aparelho.', true); return false; }
     try{ localStorage.setItem('sm_last_update', JSON.stringify({ from: APP_VERSION, at: Date.now(), manual: true })); }catch(e){}
     onStatus('Limpando cache…'); await this.clearCaches();
-    pushDebugLog('🔄 Atualização manual: v' + newVer + ' gravada — recarregando…');
-    onStatus('Versão v' + newVer + ' instalada. Recarregando…');
+    pushDebugLog('🔄 Atualização manual: ' + verLbl + ' gravada — recarregando…');
+    onStatus('Arquivo (' + verLbl + ') instalado. Recarregando…');
     setTimeout(() => location.reload(), 600);
     return true;
   }
