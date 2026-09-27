@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.4.2';
+<script>var APP_VERSION = '1.4.3';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -5839,6 +5839,49 @@ const ServerModule = {
     }
   },
 
+  _importGen: {},
+  /** Apaga, aos poucos e em segundo plano, os blocos do import anterior que o novo
+   * não sobrescreveu (lista ficou menor ou um bloco não tem mais aquele tipo).
+   * Para se o servidor for importado de novo no meio (gen mudou). */
+  async _trimStale(serverId, gen, nRaw, nSeries, blocosIdx){
+    const live = () => this._importGen[serverId] === gen;
+    const t0 = performance.now(); let del = 0;
+    const pause = () => new Promise(r => setTimeout(r, (typeof PlayerModule !== 'undefined' && PlayerModule.currentContent) ? 120 : 15));
+    try{
+      // cru e séries: chave [id, b] → tudo de b em diante sobrou
+      for(const [st, from] of [[STORES.rawBlocks, nRaw], [STORES.seriesBlocks, nSeries]]){
+        const range = IDBKeyRange.bound([serverId, from], [serverId, []]);
+        for(;;){
+          if(!live()) return;
+          const keys = await IDB.getKeysInRange(st, range, 25);
+          if(!keys.length || !live()) break;
+          await IDB.deleteRange(st, IDBKeyRange.bound(keys[0], keys[keys.length - 1]));
+          del += keys.length; await pause();
+        }
+      }
+      // prontos e busca: chave [id, tipo, b] → sobra = b que não está na lista nova daquele tipo
+      for(let t = 0; t < 3; t++){
+        const keep = new Set(blocosIdx[t]);
+        for(const st of [STORES.contentBlocks, STORES.searchBlocks]){
+          if(!live()) return;
+          const keys = await IDB.getKeysInRange(st, IDBKeyRange.bound([serverId, t], [serverId, t, []]));
+          const stale = keys.filter(k => !keep.has(k[2]));
+          for(let i = 0; i < stale.length; i += 25){
+            if(!live()) return;
+            await new Promise((resolve, reject) => {
+              const tx = IDB.tx([st], 'readwrite', { durability:'relaxed' });
+              const os = tx.objectStore(st);
+              for(const k of stale.slice(i, i + 25)) os.delete(k);
+              tx.oncomplete = () => resolve(); tx.onerror = tx.onabort = () => reject(tx.error);
+            });
+            del += Math.min(25, stale.length - i); await pause();
+          }
+        }
+      }
+      if(del) pushDebugLog('🧹 Sobras do conteúdo antigo apagadas em segundo plano: ' + del + ' blocos em ' + Math.round(performance.now() - t0) + ' ms.');
+    }catch(err){ pushDebugLog('🧹 Limpeza das sobras parou (' + (err && err.message || err) + ') — sem problema, não são lidas.', true); }
+  },
+
   async _importOnce(server, statusCallback, quietNetworkErrors){
     const report = (patch) => { if(statusCallback) statusCallback(patch); };
     const tStart = performance.now();
@@ -5854,16 +5897,10 @@ const ServerModule = {
         stg.name = txt.replace(/\.\.\.$/, '').toLowerCase(); stg.t = now;
         report({ phase:'download', status:'processing', downloaded:0, total:null, speed:0, stage: txt });
       };
-      stage('Limpando conteúdo antigo...');
-
-      // 1) apaga TUDO do servidor (cru + prontos + séries) — os blocos novos são numerados do zero
-      await new Promise((resolve, reject) => {
-        const range = IDBKeyRange.bound([serverId], [serverId, []]);
-        const tx = IDB.tx([STORES.rawBlocks, STORES.contentBlocks, STORES.searchBlocks, STORES.seriesBlocks], 'readwrite', { durability:'relaxed' });
-        [STORES.rawBlocks, STORES.contentBlocks, STORES.searchBlocks, STORES.seriesBlocks].forEach(n => tx.objectStore(n).delete(range));
-        tx.oncomplete = () => resolve();
-        tx.onerror = tx.onabort = () => reject(tx.error);
-      });
+      // 1) NÃO apaga antes: os blocos novos são numerados do zero e gravam POR CIMA dos antigos
+      //    (mesma chave). Só o que sobrar do conteúdo antigo é apagado depois, em segundo plano
+      //    (_trimStale). Antes, apagar tudo aqui travava o início por muito tempo no projetor.
+      const gen = this._importGen[serverId] = (this._importGen[serverId] || 0) + 1; // cancela limpeza antiga desse servidor
 
       // 2) resumo acumulado (o que cada worker devolve)
       const acc = { cnt:[0,0,0], blocks:[[],[],[]], grupos:[new Map(),new Map(),new Map()], series:new Map(), done:0 };
@@ -6070,6 +6107,8 @@ const ServerModule = {
         tx.onerror = tx.onabort = () => reject(tx.error);
       });
       const blocosIdx = acc.blocks.map(b => b.sort((p, q) => p - q));
+      // sobras do conteúdo antigo (não são lidas: o app só lê os blocos listados) → apaga sem travar
+      setTimeout(() => ServerModule._trimStale(serverId, gen, n, nsb, blocosIdx), 1500);
       const sortedKeys = (m) => Array.from(m.keys()).sort();
       const result = {
         counts: { live: acc.cnt[0], movie: acc.cnt[1], series: acc.cnt[2] },
