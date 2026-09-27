@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.1.5';
+<script>var APP_VERSION = '1.1.6';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -281,8 +281,9 @@ a:focus,
 .sidebar-clock{flex-shrink:0;font-weight:600;color:var(--text-1);white-space:nowrap;font-variant-numeric:tabular-nums;}
 .sidebar-clock.bad{color:#f87171;}
 .sys-line{font-size:11px;font-weight:600;color:var(--text-1);white-space:nowrap;letter-spacing:-.1px;text-align:left;margin:0;padding-left:0;font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;}
-html.tv .sys-line{font-size:9px;letter-spacing:-.2px;}
+html.tv .sys-line{font-size:9px;letter-spacing:-.3px;margin-right:-8px;}
 .sys-line .low{color:var(--danger,#f87171);}
+.sys-line .flap{color:#fbbf24;}
 .net-speed{font-weight:600;color:var(--text-1);margin:-2px 0 8px 15px;font-variant-numeric:tabular-nums;}
 .net-speed.low{color:#fbbf24;}
 /* TV/projetor: barra lateral estreita — relógio numa linha e o status embaixo */
@@ -2937,6 +2938,7 @@ const SysMon = {
   },
   poll(){
     if(document.visibilityState === 'hidden') return;
+    this.pollWifi();
     try{
       window.cordova.exec((o) => {
         try{ o = typeof o === 'string' ? JSON.parse(o) : o; }catch(e){ return; }
@@ -2954,6 +2956,39 @@ const SysMon = {
     }catch(e){}
   },
   _cpu: null, _mem: null,
+  /* ---- faixa do Wi-Fi (2,4 / 5 GHz) + detector de "fica trocando de faixa" ----
+     Visto no ADB: com rede única 2,4+5 GHz o projetor alternava entre as duas
+     a cada ~7s, e cada troca travava o vídeo. O Android não deixa o app fixar
+     a faixa, mas dá pra perceber e avisar. */
+  _band: null, _bandChanges: [], _wifiOk: null, _flapping: false, _flapWarnAt: 0,
+  pollWifi(){
+    if(this._wifiOk === false) return;
+    try{
+      window.cordova.exec((o) => {
+        try{ o = typeof o === 'string' ? JSON.parse(o) : o; }catch(e){ return; }
+        this._wifiOk = true;
+        const f = +o.freq || 0;
+        const band = (o.rssi != null && o.rssi <= -100) || !f ? null : (f > 4900 ? '5G' : '2.4G');
+        const now = Date.now();
+        if(band && this._band && band !== this._band){
+          this._bandChanges.push(now);
+          pushDebugLog('📶 Wi-Fi trocou de faixa: ' + this._band + ' → ' + band + ' (sinal ' + o.rssi + ' dBm).', true);
+        }
+        if(band) this._band = band;
+        this._bandChanges = this._bandChanges.filter(t => now - t < 180000);
+        const flap = this._bandChanges.length >= 4; // 4+ trocas em 3 min
+        if(flap && !this._flapping){
+          pushDebugLog('⚠ O Wi-Fi está trocando entre 2,4 e 5 GHz toda hora (' + this._bandChanges.length + ' trocas em 3 min) — é isso que trava o vídeo.', true);
+          if(now - this._flapWarnAt > 15 * 60000){
+            this._flapWarnAt = now;
+            try{ showToast('Seu Wi-Fi está trocando entre 2,4 e 5 GHz toda hora, e isso trava o vídeo. Separe as redes 2,4 e 5 GHz no roteador (ou desligue o "band steering") e conecte numa só — ou use outra conexão.', 'error'); }catch(e){}
+          }
+        }
+        this._flapping = flap;
+        this.render();
+      }, () => { this._wifiOk = false; }, 'ManagerPip', 'wifiInfo', []);
+    }catch(e){ this._wifiOk = false; }
+  },
   /** Uma linha só: "CPU 40% · 345 MB · ↓ 2,0 Mbps" */
   render(){
     const el = document.getElementById('sys-stats');
@@ -2961,17 +2996,26 @@ const SysMon = {
     if(typeof PlayerModule !== 'undefined' && PlayerModule.isFullOpen && PlayerModule.isFullOpen()) return; // atrás do vídeo: não redesenha
     const parts = [];
     if(this._cpu != null) parts.push('CPU ' + this._cpu + '%');
-    if(this._mem != null) parts.push(this._mem + ' MB');
+    if(this._mem != null) parts.push(this._mem + 'MB');
     let net = null, low = false;
     if(typeof NetSpeed !== 'undefined' && NetSpeed._ok){
       const playing = !!(PlayerModule.currentContent && document.getElementById('player-overlay').style.display === 'flex');
-      net = '↓ ' + NetSpeed.fmt(NetSpeed.mbps);
+      const v = NetSpeed.mbps; // compacto pra caber numa linha no projetor
+      net = '↓' + (v == null ? '—' : v < 1 ? Math.round(v * 1000) + 'kbps' : v < 10 ? v.toFixed(1).replace('.', ',') + 'Mbps' : Math.round(v) + 'Mbps');
       low = playing && NetSpeed.mbps != null && NetSpeed.mbps < 1.5;
     }
     if(!parts.length && !net) return;
-    el.textContent = parts.join(' · ') + (parts.length && net ? ' · ' : '');
+    const SEP = '\u2009·\u2009'; // espaço fino: cabe numa linha no projetor
+    el.textContent = parts.join(SEP) + (parts.length && net ? SEP : '');
     if(net){ const sp = document.createElement('span'); sp.textContent = net; if(low) sp.className = 'low'; el.appendChild(sp); }
-    el.title = 'CPU do aparelho • memória livre • velocidade da internet agora (média 1 min: ' + (typeof NetSpeed !== 'undefined' ? NetSpeed.fmt(NetSpeed.avg()) : '—') + ')';
+    if(this._band){
+      const b = document.createElement('span');
+      b.textContent = '\u2009·\u2009' + (this._flapping ? '⚠' : '') + this._band;
+      if(this._flapping) b.className = 'flap';
+      el.appendChild(b);
+    }
+    el.title = 'CPU do aparelho • memória livre • velocidade da internet agora (média 1 min: ' + (typeof NetSpeed !== 'undefined' ? NetSpeed.fmt(NetSpeed.avg()) : '—') + ') • faixa do Wi-Fi' +
+      (this._flapping ? ' — ATENÇÃO: o Wi-Fi está trocando entre 2,4 e 5 GHz toda hora (' + this._bandChanges.length + ' trocas em 3 min); isso trava o vídeo.' : '');
     el.style.display = '';
   }
 };
