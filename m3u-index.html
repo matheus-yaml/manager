@@ -40,6 +40,7 @@ button:disabled,input:disabled{opacity:.5}
   <button id="btnProc">Reprocessar</button>
   <button id="btnDel">Excluir lista</button>
   <label>workers <select id="nw"><option value="0">auto</option><option>1</option><option>2</option><option>3</option></select></label>
+  <label>conexões <select id="conx"><option value="0">auto</option><option>1</option><option>2</option><option>3</option><option>4</option></select></label>
   <label>lista crua em <select id="cru"><option value="auto">auto (mede o disco)</option><option value="opfs">arquivo</option><option value="idb">banco</option></select></label>
   <button id="btnCalib">Testar disco</button>
   <label><input type="checkbox" id="comp"> compactar</label>
@@ -486,138 +487,235 @@ function corte(buf, usado, lim) {
   return -1;
 }
 
-/* ================= 1) baixar → gravar cru (bytes) + processar sem travar o download ================= */
+/* ================= 1) baixar → gravar cru + processar, com download em PARTES PARALELAS ================= */
+// Cada "segmento" é uma faixa de bytes da lista baixada por uma conexão própria. Blocos de cada segmento
+// recebem chaves k*BASE + j; a "costura" entre segmentos (fim do k + começo do k+1) recebe k*BASE + BASE-1.
+// Ordenando as chaves, a concatenação dos blocos é exatamente o arquivo original.
+var BASE = 100000;
+function primeiroCorte(buf, usado) {               // 1º "\n#EXTINF" do buffer
+  for (var i = 0; i < usado - 8; i++)
+    if (buf[i] === 10 && buf[i + 1] === 35 && buf[i + 2] === 69 && buf[i + 3] === 88 && buf[i + 4] === 84 && buf[i + 5] === 73 && buf[i + 6] === 78 && buf[i + 7] === 70) return i;
+  return -1;
+}
+function junta2(a, b) { var r = new Uint8Array(a.length + b.length); r.set(a); r.set(b, a.length); return r; }
+
 async function importar(m) {
   var src = m.src, nome = m.nome, N = m.N, comp = m.comp && TEM_COMP;
-  var next, total, rd = null, file = src.file, fr = null, off = 0, origem = src.url || (file && file.name) || 'arquivo';
-  var t0 = Date.now();
-  if (src.url) {
-    var resp = await fetch(src.url);
-    tResp = Date.now() - t0;
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    rd = resp.body.getReader();
-    total = +resp.headers.get('content-length') || 0;
-    next = function () { return rd.read(); };
-    resp = null;
-  } else {
-    fr = new FileReaderSync(); total = file.size;
-    next = function () {
-      if (off >= file.size) return Promise.resolve({ done: true });
-      var b = fr.readAsArrayBuffer(file.slice(off, off + CH)); off += CH;
-      return Promise.resolve({ done: false, value: new Uint8Array(b) });
-    };
-  }
-  // onde gravar a lista crua: 'opfs' (arquivo) ou 'idb' (banco). auto = o que a calibração mediu como mais rápido
+  var origem = src.url || (src.file && src.file.name) || 'arquivo';
+  var t0 = Date.now(), tResp = 0, tRede = 0, tDisco = 0, notaRede = '';
+
+  // ---- 1. prepara o armazenamento ANTES de abrir a rede (calibração não atrasa o download) ----
+  if (!db) db = await open();
+  var antigo = null;
+  try { antigo = await req(db.transaction('listas').objectStore('listas').get(nome)); } catch (e) {}
   var modo = m.cru, calib = m.calib || (modo === 'auto' || modo === 'idb' ? await calibrar() : null);
   if (modo === 'auto') modo = calib.melhor;
   var G = calib ? calib.grupo : 4;                   // blocos de 1 MB por gravação no banco
   if (modo === 'opfs' && !TEM_OPFS) modo = 'idb';
   await alterarSchema(nome, null);
   var tx0 = db.transaction(nome, 'readwrite', RW); tx0.objectStore(nome).clear(); await txDone(tx0);
-  var root = await raizOPFS(), sah = null, pos = 0, indice = [];
+  var root = await raizOPFS(), sah = null;
   if (!root && modo === 'opfs') modo = 'idb';        // arquivo não permitido neste navegador → banco
   if (modo === 'opfs') {
     try {
       sah = await (await root.getFileHandle(arqCru(nome), { create: true })).createSyncAccessHandle();
       sah.truncate(0);
-    } catch (e) { sah = null; modo = 'idb'; }        // navegador sem suporte: volta para o banco
+    } catch (e) { sah = null; modo = 'idb'; }
   }
-  if (modo !== 'opfs' && root) { try { await root.removeEntry(arqCru(nome)); } catch (e) {} }   // sobra de modo arquivo
+  if (modo !== 'opfs' && root) { try { await root.removeEntry(arqCru(nome)); } catch (e) {} }
 
-  var acc = novoAcc(), depois = [], pool = criarPool(N, m.parserSrc, nome, comp, function (d) { junta(acc, d); });
-  var buf = new Uint8Array(CH * 2), usado = 0, n = 0, bytes = 0, last = 0;
-  // gravação crua SEM travar a rede: até EMVOO gravações em andamento enquanto o download continua
-  var EMVOO = G > 1 ? 2 : 3, voando = [], tDisco = 0, tRede = 0, tResp = 0;
-  var gbuf = null, gusado = 0, gnum = 0, gblocos = 0, indiceG = [];
-  function gravaGrupo() {                           // grava o grupo acumulado numa gravação só
+  // ---- 2. abre as conexões ----
+  var segs = [], total = 0;
+  function novoSeg(k, ini, fim, next, cancelar) {
+    return { k: k, ini: ini, fim: fim, next: next, cancelar: cancelar, rec: 0, buf: new Uint8Array(CH * 2), usado: 0,
+             pos: ini, j: 0, achouInicio: k === 0, cabeca: null, cauda: null, caudaPos: 0 };
+  }
+  var tAbre = Date.now();
+  if (src.url) {
+    var resp = await fetch(src.url);
+    tResp = Date.now() - tAbre;
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    var L = +resp.headers.get('content-length') || 0, estimado = false;
+    total = L;
+    if (!L && antigo && antigo.bytes) { L = antigo.bytes; estimado = true; }   // sem tamanho: usa o da última vez
+    var K = m.conexoes > 0 ? m.conexoes : 3;
+    if (!L || L < K * 8 * CH) K = 1;
+    var rdA = resp.body.getReader();
+    segs.push(novoSeg(0, 0, Infinity, function () { return rdA.read(); }, function () { try { rdA.cancel(); } catch (e) {} }));
+    if (K > 1) {
+      var parte = Math.floor(L / K), extras = [];
+      try {
+        for (var k = 1; k < K; k++) {
+          var ini = k * parte, fim = k < K - 1 ? (k + 1) * parte : Infinity, ctl = new AbortController();
+          extras.push({ k: k, ini: ini, fim: fim, ctl: ctl,
+            p: fetch(src.url, { headers: { Range: 'bytes=' + ini + '-' + (fim === Infinity ? '' : fim - 1) }, signal: ctl.signal }) });
+        }
+        var rs = await Promise.all(extras.map(function (e) { return e.p; }));
+        if (rs.every(function (r) { return r.status === 206; })) {
+          segs[0].fim = parte;
+          extras.forEach(function (e, j) {
+            var rd = rs[j].body.getReader();
+            segs.push(novoSeg(e.k, e.ini, e.fim, function () { return rd.read(); }, function () { try { rd.cancel(); } catch (x) {} }));
+          });
+          notaRede = K + ' conexões paralelas' + (estimado ? ' (tamanho estimado pela última importação)' : '');
+        } else {
+          extras.forEach(function (e) { try { e.ctl.abort(); } catch (x) {} });
+          notaRede = '1 conexão (o servidor não aceita download em partes: respondeu ' + rs.map(function (r) { return r.status; }).join('/') + ')';
+        }
+      } catch (e) {
+        extras.forEach(function (x) { try { x.ctl.abort(); } catch (y) {} });
+        notaRede = '1 conexão (download em partes recusado: ' + (e && e.message || e) + ')';
+      }
+    } else notaRede = '1 conexão' + (L ? '' : ' (servidor não informou o tamanho e não há importação anterior)');
+    resp = null;
+  } else {
+    var file = src.file, fr = new FileReaderSync(), off = 0;
+    total = file.size;
+    segs.push(novoSeg(0, 0, Infinity, function () {
+      if (off >= file.size) return Promise.resolve({ done: true });
+      var b = fr.readAsArrayBuffer(file.slice(off, off + CH)); off += CH;
+      return Promise.resolve({ done: false, value: new Uint8Array(b) });
+    }, function () {}));
+    notaRede = 'arquivo local';
+  }
+
+  // ---- 3. gravação crua + envio aos workers ----
+  var acc = novoAcc(), depois = [], chaves = [], previa = null;
+  var pool = criarPool(N, m.parserSrc, nome, comp, function (d) {
+    junta(acc, d);
+    // LISTA UTILIZÁVEL ANTES DE TERMINAR: assim que houver canais processados, grava uma prévia
+    if (!previa && acc.cnt[0] > 0) previa = gravarPrevia(nome, origem, acc, comp, modo);
+  });
+  var EMVOO = G > 1 ? 2 : 3, voando = [];
+  var gbuf = null, gusado = 0, gnum = 0, gblocos = 0, indice = [];
+  function gravaGrupo() {
     if (!gblocos) return;
     var tx = db.transaction(nome, 'readwrite', RW);
     tx.objectStore(nome).put(gbuf.slice(0, gusado), 'g' + gnum);
     voando.push(txDone(tx));
     gnum++; gusado = 0; gblocos = 0;
   }
-  async function put(bloco) {
-    if (sah) {                                      // arquivo: escrita sequencial direta, sem sobrecarga do banco
-      var w0 = Date.now();
-      sah.write(bloco, { at: pos });
-      tDisco += Date.now() - w0;
-      indice.push({ o: pos, l: bloco.length }); pos += bloco.length;
-    } else if (G > 1) {                             // banco em grupos: copia o bloco para o grupo atual
+  async function emite(bloco, chave, posAbs) {
+    chaves.push(chave);
+    if (sah) {                                      // arquivo: escreve na posição exata do original
+      var w0 = Date.now(); sah.write(bloco, { at: posAbs }); tDisco += Date.now() - w0;
+      indice.push([chave, { o: posAbs, l: bloco.length }]);
+    } else if (G > 1) {                             // banco em grupos (blocos de qualquer segmento)
       if (!gbuf || gusado + bloco.length > gbuf.length) {
         var ng = new Uint8Array(Math.max(G * CH + CH, gusado + bloco.length));
         if (gbuf) ng.set(gbuf.subarray(0, gusado)); gbuf = ng;
       }
       gbuf.set(bloco, gusado);
-      indiceG.push({ g: gnum, o: gusado, l: bloco.length });
+      indice.push([chave, { g: gnum, o: gusado, l: bloco.length }]);
       gusado += bloco.length; gblocos++;
       if (gblocos >= G) gravaGrupo();
     } else {
       var tx = db.transaction(nome, 'readwrite', RW);
-      tx.objectStore(nome).put(bloco, n);           // o put copia os bytes na hora → podemos transferir depois
+      tx.objectStore(nome).put(bloco, chave);
       voando.push(txDone(tx));
     }
-    if (!pool.tentar(n, bloco)) depois.push(n);     // worker livre (ou fila)? processa já. Senão, fica para depois.
-    n++;
+    if (!pool.tentar(chave, bloco)) depois.push(chave);
     if (voando.length >= EMVOO) { var w = Date.now(); await voando.shift(); tDisco += Date.now() - w; }
-    else await new Promise(function (r) { setTimeout(r, 0); });   // cede a vez p/ receber respostas dos workers (libera-os p/ o próximo bloco)
+    else await new Promise(function (r) { setTimeout(r, 0); });
   }
-  try {
+  var bytes = 0, last = 0;
+  function progresso() {
+    if (Date.now() - last < 300) return;
+    last = Date.now();
+    post({ status: 'Baixando/gravando ' + nome + ' (' + segs.length + (segs.length > 1 ? ' conexões' : ' conexão') + ')... ' + mb(bytes) +
+      (total ? ' / ' + mb(total) + ' (' + Math.round(bytes / total * 100) + '%)' : '') +
+      ' — processados ' + acc.feitos + ', na fila ' + pool.naFila() + ', para depois ' + depois.length + (acc.previaPronta ? ' — canais já disponíveis' : '') });
+  }
+  async function rodaSeg(sg) {
+    var limite = sg.fim - sg.ini;
     for (;;) {
       var wr = Date.now();
-      var c = await next();
+      var c = await sg.next();
       tRede += Date.now() - wr;
       if (c.done) break;
-      var v = c.value; c = null;
-      bytes += v.byteLength;
-      if (usado + v.length > buf.length) { var nb = new Uint8Array(Math.max(buf.length * 2, usado + v.length)); nb.set(buf.subarray(0, usado)); buf = nb; }
-      buf.set(v, usado); usado += v.length; v = null;
-      while (usado >= CH) {
-        var cut = corte(buf, usado, CH);
+      var v = c.value, acabou = false; c = null;
+      if (sg.rec + v.length >= limite) { v = v.subarray(0, limite - sg.rec); acabou = true; }
+      sg.rec += v.length; bytes += v.length;
+      if (sg.usado + v.length > sg.buf.length) { var nb = new Uint8Array(Math.max(sg.buf.length * 2, sg.usado + v.length)); nb.set(sg.buf.subarray(0, sg.usado)); sg.buf = nb; }
+      sg.buf.set(v, sg.usado); sg.usado += v.length; v = null;
+      if (!sg.achouInicio) {                         // segmento do meio: separa o pedaço antes da 1ª entrada
+        var ic = primeiroCorte(sg.buf, sg.usado);
+        if (ic >= 0) {
+          sg.cabeca = sg.buf.slice(0, ic + 1);
+          sg.buf.copyWithin(0, ic + 1, sg.usado); sg.usado -= ic + 1; sg.pos += ic + 1;
+          sg.achouInicio = true;
+        }
+      }
+      while (sg.achouInicio && sg.usado >= CH) {
+        var cut = corte(sg.buf, sg.usado, CH);
         if (cut < 0) break;
-        var bl = buf.slice(0, cut + 1);
-        buf.copyWithin(0, cut + 1, usado); usado -= cut + 1;
-        await put(bl);
+        var bl = sg.buf.slice(0, cut + 1), p0 = sg.pos;
+        sg.buf.copyWithin(0, cut + 1, sg.usado); sg.usado -= cut + 1; sg.pos += cut + 1;
+        await emite(bl, sg.k * BASE + sg.j++, p0);
       }
-      if (Date.now() - last > 300) {
-        last = Date.now();
-        post({ status: 'Baixando/gravando ' + nome + '... ' + mb(bytes) + (total ? ' / ' + mb(total) + ' (' + Math.round(bytes / total * 100) + '%)' : '') +
-          ' — processados ' + acc.feitos + ', na fila ' + pool.naFila() + ', para depois ' + depois.length });
-      }
+      progresso();
+      if (acabou) { sg.cancelar(); break; }
     }
-    if (usado) await put(buf.slice(0, usado));
+    if (!sg.achouInicio) { sg.cabeca = sg.buf.slice(0, sg.usado); sg.pos += sg.usado; sg.usado = 0; }
+    sg.cauda = sg.buf.slice(0, sg.usado); sg.caudaPos = sg.pos; sg.buf = null;
+  }
+  var tD, nd;
+  try {
+    await Promise.all(segs.map(rodaSeg));
+    // costuras: cauda do segmento k + cabeça do k+1 (a última cauda vira o bloco final)
+    for (var s2 = 0; s2 < segs.length; s2++) {
+      var sg = segs[s2], prox = segs[s2 + 1];
+      var pedaco = prox ? junta2(sg.cauda, prox.cabeca || new Uint8Array(0)) : sg.cauda;
+      if (pedaco.length) await emite(pedaco, prox ? sg.k * BASE + BASE - 1 : sg.k * BASE + sg.j++, sg.caudaPos);
+    }
+    segs.forEach(function (x) { x.cauda = x.cabeca = null; });
     if (G > 1 && !sah) gravaGrupo();
     var wd = Date.now(); await Promise.all(voando); voando = [];
-    if (indiceG.length) {                           // índice: bloco i → {g: grupo, o: posição, l: tamanho}
-      var txg = db.transaction(nome, 'readwrite', RW), sg = txg.objectStore(nome);
-      for (var ig = 0; ig < indiceG.length; ig++) sg.put(indiceG[ig], ig);
-      await txDone(txg); indiceG = null;
-    }
-    gbuf = null;
-    if (sah) {                                      // 1 flush só no fim + índice dos blocos na tabela lista_<servidor>
-      sah.flush(); sah.close(); sah = null;
-      var txi = db.transaction(nome, 'readwrite', RW), si = txi.objectStore(nome);
-      for (var ii = 0; ii < indice.length; ii++) si.put(indice[ii], ii);
-      await txDone(txi); indice = null;
-    }
+    if (sah) { sah.flush(); sah.close(); sah = null; }
+    var txi = db.transaction(nome, 'readwrite', RW), si = txi.objectStore(nome);   // índice: chave → onde está o bloco
+    for (var ii = 0; ii < indice.length; ii++) si.put(indice[ii][1], indice[ii][0]);
+    await txDone(txi); indice = null; gbuf = null;
     tDisco += Date.now() - wd;
-    buf = rd = next = file = fr = src = null;       // solta tudo do download
-    var tD = Date.now() - t0, nd = depois.length;
-    for (var k = 0; k < depois.length; k++) {
-      post({ status: 'Download concluído (' + seg(tD) + '). Processando blocos restantes... ' + (k + 1) + '/' + nd });
-      await pool.enviar(depois[k]);
+    tD = Date.now() - t0; nd = depois.length;
+    for (var q = 0; q < depois.length; q++) {
+      post({ status: 'Download concluído (' + seg(tD) + '). Processando blocos restantes... ' + (q + 1) + '/' + nd });
+      await pool.enviar(depois[q]);
     }
   } finally {
     if (sah) { try { sah.close(); } catch (e) {} sah = null; }
+    segs.forEach(function (x) { x.cancelar(); });
     await pool.terminar();
+    if (previa) { try { await previa; } catch (e) {} }
   }
-  var meta = { nome: nome, origem: origem, bytes: bytes, blocos_crus: n, data: Date.now(), cru: modo };
+  chaves.sort(num);
+  var meta = { nome: nome, origem: origem, bytes: bytes, blocos_crus: chaves.length, chaves: chaves, data: Date.now(), cru: modo };
   var tF = await finalizar(meta, acc, comp);
-  return 'Lista ' + nome + ': ' + mb(bytes) + ' em ' + n + ' blocos — total ' + seg(Date.now() - t0) +
-    ' (download+gravação crua ' + seg(tD) + '; ' + (n - nd) + ' blocos processados durante o download, ' + nd + ' depois)\n' +
-    'Lista crua em: ' + (modo === 'opfs' ? 'arquivo (OPFS)' : 'banco, ' + G + ' MB por gravação') + ' · ' +
-    'Download: 1ª resposta do servidor ' + seg(tResp) + ' · esperando rede ' + seg(tRede) + ' · esperando disco ' + seg(tDisco) +
-    ' · velocidade média ' + (bytes / 1048576 / Math.max(0.001, (tD - tResp) / 1000)).toFixed(1) + ' MB/s\n' +
+  return 'Lista ' + nome + ': ' + mb(bytes) + ' em ' + chaves.length + ' blocos — total ' + seg(Date.now() - t0) +
+    ' (download+gravação crua ' + seg(tD) + '; ' + (chaves.length - nd) + ' blocos processados durante o download, ' + nd + ' depois)' +
+    (acc.previaEm ? ' — canais disponíveis em ' + seg(acc.previaEm - t0) : '') + '\n' +
+    'Rede: ' + notaRede + ' · Lista crua em: ' + (modo === 'opfs' ? 'arquivo (OPFS)' : 'banco, ' + G + ' MB por gravação') + '\n' +
+    'Download: 1ª resposta do servidor ' + seg(tResp) + ' · esperando rede ' + seg(tRede) + (segs.length > 1 ? ' (soma das conexões)' : '') +
+    ' · esperando disco ' + seg(tDisco) + ' · velocidade média ' + (bytes / 1048576 / Math.max(0.001, (tD - (tAbre - t0) - tResp) / 1000)).toFixed(1) + ' MB/s\n' +
     resumo(meta, acc, N, comp, tF);
+}
+
+// prévia: grava o que já foi processado (ao vivo/filmes) para a lista ser usada antes do fim do download
+async function gravarPrevia(nome, origem, acc, comp, modo) {
+  var estr = acc.estr.slice();
+  var tx = db.transaction(['conteudos', 'busca', 'listas'], 'readwrite', RW);
+  var cs = tx.objectStore('conteudos'), bs = tx.objectStore('busca');
+  cs.delete(faixa(nome)); bs.delete(faixa(nome));
+  for (var e = 0; e < estr.length; e++) { var x = estr[e], key = [nome, x[0], x[1]]; cs.put(x[2], key); bs.put(x[3], key); }
+  tx.objectStore('listas').put({
+    nome: nome, origem: origem, bytes: 0, blocos_crus: 0, data: Date.now(), cru: modo, processada: true, parcial: true,
+    formato: 6, comp: comp, total: acc.cnt.slice(), series: 0, blocos_series: 0,
+    blocos: [estr.filter(function (x) { return x[0] === 0; }).map(function (x) { return x[1]; }).sort(num),
+             estr.filter(function (x) { return x[0] === 1; }).map(function (x) { return x[1]; }).sort(num), []],
+    grupos: acc.grupos.map(function (g) { return Array.from(g.entries()).sort(porNome); })
+  });
+  await txDone(tx);
+  acc.previaPronta = true; acc.previaEm = Date.now();
+  post({ previa: true });
 }
 
 /* ================= 2) reprocessar a partir da tabela crua ================= */
@@ -631,7 +729,8 @@ async function processar(m) {
     junta(acc, d);
     post({ status: 'Processando ' + lista + ' com ' + N + ' workers... bloco ' + acc.feitos + '/' + n });
   });
-  try { for (var i = 0; i < n; i++) await pool.enviar(i); }      // o parser lê o bloco do banco
+  var chaves = meta.chaves || Array.from({ length: n }, function (_, i) { return i; });
+  try { for (var i = 0; i < chaves.length; i++) await pool.enviar(chaves[i]); }      // o parser lê o bloco do banco
   finally { await pool.terminar(); }
   var tF = await finalizar(meta, acc, comp);
   return 'Processada em ' + seg(Date.now() - t0) + ': ' + resumo(meta, acc, N, comp, tF);
@@ -724,7 +823,7 @@ function rodarWorker(msg) {
   var antes = heap(), shared = $('shared-src').textContent;
   msg.parserSrc = shared + '\n' + $('parser-src').textContent;
   msg.nw = +$('nw').value; msg.comp = $('comp').checked;
-  msg.cru = $('cru').value; msg.calib = lerCalib();
+  msg.cru = $('cru').value; msg.calib = lerCalib(); msg.conexoes = +$('conx').value;
   var url = URL.createObjectURL(new Blob([shared, '\n', $('worker-src').textContent], { type: 'text/javascript' }));
   var w = new Worker(url);
   function fim(txt) {
@@ -741,6 +840,7 @@ function rodarWorker(msg) {
   w.onmessage = function (e) {
     var d = e.data;
     if (d.calib) { salvarCalib(d.calib); return; }
+    if (d.previa) { carregarListas(); return; }       // canais já podem ser usados enquanto o resto baixa
     if (d.erro) fim('Erro: ' + d.erro + '\n(Se for URL: verifique CORS ou use o botão de arquivo.)');
     else if (d.fim) fim(d.status);
     else if (d.status) status(d.status);
@@ -751,7 +851,7 @@ function rodarWorker(msg) {
 // resultado da calibração do disco (guardado neste aparelho; se o armazenamento local falhar, mede de novo)
 function lerCalib() { try { var c = JSON.parse(localStorage.getItem('iptv_calib') || 'null'); return c && c.v === 2 && c.melhor ? c : null; } catch (e) { return null; } }
 function salvarCalib(c) { try { localStorage.setItem('iptv_calib', JSON.stringify(c)); } catch (e) {} }
-function setBusy(b) { ['btnUrl', 'btnProc', 'btnDel', 'btnCalib', 'file', 'nw', 'comp', 'cru'].forEach(function (id) { $(id).disabled = b; }); }
+function setBusy(b) { ['btnUrl', 'btnProc', 'btnDel', 'btnCalib', 'file', 'nw', 'comp', 'cru', 'conx'].forEach(function (id) { $(id).disabled = b; }); }
 
 /* ---------- listas ---------- */
 async function carregarListas() {
