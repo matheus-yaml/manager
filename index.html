@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.4.8';
+<script>var APP_VERSION = '1.5.0';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -1767,6 +1767,10 @@ async function blocoPool(db, serverId, bi, texto, keepRaw){
   var t0 = performance.now();
   var rows = [[], [], []], busca = [[], [], []], cnt = [0, 0, 0];
   var grupos = [new Map(), new Map(), new Map()], series = new Map(), baseKey = new Map();
+  // EPISÓDIOS (a maior parte da lista): gravados como UM texto por bloco, 1 episódio por linha
+  // (nome, categoria, url, capa, série, temporada, episódio) — sem montar item, id e texto de
+  // busca pra cada um. O app monta os episódios só quando a série é aberta (ver _epBlock).
+  var eps = [], TABS = /[\\t\\n\\r]/g;
   var p = 0, L = s.length, inf = null;
   while(p < L){
     var e = s.indexOf('\\n', p); if(e < 0) e = L;
@@ -1781,14 +1785,15 @@ async function blocoPool(db, serverId, bi, texto, keepRaw){
     var ln = nome.toLowerCase();
     var t = classifyFast(nome, url, grupo, ln);
     var logo = attr(inf, 'tvg-logo="');
-    var tup = [stableContentId(serverId, url), nome, grupo, url, logo];
     if(t === 2){
       var baseName = extractSeriesBaseName(nome);
       // episódios da mesma série têm o mesmo nome-base: normaliza 1x por série
       var seriesKey = baseKey.get(baseName);
       if(seriesKey === undefined){ seriesKey = serverId + '::' + fastNorm(baseName); baseKey.set(baseName, seriesKey); }
       var se = extractSeasonEpisodeStrict(nome);
-      tup.push(seriesKey, se ? se.season : 0, se ? se.episode : 0);
+      eps.push((nome.indexOf('\t') !== -1 ? nome.replace(TABS, ' ') : nome) + '\t' + grupo + '\t' + url + '\t' +
+        (logo.indexOf('\t') !== -1 ? logo.replace(TABS, ' ') : logo) + '\t' + seriesKey.slice(serverId.length + 2) + '\t' +
+        (se ? se.season : 0) + '\t' + (se ? se.episode : 0));
       // série parcial: 0 key, 1 nome, 2 capa, 3 qtdEps, 4 temporadas[], 5 categorias[]
       var sr = series.get(seriesKey);
       if(!sr) series.set(seriesKey, sr = [seriesKey, baseName, logo, 0, [], [grupo]]);
@@ -1797,9 +1802,10 @@ async function blocoPool(db, serverId, bi, texto, keepRaw){
       var sn = se ? se.season : 1;
       if(sr[4].indexOf(sn) === -1) sr[4].push(sn);
       if(sr[5].indexOf(grupo) === -1) sr[5].push(grupo);
+    } else {
+      rows[t].push([stableContentId(serverId, url), nome, grupo, url, logo]);
+      busca[t].push(fastNormLower(ln) + '\\t' + grupo);
     }
-    rows[t].push(tup);
-    busca[t].push(fastNormLower(ln) + '\\t' + grupo);
     var gm = grupos[t]; gm.set(grupo, (gm.get(grupo) || 0) + 1);
     cnt[t]++;
     inf = null;
@@ -1810,13 +1816,15 @@ async function blocoPool(db, serverId, bi, texto, keepRaw){
   var tx = db.transaction(keepRaw && texto != null ? [STORES.rawBlocks, STORES.contentBlocks, STORES.searchBlocks] : [STORES.contentBlocks, STORES.searchBlocks], 'readwrite', RW);
   if(keepRaw && texto != null) tx.objectStore(STORES.rawBlocks).put(texto, [serverId, bi]);
   s = texto = null;
-  for(var k = 0; k < 3; k++){
+  for(var k = 0; k < 2; k++){
     if(!cnt[k]) continue;
     tx.objectStore(STORES.contentBlocks).put(rows[k], [serverId, k, bi]);
     tx.objectStore(STORES.searchBlocks).put(busca[k].join('\\n'), [serverId, k, bi]);
   }
+  // episódios: um texto só (mesma chave de antes [servidor, 2, bloco]); busca de episódio não existe
+  if(eps.length) tx.objectStore(STORES.contentBlocks).put(eps.join('\\n'), [serverId, 2, bi]);
   var t2 = performance.now();
-  rows = busca = null;
+  rows = busca = eps = null;
   await txDone(tx);
   var t3 = performance.now();
   // O resumo vai por postMessage (cópia) — nada daqui fica preso no worker.
@@ -4728,7 +4736,31 @@ function blockKeys(srv, t){
 const QueryModule = {
   // seriesKey -> resumo da série (cache só de leitura; limpo a cada import/exclusão)
   _seriesCache: new Map(),
-  invalidateCaches(){ this._seriesCache.clear(); this._seriesCountCache.clear(); },
+  invalidateCaches(){ this._seriesCache.clear(); this._seriesCountCache.clear(); this._epCache.clear(); },
+
+  /** Bloco de EPISÓDIOS [servidor, 2, b] como lista de tuplas (mesmo formato de sempre:
+   * id, nome, categoria, url, capa, série, temporada, episódio). Importação nova grava
+   * um texto (1 episódio por linha) e as tuplas são montadas aqui, só quando precisa
+   * (abrir série, continuar assistindo); importação antiga já tem as tuplas. Guarda os
+   * últimos blocos montados pra abrir a mesma série de novo ser instantâneo. */
+  _epCache: new Map(),
+  async _epBlock(serverId, b){
+    const ck = serverId + '|' + b;
+    const hit = this._epCache.get(ck);
+    if(hit){ this._epCache.delete(ck); this._epCache.set(ck, hit); return hit; }
+    const v = await IDB.getByKey(STORES.contentBlocks, [serverId, 2, b]);
+    if(typeof v !== 'string') return v || null;
+    const pre = serverId + '::', out = [];
+    const linhas = v.split('\n');
+    for(let i = 0; i < linhas.length; i++){
+      const f = linhas[i].split('\t');
+      if(f.length < 7) continue;
+      out.push([stableContentId(serverId, f[2]), f[0], f[1], f[2], f[3], pre + f[4], +f[5] || 0, +f[6] || 0]);
+    }
+    this._epCache.set(ck, out);
+    if(this._epCache.size > 6) this._epCache.delete(this._epCache.keys().next().value);
+    return out;
+  },
 
   /** Contagem REAL de séries (total e por categoria) de um servidor, lida
    * dos próprios blocos de série — 1x por sessão/importação. O contador da
@@ -5024,7 +5056,7 @@ const QueryModule = {
     const favEp = await this._favoriteIdSet('series');
     const eps = [];
     for(const b of summary._episodeBlocks){
-      const bloco = await IDB.getByKey(STORES.contentBlocks, [serverId, 2, b]);
+      const bloco = await this._epBlock(serverId, b);
       if(!bloco) continue;
       for(let i = 0; i < bloco.length; i++){
         if(bloco[i][5] !== seriesKey) continue;
@@ -5081,7 +5113,7 @@ const QueryModule = {
     const ekeys = blockKeys(srv, 2);
     for(let bk = ekeys.length - 1; bk >= 0 && keys.length < want; bk--){
       const b = ekeys[bk];
-      const bloco = await IDB.getByKey(STORES.contentBlocks, [serverId, 2, b]);
+      const bloco = await this._epBlock(serverId, b);
       if(!bloco) continue;
       for(let i = bloco.length - 1; i >= 0 && keys.length < want; i--){
         const k = bloco[i][5];
@@ -5110,7 +5142,7 @@ const QueryModule = {
     const readBlock = async (s, t, b) => {
       const k = s + '|' + t + '|' + b;
       if(blockCache && blockCache.has(k)) return blockCache.get(k);
-      const v = await IDB.getByKey(STORES.contentBlocks, [s, t, b]);
+      const v = t === 2 ? await this._epBlock(s, b) : await IDB.getByKey(STORES.contentBlocks, [s, t, b]);
       if(blockCache) blockCache.set(k, v);
       return v;
     };
@@ -5882,8 +5914,9 @@ const ServerModule = {
       }
       // prontos e busca: chave [id, tipo, b] → sobra = b que não está na lista nova daquele tipo
       for(let t = 0; t < 3; t++){
-        const keep = new Set(blocosIdx[t]);
         for(const st of [STORES.contentBlocks, STORES.searchBlocks]){
+          // episódio não tem mais bloco de busca: qualquer um que exista é sobra
+          const keep = (t === 2 && st === STORES.searchBlocks) ? new Set() : new Set(blocosIdx[t]);
           if(!live()) return;
           const keys = await IDB.getKeysInRange(st, IDBKeyRange.bound([serverId, t], [serverId, t, []]));
           const stale = keys.filter(k => !keep.has(k[2]));
@@ -5949,13 +5982,11 @@ const ServerModule = {
           for(const c of sp[5]) if(x[5].indexOf(c) === -1) x[5].push(c);
           x[6].push(d.i);
         }
-      }, PerfMode.isLite() ? () => {
-        // projetor/TV: o processador é mais lento que a rede. Com RAM sobrando, deixa
-        // mais blocos esperando na fila (cada ~1 MB) pro download não frear esperando o
-        // processamento. Mínimo 18 (pedido: performance).
-        const m = (typeof SysMon !== 'undefined' && SysMon._mem) || 0;
-        return m > 350 ? 24 : 18;
-      } : 10);
+      }, PerfMode.isLite() ? 2 : 10);
+      // projetor/TV: fila CURTA de propósito — o processamento acompanha o download
+      // (cada bloco que chega já é processado) e os dois terminam juntos, sem sobrar
+      // um "terminando de processar" no fim. Fila longa deixava o download correr na
+      // frente e acumular trabalho pra depois.
       pushDebugLog('Importação "' + server.nome + '": ' + N + ' worker(s) processando junto com o download.');
 
       // 3) download em streaming → blocos de ~1 MB → pool
@@ -10587,7 +10618,7 @@ async function runImportWithProgressModal(servers){
       statusEl.className = 'sp-status proc';
       if(patch.finishing){
         const pct = patch.blocksTotal ? Math.min(100, patch.blocksDone / patch.blocksTotal * 100) : 100;
-        statusEl.textContent = 'Baixado · terminando de processar ' + Math.floor(pct) + '%';
+        statusEl.textContent = 'Baixando e processando... ' + Math.max(99, Math.floor(pct)) + '%';
         fillEl.style.width = pct + '%';
         const c = patch.counts || {movie:0,live:0};
         detailEl.textContent = formatBytes(patch.downloaded || 0) + '  •  Filmes: ' + c.movie + '  Séries: ' + (patch.seriesCount || 0) + '  Ao Vivo: ' + c.live;
