@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.1.7';
+<script>var APP_VERSION = '1.1.9';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -2932,14 +2932,21 @@ UpdateLog.install();
    "CPU 23% · 329 MB livres" (a cada 1s) — só no APK (plugin ManagerPip, ação sysStats).
    CPU do aparelho todo (/proc/stat); se o Android bloquear, CPU do app. */
 const SysMon = {
-  _t: null, _last: null,
+  _t: null, _last: null, _sysOk: null,
+  /* Qualquer aparelho: mostra o que ele suportar (e só isso).
+     APK (plugin ManagerPip): CPU, memória livre, velocidade medida, faixa do Wi-Fi.
+     Navegador: velocidade estimada e ícone de Wi-Fi, se o navegador informar. */
   start(){
-    const go = () => { if(this._t || !(window.cordova && window.cordova.exec)) return; this.poll(); this._t = setInterval(() => this.poll(), 1000); };
-    if(window.cordova) go(); else document.addEventListener('deviceready', go, { once: true });
+    if(this._t) return;
+    this._t = setInterval(() => this.poll(), 1000);
+    this.poll();
   },
+  _native(){ return !!(window.cordova && typeof window.cordova.exec === 'function'); },
   poll(){
     if(document.visibilityState === 'hidden') return;
+    if(!this._native()){ this.render(); return; } // navegador: só o que ele informa
     this.pollWifi();
+    if(this._sysOk === false){ this.render(); return; }
     try{
       window.cordova.exec((o) => {
         try{ o = typeof o === 'string' ? JSON.parse(o) : o; }catch(e){ return; }
@@ -2952,9 +2959,10 @@ const SysMon = {
         }
         if(cpu != null) this._cpu = Math.max(0, Math.min(100, Math.round(cpu)));
         this._mem = Math.round((o.avail || 0) / 1048576);
+        this._sysOk = true;
         this.render();
-      }, () => { clearInterval(this._t); this._t = null; }, 'ManagerPip', 'sysStats', []);
-    }catch(e){}
+      }, () => { this._sysOk = false; this.render(); }, 'ManagerPip', 'sysStats', []);
+    }catch(e){ this._sysOk = false; }
   },
   _cpu: null, _mem: null,
   /* ---- faixa do Wi-Fi (2,4 / 5 GHz) + detector de "fica trocando de faixa" ----
@@ -2999,25 +3007,32 @@ const SysMon = {
     if(this._cpu != null) parts.push('CPU ' + this._cpu + '%');
     if(this._mem != null) parts.push(this._mem + 'MB');
     let net = null, low = false;
+    const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+    if(!(typeof NetSpeed !== 'undefined' && NetSpeed._ok) && conn && typeof conn.downlink === 'number' && conn.downlink > 0){
+      // navegador: estimativa do próprio navegador (Chrome/Edge/Android)
+      const v = conn.downlink;
+      net = '↓~' + (v < 1 ? Math.round(v * 1000) + 'kbps' : v < 10 ? v.toFixed(1).replace('.', ',') + 'Mbps' : Math.round(v) + 'Mbps');
+    }
     if(typeof NetSpeed !== 'undefined' && NetSpeed._ok){
       const playing = !!(PlayerModule.currentContent && document.getElementById('player-overlay').style.display === 'flex');
       const v = NetSpeed.mbps; // compacto pra caber numa linha no projetor
       net = '↓' + (v == null ? '—' : v < 1 ? Math.round(v * 1000) + 'kbps' : v < 10 ? v.toFixed(1).replace('.', ',') + 'Mbps' : Math.round(v) + 'Mbps');
       low = playing && NetSpeed.mbps != null && NetSpeed.mbps < 1.5;
     }
-    if(!parts.length && !net) return;
+    const wifiOnly = !this._band && conn && conn.type === 'wifi'; // navegador: sabe que é Wi-Fi, não a faixa
+    if(!parts.length && !net && !this._band && !wifiOnly){ el.style.display = 'none'; return; } // nada suportado: não mostra
     const SEP = '\u2009·\u2009'; // espaço fino: cabe numa linha no projetor
     el.textContent = parts.join(SEP) + (parts.length && net ? SEP : '');
     if(net){ const sp = document.createElement('span'); sp.textContent = net; if(low) sp.className = 'low'; el.appendChild(sp); }
-    if(this._band){
-      el.appendChild(document.createTextNode('\u2009·\u2009'));
+    if(this._band || wifiOnly){
+      el.appendChild(document.createTextNode((parts.length || net) ? '\u2009·\u2009' : ''));
       const b = document.createElement('span');
       b.className = 'wifi-band';
       b.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 18.5a1.9 1.9 0 1 1 0 3.8 1.9 1.9 0 0 1 0-3.8zm0-5.2c2.3 0 4.4.9 5.9 2.4l-1.8 1.8A5.8 5.8 0 0 0 12 15.8c-1.6 0-3 .6-4.1 1.7l-1.8-1.8a8.3 8.3 0 0 1 5.9-2.4zm0-5.1c3.7 0 7 1.5 9.5 3.9l-1.8 1.8A10.9 10.9 0 0 0 12 10.8c-3 0-5.7 1.2-7.7 3.1l-1.8-1.8A13.4 13.4 0 0 1 12 8.2zm0-5.2c5.1 0 9.7 2 13.1 5.4l-1.8 1.8A15.9 15.9 0 0 0 12 5.6c-4.4 0-8.4 1.8-11.3 4.6L-1.1 8.4A18.5 18.5 0 0 1 12 3z"/></svg>';
-      b.appendChild(document.createTextNode(this._band));
+      if(this._band) b.appendChild(document.createTextNode(this._band));
       el.appendChild(b);
     }
-    el.title = 'CPU do aparelho • memória livre • velocidade da internet agora (média 1 min: ' + (typeof NetSpeed !== 'undefined' ? NetSpeed.fmt(NetSpeed.avg()) : '—') + ') • faixa do Wi-Fi' +
+    el.title = (parts.length ? 'CPU do aparelho • memória livre • ' : '') + (NetSpeed._ok ? 'velocidade da internet agora (média 1 min: ' + NetSpeed.fmt(NetSpeed.avg()) + ')' : (net ? 'velocidade estimada pelo navegador' : '')) + (this._band ? ' • faixa do Wi-Fi' : '') +
       (this._flapping ? ' — ATENÇÃO: o Wi-Fi está trocando entre 2,4 e 5 GHz toda hora (' + this._bandChanges.length + ' trocas em 3 min); isso trava o vídeo.' : '');
     el.style.display = '';
   }
@@ -6352,6 +6367,10 @@ const PlayerModule = {
         pushDebugLog('📺 Este servidor não abriu o canal em HLS (' + o.why + ') — usando o formato .ts (depois de travar ele volta no ao vivo, não de onde parou).', true);
       }
       else if(o.event === 'netretry'){ pushDebugLog('📺 Conexão do vídeo caiu — reconectando (tentativa ' + o.n + ').', true); }
+      else if(o.event === 'firstframe' || o.event === 'isplaying'){
+        // a imagem já está na tela / o vídeo está andando: some com a bolinha na hora
+        if(!this._hybridPaused) this.hideBuffering();
+      }
       else if(o.event === 'playing' || o.event === 'buffered'){
         this.hideBuffering();
         if(!played){ played = true; pushDebugLog('📺 Ao vivo tocando no player híbrido (vídeo nativo + controles do app).'); try{ NetStatus.noteOk(); }catch(e){} }
