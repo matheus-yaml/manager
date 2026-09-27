@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.3.9';
+<script>var APP_VERSION = '1.4.0';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -10968,7 +10968,9 @@ async function renderSettingsView(container){
     }
   });
   autoBlock.appendChild(downloadBtn);
-  container.appendChild(autoBlock);
+  // Servidores Automáticos fica no TOPO das configurações (logo abaixo do título)
+  const cfgHeader = container.querySelector('.section-header');
+  container.insertBefore(autoBlock, cfgHeader ? cfgHeader.nextSibling : container.firstChild);
 }
 
 /* ======================================================================
