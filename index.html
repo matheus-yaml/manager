@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.1.9';
+<script>var APP_VERSION = '1.2.0';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -3186,6 +3186,10 @@ const NativeVideo = {
     return { x: Math.round(b.left * dpr), y: Math.round(b.top * dpr), w: Math.round(b.width * dpr), h: Math.round(b.height * dpr), visible };
   },
   engineStart(content, onEvent){
+    // mesmo canal que já está tocando (ex.: na prévia do quadro)? o plugin não
+    // reabre — então já avisamos "tocando" pra bolinha não ficar por cima do vídeo
+    const same = this._engineId === content.id && this._enginePlayed;
+    if(this._engineId !== content.id) this._enginePlayed = false;
     const bg = this._bgHex();
     this._hole(true);
     this._engineId = content.id;
@@ -3197,9 +3201,11 @@ const NativeVideo = {
     window.cordova.exec((msg) => {
       let o = {}; try{ o = JSON.parse(msg); }catch(e){}
       if(this._engineId !== content.id) return; // já trocou de canal
+      if(/^(playing|firstframe|isplaying|buffered)$/.test(o.event) || (o.event === 'stat' && o.played)) this._enginePlayed = true;
       try{ onEvent && onEvent(o); }catch(e){}
     }, (err) => { try{ onEvent && onEvent({ event: 'failed', err: String(err) }); }catch(e){} },
-    'ManagerPip', 'miniShow', [u.url, r.x, r.y, r.w, r.h, r.visible, bg, this.reserveMs(), u.fallback]);
+    'ManagerPip', 'miniShow', [u.url, r.x, r.y, r.w, r.h, r.visible, bg, this.reserveMs(), u.fallback, PerfMode.isTvDevice()]);
+    if(same) setTimeout(() => { if(this._engineId === content.id){ try{ onEvent && onEvent({ event: 'playing', same: true }); }catch(e){} } }, 0);
   },
   /** Endereço pro ExoPlayer: o link original do canal (.ts). */
   exoUrls(content){
@@ -3221,6 +3227,7 @@ const NativeVideo = {
   engineVolume(v){ try{ window.cordova.exec(() => {}, () => {}, 'ManagerPip', 'miniVolume', [v]); }catch(e){} },
   engineStop(){
     this._hole(false);
+    this._enginePlayed = false;
     if(!this._engineId) return;
     this._engineId = null;
     try{ window.cordova.exec(() => {}, () => {}, 'ManagerPip', 'miniHide', []); }catch(e){}
@@ -6355,6 +6362,7 @@ const PlayerModule = {
           : '📺 ExoPlayer indisponível neste APK' + (o.why ? ' (' + o.why + ')' : '') + ' — usando o player nativo antigo.', o.name !== 'exoplayer');
       }
       else if(o.event === 'stat'){
+        if(o.state === 3 && o.played && !this._hybridPaused) this.hideBuffering(); // tocando: bolinha nunca fica por cima
         this._reserveBuf = o.buf;
         this._liveOff = (o.off != null && o.off >= 0) ? o.off : null;
         this._speed = o.speed || 1;
@@ -6367,6 +6375,8 @@ const PlayerModule = {
         pushDebugLog('📺 Este servidor não abriu o canal em HLS (' + o.why + ') — usando o formato .ts (depois de travar ele volta no ao vivo, não de onde parou).', true);
       }
       else if(o.event === 'netretry'){ pushDebugLog('📺 Conexão do vídeo caiu — reconectando (tentativa ' + o.n + ').', true); }
+      else if(o.event === 'netlost'){ pushDebugLog('📶 O Android refez a rede Wi-Fi — o vídeo vai reconectar assim que ela voltar.', true); }
+      else if(o.event === 'netback'){ pushDebugLog('📶 Rede de volta — reconectando o vídeo na hora.'); }
       else if(o.event === 'firstframe' || o.event === 'isplaying'){
         // a imagem já está na tela / o vídeo está andando: some com a bolinha na hora
         if(!this._hybridPaused) this.hideBuffering();
