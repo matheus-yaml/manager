@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.0.98';
+<script>var APP_VERSION = '1.0.99';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -3074,12 +3074,29 @@ const NativeVideo = {
     const r = this._overlayRect();
     this._engineKey = [r.x, r.y, r.w, r.h, r.visible].join(',');
     this._ensureSync();
+    const u = this.exoUrls(content);
+    this._exoFmt = u.fmt;
     window.cordova.exec((msg) => {
       let o = {}; try{ o = JSON.parse(msg); }catch(e){}
       if(this._engineId !== content.id) return; // já trocou de canal
       try{ onEvent && onEvent(o); }catch(e){}
     }, (err) => { try{ onEvent && onEvent({ event: 'failed', err: String(err) }); }catch(e){} },
-    'ManagerPip', 'miniShow', [resolveContentUrl(content), r.x, r.y, r.w, r.h, r.visible, bg, this.reserveMs()]);
+    'ManagerPip', 'miniShow', [u.url, r.x, r.y, r.w, r.h, r.visible, bg, this.reserveMs(), u.fallback]);
+  },
+  /** Endereço pro ExoPlayer. Servidor Xtream: pede o canal em HLS (.m3u8) —
+   *  o servidor guarda os pedaços recentes, então depois de uma travada o
+   *  vídeo continua EXATAMENTE de onde parou e a reserva volta a encher
+   *  sozinha. Se o HLS não abrir, o plugin usa o .ts (fallback). */
+  exoUrls(content){
+    const url = resolveContentUrl(content);
+    if(/\.m3u8(\?|$)/i.test(url)) return { url, fallback: '', fmt: 'HLS' };
+    if(!content._exoHlsFailed){
+      try{
+        const x = LiveEpg.parse(content);
+        if(x) return { url: x.base + '/live/' + encodeURIComponent(x.user) + '/' + encodeURIComponent(x.pass) + '/' + x.id + '.m3u8', fallback: url, fmt: 'HLS' };
+      }catch(e){}
+    }
+    return { url, fallback: '', fmt: 'TS' };
   },
   /** Reserva do ExoPlayer (Configurações › Desempenho). O plugin antigo ignora e usa o VideoView. */
   reserveSec(){
@@ -6187,7 +6204,7 @@ const PlayerModule = {
   },
   _startHybrid(content, token){
     this._engine = 'nativo do Android (híbrido)';
-    this._nativeEngine = null; this._reserveBuf = null; this._resSamples = []; this._resWarnAt = 0;
+    this._nativeEngine = null; this._reserveBuf = null; this._resSamples = []; this._resWarnAt = 0; this._stallPos = null; this._liveOff = null; this._speed = 1;
     this.showBuffering();
     this._updatePlayPauseIcon();
     let played = false;
@@ -6195,23 +6212,39 @@ const PlayerModule = {
       if(token !== this.playToken) return;
       if(o.event === 'engine'){
         this._nativeEngine = o.name;
-        this._engine = o.name === 'exoplayer' ? 'ExoPlayer (reserva ' + Math.round((o.reserve || 0) / 1000) + 's)' : 'nativo do Android (VideoView)';
+        this._engine = o.name === 'exoplayer' ? 'ExoPlayer ' + (NativeVideo._exoFmt || '') + ' (reserva ' + Math.round((o.reserve || 0) / 1000) + 's)' : 'nativo do Android (VideoView)';
         pushDebugLog(o.name === 'exoplayer'
-          ? '📺 Ao vivo no ExoPlayer com reserva de ' + Math.round((o.reserve || 0) / 1000) + 's.'
+          ? '📺 Ao vivo no ExoPlayer (' + (NativeVideo._exoFmt === 'HLS' ? 'HLS — continua de onde parou depois de travar' : 'TS') + ') com reserva de ' + Math.round((o.reserve || 0) / 1000) + 's.'
           : '📺 ExoPlayer indisponível neste APK' + (o.why ? ' (' + o.why + ')' : '') + ' — usando o player nativo antigo.', o.name !== 'exoplayer');
       }
       else if(o.event === 'stat'){
         this._reserveBuf = o.buf;
+        this._liveOff = (o.off != null && o.off >= 0) ? o.off : null;
+        this._speed = o.speed || 1;
         this._reserveTrack(o);
         // enchendo a reserva (no começo ou depois de um engasgo): mostra o progresso
         if(o.state === 2 && !this._hybridPaused) this.showBuffering(this._reserveLabel(o.buf, o.reserve, o.played));
       }
+      else if(o.event === 'fallback'){
+        content._exoHlsFailed = true; NativeVideo._exoFmt = 'TS';
+        this._engine = 'ExoPlayer TS (reserva ' + NativeVideo.reserveSec() + 's)';
+        pushDebugLog('📺 Este servidor não abriu o canal em HLS (' + o.why + ') — usando o formato .ts (depois de travar ele volta no ao vivo, não de onde parou).', true);
+      }
       else if(o.event === 'netretry'){ pushDebugLog('📺 Conexão do vídeo caiu — reconectando por trás (tentativa ' + o.n + '); a reserva segura a imagem. ' + (this._reserveBuf != null ? 'Guardado: ' + (this._reserveBuf / 1000).toFixed(1) + 's.' : ''), true); }
       else if(o.event === 'playing' || o.event === 'buffered'){
         this.hideBuffering();
+        // prova de que voltou do mesmo ponto: posição do vídeo antes x depois da travada
+        if(o.event === 'buffered' && this._stallPos != null && o.pos != null){
+          const d = (o.pos - this._stallPos) / 1000;
+          pushDebugLog(Math.abs(d) < 1.5
+            ? '✅ Voltou exatamente de onde parou (posição ' + (o.pos / 1000).toFixed(1) + 's; ' + ((o.buf || 0) / 1000).toFixed(1) + 's guardados).'
+            : (d > 0 ? '⏩ Voltou ' + d.toFixed(1) + 's à frente de onde parou (o servidor não tinha mais esse trecho).' : '⏪ Voltou ' + Math.abs(d).toFixed(1) + 's antes.'), Math.abs(d) >= 1.5);
+          this._stallPos = null;
+        }
         if(!played){ played = true; pushDebugLog('📺 Ao vivo tocando no player híbrido (vídeo nativo + controles do app).'); try{ NetStatus.noteOk(); }catch(e){} }
       }
       else if(o.event === 'buffering'){
+        this._stallPos = o.pos != null ? o.pos : null;
         this.showBuffering(this._nativeEngine === 'exoplayer' ? this._reserveLabel(0, NativeVideo.reserveMs(), true) : null);
         pushDebugLog('📺 Carregando (a reserva acabou' + (o.n ? ', ' + o.n + 'ª vez' : '') + ') — rede agora: ' + NetSpeed.fmt(NetSpeed.mbps) + ', média 1 min: ' + NetSpeed.fmt(NetSpeed.avg()) + '.', true);
       }
@@ -8027,7 +8060,9 @@ const PlayerModule = {
   reserveStatus(){
     if(!this._hybrid || this._nativeEngine !== 'exoplayer' || this._reserveBuf == null) return '';
     const res = NativeVideo.reserveSec(), tr = this._reserveTrend();
-    let s = 'Reserva do ao vivo: ' + (this._reserveBuf / 1000).toFixed(1).replace('.', ',') + 's guardados (meta ' + res + 's)';
+    let s = 'Reserva do ao vivo (' + (NativeVideo._exoFmt || '?') + '): ' + (this._reserveBuf / 1000).toFixed(1).replace('.', ',') + 's guardados (meta ' + res + 's)';
+    if(this._liveOff != null) s += ' • ' + (this._liveOff / 1000).toFixed(0) + 's atrás do ao vivo';
+    if(Math.abs((this._speed || 1) - 1) > 0.005) s += ' • tocando a ' + this._speed.toFixed(2).replace('.', ',') + 'x' + (this._speed < 1 ? ' (juntando reserva)' : ' (alcançando o ao vivo)');
     if(tr){
       if(tr.rate < -0.08) s += ' • CAINDO ' + Math.abs(tr.rate).toFixed(2).replace('.', ',') + 's/s (o vídeo chega mais devagar do que toca)';
       else if(tr.rate > 0.08) s += ' • enchendo';

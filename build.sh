@@ -127,12 +127,14 @@ public class ManagerPip extends CordovaPlugin {
             final String bg = show ? args.optString(off + 5, "#0B0D16") : null;
             // reserva do ExoPlayer em ms (>= 0 = usar ExoPlayer; -1 ou ausente = VideoView antigo)
             final int reserve = show ? args.optInt(off + 6, -1) : -1;
+            // endereço reserva (.ts) caso o principal (HLS) não abra no ExoPlayer
+            final String fb = show ? args.optString(off + 7, "") : "";
             if (show) mCb = callback;
             cordova.getActivity().runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
                     try {
-                        if (show) miniOpen(url, bg, reserve);
+                        if (show) miniOpen(url, bg, reserve, fb);
                         miniPlace(x, y, w, h, visible);
                         if (!show) callback.success();
                     } catch (Throwable t) { callback.error(t.getClass().getSimpleName() + ": " + t.getMessage()); }
@@ -524,7 +526,8 @@ public class ManagerPip extends CordovaPlugin {
     // ================== MINI PLAYER NATIVO ==================
     private FrameLayout mBox;
     private VideoView mView;
-    private ExoMini mExo;          // ExoPlayer com reserva (projetor, ao vivo)
+    private ExoMini mExo;
+    private String mVvUrl;          // ExoPlayer com reserva (projetor, ao vivo)
     private CallbackContext mCb;
     private String mUrl;
     private int mRetries = 0, mLastPos = -1;
@@ -547,7 +550,7 @@ public class ManagerPip extends CordovaPlugin {
      *  deixa um "buraco" no quadro). Assim tudo da página — painel de
      *  diagnóstico, popups, avisos — aparece POR CIMA do vídeo. O fundo da
      *  tela nativa ganha a cor de fundo do app, então o resto fica igual. */
-    private void miniOpen(String url, String bg, int reserveMs) {
+    private void miniOpen(String url, String bg, int reserveMs, String fallback) {
         Activity act = cordova.getActivity();
         ViewGroup content = (ViewGroup) act.findViewById(android.R.id.content);
         if (mBox == null) {
@@ -577,7 +580,7 @@ public class ManagerPip extends CordovaPlugin {
                 self[0] = ex;
                 mExo = ex;
                 ex.volume(mVol);
-                ex.play(url);
+                ex.play(url, fallback);
                 mSend("{\"event\":\"engine\",\"name\":\"exoplayer\",\"reserve\":" + reserveMs + "}", true);
                 return;
             } catch (Throwable t) {
@@ -586,6 +589,8 @@ public class ManagerPip extends CordovaPlugin {
                 mSend("{\"event\":\"engine\",\"name\":\"videoview\",\"why\":" + q(t.getClass().getSimpleName() + ": " + t.getMessage()) + "}", true);
             }
         }
+        // VideoView antigo: usa o .ts (como sempre usou), não o HLS
+        mVvUrl = (fallback != null && fallback.length() > 0) ? fallback : url;
         final VideoView v = new VideoView(act);
         v.setFocusable(false);
         mBox.addView(v, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.CENTER));
@@ -616,7 +621,7 @@ public class ManagerPip extends CordovaPlugin {
         v.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
             public void onCompletion(MediaPlayer mp) { miniRetry("o stream terminou"); }
         });
-        v.setVideoURI(Uri.parse(url));
+        v.setVideoURI(Uri.parse(mVvUrl));
         v.start();
         if (mWatch == null) {
             mWatch = new Runnable() {
@@ -662,7 +667,7 @@ public class ManagerPip extends CordovaPlugin {
                 try { mView.stopPlayback(); } catch (Throwable ignore) {}
                 mMp = null;
                 mLastMove = System.currentTimeMillis();
-                mView.setVideoURI(Uri.parse(mUrl));
+                mView.setVideoURI(Uri.parse(mVvUrl));
                 mView.start();
             }
         }, wait);
@@ -828,7 +833,7 @@ public class ExoMini {
     private final Handler mH = new Handler(Looper.getMainLooper());
     private final ExoPlayer mPlayer;
     private final PlayerView mView;
-    private String mUrl;
+    private String mUrl, mFallback;
     private boolean mPlayed = false, mReleased = false, mPaused = false;
     private int mRetries = 0, mRebuffers = 0;
     private long mBufferingSince = 0;
@@ -894,12 +899,12 @@ public class ExoMini {
                 if (mReleased) return;
                 if (state == Player.STATE_BUFFERING) {
                     mBufferingSince = System.currentTimeMillis();
-                    if (mPlayed) { mRebuffers++; send("{\"event\":\"buffering\",\"n\":" + mRebuffers + "}"); }
+                    if (mPlayed) { mRebuffers++; send("{\"event\":\"buffering\",\"n\":" + mRebuffers + ",\"pos\":" + mPlayer.getCurrentPosition() + "}"); }
                 } else if (state == Player.STATE_READY) {
                     mBufferingSince = 0;
                     mRetries = 0;
                     if (!mPlayed) { mPlayed = true; send("{\"event\":\"playing\",\"reserve\":" + mReserveMs + "}"); }
-                    else send("{\"event\":\"buffered\"}");
+                    else send("{\"event\":\"buffered\",\"pos\":" + mPlayer.getCurrentPosition() + ",\"buf\":" + mPlayer.getTotalBufferedDuration() + "}");
                 } else if (state == Player.STATE_ENDED) {
                     retry("o stream terminou");
                 }
@@ -910,6 +915,15 @@ public class ExoMini {
                 if (e.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
                     mPlayer.seekToDefaultPosition();
                     mPlayer.prepare();
+                    return;
+                }
+                // HLS não abriu? tenta o mesmo canal no formato .ts antes de desistir
+                if (!mPlayed && mFallback != null) {
+                    send("{\"event\":\"fallback\",\"why\":" + q(e.getErrorCodeName()) + ",\"url\":" + q(mFallback) + "}");
+                    mUrl = mFallback; mFallback = null; mRetries = 0;
+                    try { mPlayer.stop(); } catch (Throwable ignore) {}
+                    load();
+                    mPlayer.setPlayWhenReady(!mPaused);
                     return;
                 }
                 send("{\"event\":\"error\",\"what\":" + q(e.getErrorCodeName()) + ",\"extra\":" + q(String.valueOf(e.getMessage())) + "}");
@@ -926,7 +940,10 @@ public class ExoMini {
                 try {
                     long buf = mPlayer.getTotalBufferedDuration();
                     int st = mPlayer.getPlaybackState();
-                    send("{\"event\":\"stat\",\"buf\":" + buf + ",\"reserve\":" + mReserveMs + ",\"state\":" + st + ",\"played\":" + mPlayed + "}");
+                    long off = mPlayer.getCurrentLiveOffset();
+                    float spd = mPlayer.getPlaybackParameters().speed;
+                    send("{\"event\":\"stat\",\"buf\":" + buf + ",\"reserve\":" + mReserveMs + ",\"state\":" + st + ",\"played\":" + mPlayed
+                        + ",\"pos\":" + mPlayer.getCurrentPosition() + ",\"off\":" + (off == C.TIME_UNSET ? -1 : off) + ",\"speed\":" + spd + "}");
                     if (!mPaused && st == Player.STATE_BUFFERING && mBufferingSince > 0
                             && System.currentTimeMillis() - mBufferingSince > Math.max(30000, mReserveMs + 20000)) {
                         mBufferingSince = System.currentTimeMillis();
@@ -941,8 +958,9 @@ public class ExoMini {
 
     public View view() { return mView; }
 
-    public void play(String url) {
+    public void play(String url, String fallback) {
         mUrl = url;
+        mFallback = (fallback == null || fallback.length() == 0 || fallback.equals(url)) ? null : fallback;
         mPlayed = false; mRetries = 0; mRebuffers = 0;
         load();
         mPlayer.setPlayWhenReady(!mPaused);
