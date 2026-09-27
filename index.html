@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.2.6';
+<script>var APP_VERSION = '1.2.8';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -812,16 +812,21 @@ html.tv .modal-close-x:focus{color:#fff;background:rgba(var(--accent-rgb),.45);o
 .progress-overall .plabel{display:flex;justify-content:space-between;font-size:12.5px;color:var(--text-2);margin-bottom:6px;}
 .progress-track{width:100%;height:8px;background:rgba(255,255,255,.07);border-radius:6px;overflow:hidden;}
 .progress-track .pfill{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent-2));border-radius:6px;transition:width .2s;}
-.server-progress-list{display:flex;flex-direction:column;gap:10px;max-height:340px;overflow-y:auto;}
-.sp-item{background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:11px 13px;}
-.sp-item .sp-top{display:flex;justify-content:space-between;align-items:center;font-size:12.5px;margin-bottom:6px;}
-.sp-item .sp-name{font-weight:700;display:flex;align-items:center;gap:7px;}
+.server-progress-list{display:flex;flex-direction:column;gap:6px;max-height:min(62vh,460px);overflow-y:auto;padding:3px;}
+/* compacto: cabem mais servidores na tela */
+.sp-item{background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:7px 10px;}
+.sp-item:focus{outline:none;box-shadow:inset 0 0 0 2px var(--accent);}
+.sp-item .sp-top{display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:12px;margin-bottom:4px;}
+.sp-item .sp-name{font-weight:700;display:flex;align-items:center;gap:7px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.sp-item .sp-status{flex-shrink:0;text-align:right;}
 .sp-item .sp-status{color:var(--text-2);}
 .sp-item .sp-status.ok{color:var(--accent-3);}
 .sp-item .sp-status.err{color:var(--danger);}
 .sp-item .sp-status.proc{color:var(--warn);}
-.sp-item .progress-track{height:5px;}
-.sp-item .sp-detail{font-size:11px;color:var(--text-2);margin-top:5px;display:flex;gap:10px;flex-wrap:wrap;}
+.sp-item .progress-track{height:4px;}
+.sp-item .sp-detail{font-size:10.5px;color:var(--text-2);margin-top:3px;display:flex;gap:10px;flex-wrap:wrap;}
+.sp-item .sp-detail:empty{display:none;}
+.progress-overall:has(+ .server-progress-list){margin-bottom:10px;}
 
 /* series detail */
 .series-header{display:flex;gap:22px;margin-bottom:26px;flex-wrap:wrap;}
@@ -1343,7 +1348,7 @@ html.tv input:focus, html.tv textarea:focus, html.tv input[type=color]:focus{
 html.tv input.tv-locked:focus, html.tv input.tv-editing:focus{outline:none !important;}
 html.tv input.tv-editing:focus{box-shadow:0 0 0 3px var(--accent), 0 0 0 7px rgba(var(--accent-rgb),.45) !important;background:rgba(var(--accent-rgb),.12);}
 /* itens de lista (dentro de áreas que rolam): anel por dentro pra não ser cortado */
-html.tv .nav-item:focus, html.tv .live-cat:focus, html.tv .episode-row:focus, html.tv .tv-select-opt:focus{
+html.tv .nav-item:focus, html.tv .live-cat:focus, html.tv .episode-row:focus, html.tv .tv-select-opt:focus, html.tv .sp-item:focus{
   outline:none !important;
   box-shadow:inset 0 0 0 3px var(--accent) !important;
   border-radius:10px;
@@ -1360,6 +1365,17 @@ html.tv input[type=checkbox]:focus, html.tv input[type=radio]:focus{outline:none
 html.tv label:focus-within{background:rgba(var(--accent-rgb),.16);border-radius:10px;box-shadow:0 0 0 2px rgba(var(--accent-rgb),.7);}
 /* barra de progresso do player */
 html.tv #player-seek-track:focus{outline:none !important;box-shadow:0 0 0 3px var(--accent), 0 0 0 7px rgba(var(--accent-rgb),.3) !important;border-radius:6px;}
+
+/* botões já azuis (principal / chip ativo / categoria ativa): o anel azul
+   sumia no fundo azul — aqui o foco ganha um contorno BRANCO por dentro do azul
+   e o botão clareia um pouco */
+html.tv .btn.primary:focus, html.tv .chip.active:focus, html.tv button.primary:focus{
+  box-shadow:0 0 0 3px #fff, 0 0 0 6px var(--accent), 0 0 14px 4px rgba(var(--accent-rgb),.55) !important;
+  filter:brightness(1.12);
+}
+html.tv .live-cat.active:focus, html.tv .nav-item.active:focus, html.tv .tv-select-opt.selected:focus{
+  box-shadow:inset 0 0 0 3px #fff, inset 0 0 0 5px var(--accent) !important;
+}
 </style>
 </head>
 <body>
@@ -10076,7 +10092,8 @@ async function runImportWithProgressModal(servers){
   const listWrap = el('div', { class:'server-progress-list', id:'sp-list' });
   const spElements = new Map();
   for(const s of servers){
-    const item = el('div', { class:'sp-item', id:'sp-'+s.id });
+    // focável: dá pra percorrer a lista com as setas do controle (e rolar)
+    const item = el('div', { class:'sp-item', id:'sp-'+s.id, tabindex:'0' });
     item.appendChild(el('div', { class:'sp-top' }, [
       el('span', { class:'sp-name' }, [el('span',{class:'status-dot processing'}), s.nome]),
       el('span', { class:'sp-status proc' }, ['Aguardando...'])
@@ -10148,7 +10165,9 @@ async function runImportWithProgressModal(servers){
     // finalizar), e só se já não estiver lá.
     const isActivelyWorking = (patch.phase === 'process' || patch.phase === 'save') && patch.status !== 'done';
     if(isActivelyWorking && listWrap.firstElementChild !== item){
+      const hadFocus = document.activeElement === item; // mover o elemento tira o foco dele
       listWrap.insertBefore(item, listWrap.firstElementChild);
+      if(hadFocus){ try{ item.focus({ preventScroll: false }); }catch(e){ item.focus(); } }
     }
 
     if(patch.phase === 'download'){
