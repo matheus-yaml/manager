@@ -274,6 +274,41 @@ public class ManagerPip extends CordovaPlugin {
         // Memória RAM do aparelho (pro painel de diagnóstico do app):
         // total, livre, se o Android está em "pouca memória" e quanto este
         // app (processo principal) está usando.
+        // sysStats: memória livre do aparelho + contadores de CPU (rodapé do app).
+        // Rápido: não usa Debug.getMemoryInfo. CPU: /proc/stat (aparelho todo);
+        // se o Android bloquear (8+ costuma bloquear), manda o tempo de CPU do app.
+        if ("sysStats".equals(action)) {
+            cordova.getThreadPool().execute(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        ActivityManager am = (ActivityManager) cordova.getActivity().getSystemService(Context.ACTIVITY_SERVICE);
+                        ActivityManager.MemoryInfo mi = new ActivityManager.MemoryInfo();
+                        am.getMemoryInfo(mi);
+                        JSONObject o = new JSONObject();
+                        o.put("avail", mi.availMem);
+                        o.put("total", mi.totalMem);
+                        o.put("cores", Runtime.getRuntime().availableProcessors());
+                        try {
+                            String[] f = firstLine("/proc/stat").trim().split("\\s+");
+                            long idle = Long.parseLong(f[4]) + (f.length > 5 ? Long.parseLong(f[5]) : 0);
+                            long tot = 0;
+                            for (int i = 1; i < f.length && i <= 8; i++) tot += Long.parseLong(f[i]);
+                            o.put("cpuIdle", idle);
+                            o.put("cpuTotal", tot);
+                        } catch (Throwable blocked) {
+                            try {
+                                String st = firstLine("/proc/self/stat");
+                                String[] f = st.substring(st.lastIndexOf(')') + 2).split(" ");
+                                o.put("selfTicks", Long.parseLong(f[11]) + Long.parseLong(f[12]));
+                            } catch (Throwable ignore) {}
+                        }
+                        callback.success(o);
+                    } catch (Throwable t) { callback.error(t.getClass().getSimpleName() + ": " + t.getMessage()); }
+                }
+            });
+            return true;
+        }
         if ("memInfo".equals(action)) {
             // Roda FORA da thread da ponte JS<->Java: Debug.getMemoryInfo é
             // lento (centenas de ms num aparelho fraco) e, na thread da ponte,
@@ -395,6 +430,12 @@ public class ManagerPip extends CordovaPlugin {
         pCb.sendPluginResult(r);
         if (!keep) pCb = null;
     }
+    private static String firstLine(String path) throws java.io.IOException {
+        java.io.BufferedReader r = new java.io.BufferedReader(new java.io.FileReader(path));
+        try { String l = r.readLine(); if (l == null) throw new java.io.IOException("vazio"); return l; }
+        finally { try { r.close(); } catch (Throwable ignore) {} }
+    }
+
     private static String q(String s) { return JSONObject.quote(s == null ? "" : s); }
 
     private void pLabel(String text, boolean autoHide) {
