@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.3.7';
+<script>var APP_VERSION = '1.3.9';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -5860,6 +5860,8 @@ const ServerModule = {
       // 2) resumo acumulado (o que cada worker devolve)
       const acc = { cnt:[0,0,0], blocks:[[],[],[]], grupos:[new Map(),new Map(),new Map()], series:new Map(), done:0 };
       const N = this._workersPerImport || this.workersTotal();
+      // fila de blocos maior: o download continua puxando enquanto os workers
+      // processam (antes, com 2 na fila, a rede parava a cada pouco = velocidade oscilando)
       pool = BlockSyncWorker.createPool(N, (d) => {
         acc.done++;
         for(let t = 0; t < 3; t++){
@@ -5879,7 +5881,7 @@ const ServerModule = {
           for(const c of sp[5]) if(x[5].indexOf(c) === -1) x[5].push(c);
           x[6].push(d.i);
         }
-      });
+      }, PerfMode.isLite() ? 6 : 10);
       pushDebugLog('Importação "' + server.nome + '": ' + N + ' worker(s) processando junto com o download.');
 
       // 3) download em streaming → blocos de ~1 MB → pool
@@ -5908,7 +5910,7 @@ const ServerModule = {
         lastReport = now;
         const dt = (now - lastTime) / 1000;
         if(dt > 0.3){ speed = (bytes - lastBytes) / dt; lastBytes = bytes; lastTime = now; }
-        report({ phase:'download', status:'processing', downloaded: bytes, total: totalBytes, speed: speed,
+        report({ phase:'download', status:'processing', downloaded: bytes, total: totalBytes, estTotal: totalBytes ? null : (server.lastBytes || null), speed: speed,
           counts: { live: acc.cnt[0], movie: acc.cnt[1], series: acc.cnt[2] }, seriesCount: acc.series.size, blocksDone: acc.done });
         MemGuard.logDuring('"' + server.nome + '" baixando+processando ' + formatBytes(bytes) + ' (' + acc.done + ' blocos prontos)');
       };
@@ -6078,7 +6080,8 @@ const ServerModule = {
         seriesCategoryCounts: result.seriesCategoryCounts,
         lastSync: Date.now(),
         lastStatus: 'ok',
-        lastError: null
+        lastError: null,
+        lastBytes: bytes // tamanho da lista baixada: estima a % na próxima vez (quando o servidor não informa o tamanho)
       });
       // campos do formato antigo (compactação por prefixo) — não existem mais
       delete server.urlPrefixes; delete server.logoPrefixes; delete server.legacyFormat;
@@ -6118,20 +6121,47 @@ const ServerModule = {
     // divide os workers de processamento entre as importações simultâneas
     const lanes = Math.max(1, Math.min(concurrency || 1, total));
     ServerModule._workersPerImport = Math.max(1, Math.floor(ServerModule.workersTotal() / lanes));
-    let completed = 0, next = 0, firstSuccessFired = false;
+    // Tentativas por servidor (a 1ª + as de "tentar de novo")
+    const MAX = (PerfMode.isTvDevice() ? 6 : 3) + 1, WAIT_MS = 5000;
+    // Fila: se um servidor dá erro de rede, ele NÃO segura a fila — vai pro
+    // FIM e o próximo tenta. Ele volta depois, com as tentativas que sobraram.
+    const queue = servers.map((s, idx) => ({ s, idx, tries: 0, retryAt: 0 }));
+    let completed = 0, firstSuccessFired = false;
     const results = new Array(total);
     const updateOverall = () => { if(onOverallUpdate) onOverallUpdate({ completed, total }); };
+    const upd = (server, patch) => { if(onServerUpdate) onServerUpdate(server, patch); };
     updateOverall();
 
     async function lane(){
-      while(next < total){
-        const idx = next++;
-        const server = servers[idx];
-        const result = await ServerModule.importServerContent(server, (patch) => { if(onServerUpdate) onServerUpdate(server, patch); });
-        results[idx] = result;
+      while(queue.length){
+        const job = queue.shift();
+        // voltou pra tentar de novo cedo demais (só ele na fila): espera um pouco
+        // (a rede voltando corta a espera)
+        if(job.retryAt > Date.now()){
+          const t0 = Date.now() - 8000;
+          while(job.retryAt > Date.now() && !(NetEvents.backAt > t0)){
+            upd(job.s, { phase:'download', status:'processing', downloaded:0, total:null, speed:0,
+              retryIn: Math.ceil((job.retryAt - Date.now()) / 1000), retryAttempt: job.tries, retryMax: MAX - 1, retryWhy: job.why || '' });
+            await new Promise(r => setTimeout(r, 1000));
+          }
+        }
+        await NetEvents.whenUp(60000); // rede fora: espera voltar sem gastar tentativa
+        job.tries++;
+        const last = job.tries >= MAX;
+        const r = await ServerModule._importOnce(job.s, (patch) => upd(job.s, patch), !last);
+        if(!r.ok && r.retryable && !last){
+          job.why = r.error && (r.error.status ? 'HTTP ' + r.error.status : (r.error.message || String(r.error)));
+          job.retryAt = Date.now() + WAIT_MS;
+          pushDebugLog('Rede: "' + job.s.nome + '" falhou (' + job.why + ') — vai pro fim da fila (tentativa ' + job.tries + ' de ' + MAX + '); ' + (queue.length ? 'o próximo servidor tenta agora.' : 'só falta ele: tenta de novo em 5s.'), true);
+          try{ MemGuard.cleanBeforeRetry('"' + job.s.nome + '" foi pro fim da fila'); }catch(e){}
+          upd(job.s, { phase:'download', status:'requeued', retryAttempt: job.tries, retryMax: MAX, retryWhy: job.why, othersWaiting: queue.length });
+          queue.push(job);
+          continue;
+        }
+        results[job.idx] = r;
         completed++;
         updateOverall();
-        if(result.ok && !firstSuccessFired){
+        if(r.ok && !firstSuccessFired){
           firstSuccessFired = true;
           if(onFirstSuccess) onFirstSuccess();
         }
@@ -10430,6 +10460,15 @@ async function runImportWithProgressModal(servers){
       if(hadFocus){ try{ item.focus({ preventScroll: false }); }catch(e){ item.focus(); } }
     }
 
+    if(patch.phase === 'download' && patch.status === 'requeued'){
+      dotEl.className = 'status-dot processing';
+      statusEl.className = 'sp-status proc';
+      statusEl.textContent = 'Falhou — tenta de novo depois' + (patch.othersWaiting ? ' dos outros' : '') + ' (' + patch.retryAttempt + '/' + patch.retryMax + ')';
+      fillEl.style.width = '0%';
+      detailEl.textContent = patch.retryWhy || '';
+      if(listWrap.lastElementChild !== item){ const hf = document.activeElement === item; listWrap.appendChild(item); if(hf){ try{ item.focus(); }catch(e){} } }
+      return;
+    }
     if(patch.phase === 'download'){
       dotEl.className = 'status-dot processing';
       statusEl.className = 'sp-status proc';
@@ -10442,11 +10481,12 @@ async function runImportWithProgressModal(servers){
         fillEl.style.width = '0%';
         detailEl.textContent = patch.retryWhy || '';
       } else {
-        statusEl.textContent = patch.status === 'done' ? 'Download concluído, na fila' : (patch.counts ? 'Baixando e processando...' : 'Baixando...');
-        let pct = 0;
-        if(patch.total){ pct = Math.min(100, (patch.downloaded/patch.total)*100); }
+        let pct = 0, pctTxt = '';
+        if(patch.total){ pct = Math.min(100, (patch.downloaded/patch.total)*100); pctTxt = ' ' + Math.floor(pct) + '%'; }
+        else if(patch.estTotal){ pct = Math.min(99, (patch.downloaded/patch.estTotal)*100); pctTxt = ' ≈' + Math.floor(pct) + '%'; } // estimado pelo tamanho da última vez
+        statusEl.textContent = patch.status === 'done' ? 'Download concluído, na fila' : (patch.counts ? 'Baixando e processando...' : 'Baixando...') + (patch.status === 'done' ? '' : pctTxt);
         fillEl.style.width = (patch.status==='done' ? 100 : pct) + '%';
-        detailEl.textContent = formatBytes(patch.downloaded) + (patch.total ? ' / ' + formatBytes(patch.total) : '') + (patch.speed ? '  •  ' + formatSpeed(patch.speed) : '') +
+        detailEl.textContent = formatBytes(patch.downloaded) + (patch.total ? ' / ' + formatBytes(patch.total) : patch.estTotal ? ' / ~' + formatBytes(patch.estTotal) : '') + (patch.speed ? '  •  ' + formatSpeed(patch.speed) : '') +
           (patch.counts ? '  •  Filmes: ' + patch.counts.movie + '  Séries: ' + (patch.seriesCount || 0) + '  Ao Vivo: ' + patch.counts.live : '');
       }
     } else if(patch.phase === 'cleanup'){
@@ -10503,6 +10543,12 @@ async function runImportWithProgressModal(servers){
       statusEl.className = 'sp-status err';
       statusEl.textContent = patch.message || 'Erro';
       detailEl.textContent = '';
+      // deu erro: vai pro fim da lista (não atrapalha a visão dos que ainda estão baixando/aguardando)
+      if(listWrap.lastElementChild !== item){
+        const hadFocus = document.activeElement === item;
+        listWrap.appendChild(item);
+        if(hadFocus){ try{ item.focus(); }catch(e){} }
+      }
     }
   }
 
