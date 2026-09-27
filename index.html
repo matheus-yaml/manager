@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.5.1';
+<script>var APP_VERSION = '1.5.2';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -1765,6 +1765,7 @@ async function blocoPool(db, serverId, bi, texto, keepRaw){
   var s = texto;
   if(s == null){ s = await req(db.transaction(STORES.rawBlocks).objectStore(STORES.rawBlocks).get([serverId, bi])); if(typeof s !== 'string') s = ''; }
   var t0 = performance.now();
+  if(typeof s !== 'string'){ s = new TextDecoder('utf-8').decode(s); texto = s; } // bloco em bytes: decodifica aqui (fora da tela)
   var rows = [[], [], []], busca = [[], [], []], cnt = [0, 0, 0];
   var grupos = [new Map(), new Map(), new Map()], series = new Map(), baseKey = new Map();
   // EPISÓDIOS (a maior parte da lista): gravados como UM texto por bloco, 1 episódio por linha
@@ -1878,7 +1879,13 @@ self.onmessage = async function(ev){
     let peakQ = 0;
     const blobUrl = URL.createObjectURL(new Blob([buildWorkerSrc()], { type: 'application/javascript' }));
     let workers = [], free = [], queue = [], roomWaiters = [], active = 0, error = null, onIdle = null;
-    const post = (w, job) => { active++; w.postMessage({ cmd:'bloco', serverId: job.serverId, i: job.i, texto: job.texto }); };
+    const post = (w, job) => {
+      active++;
+      const t = job.texto; job.texto = null;
+      // bytes (download em partes): vão pro worker SEM cópia (transferidos); ele decodifica
+      if(t && typeof t !== 'string' && t.buffer) w.postMessage({ cmd:'bloco', serverId: job.serverId, i: job.i, texto: t }, [t.buffer]);
+      else w.postMessage({ cmd:'bloco', serverId: job.serverId, i: job.i, texto: t });
+    };
     const release = (w) => {
       if(queue.length){
         post(w, queue.shift());
@@ -1993,6 +2000,7 @@ const DEFAULT_SETTINGS = {
   // Em TV/projetor com pouca RAM, use 1 (estritamente um por vez).
   performance: {
     maxConcurrentProcessing: 3, // quantos servidores importam ao mesmo tempo
+    downloadConnections: 4,     // conexões por lista (download em partes, se o servidor aceitar)
     liteMode: 'auto',           // 'auto' | 'on' | 'off' — ver PerfMode
     tvMode: 'auto',             // 'auto' | 'on' | 'off' — navegação por controle remoto (ver TvNav)
     liveEngine: 'auto',         // 'auto' | 'native' | 'js' — (antigo) HLS nativo dentro do WebView
@@ -6021,8 +6029,7 @@ const ServerModule = {
       let estBytes = server.lastBytes || null;
       if(!estBytes){ try{ estBytes = (JSON.parse(localStorage.getItem('sm_list_sizes') || '{}'))[server.url] || null; }catch(e){} }
       let tNet = 0, tWaitPool = 0; // onde o tempo foi: esperando a REDE x esperando o PROCESSAMENTO
-      let n = 0, bytes = 0, buf = '', lastReport = 0, lastBytes = 0, lastTime = Date.now(), speed = 0;
-      const dec = new TextDecoder('utf-8');
+      let n = 0, bytes = 0, lastReport = 0, lastBytes = 0, lastTime = Date.now(), speed = 0;
       const progress = (force) => {
         const now = Date.now();
         if(!force && now - lastReport < 250) return;
@@ -6033,35 +6040,96 @@ const ServerModule = {
           counts: { live: acc.cnt[0], movie: acc.cnt[1], series: acc.cnt[2] }, seriesCount: acc.series.size, blocksDone: acc.done });
         MemGuard.logDuring('"' + server.nome + '" baixando+processando ' + formatBytes(bytes) + ' (' + acc.done + ' blocos prontos)');
       };
-      const drain = async (final) => {
-        while(buf.length >= CH){
-          let cut = buf.lastIndexOf('\n#EXTINF', CH);
-          if(cut <= 0) cut = buf.indexOf('\n#EXTINF', CH);
-          if(cut < 0) break;
-          const tw = performance.now();
-          await pool.send(serverId, n++, buf.slice(0, cut + 1)); // fila cheia = download espera
-          tWaitPool += performance.now() - tw;
-          buf = buf.slice(cut + 1);
-        }
-        if(final && (buf || n === 0)){ await pool.send(serverId, n++, buf); buf = ''; }
+      /* ---------------------------------------------------------------
+         DOWNLOAD EM PARTES PARALELAS (bytes, sem decodificar aqui)
+         A lista é dividida em K faixas; cada faixa vem por uma conexão
+         própria ("Range: bytes=início-fim") e é cortada em blocos de ~1 MB
+         antes de "\n#EXTINF". O pedaço entre duas faixas (fim da k + começo
+         da k+1) vira um bloco de "costura". Chave do bloco: k*100000 + j
+         (costura: k*100000 + 99999) → em ordem = o arquivo original.
+         Os bytes vão pro worker sem cópia (ele decodifica).
+         Servidor sem Range (não responde 206) → segue com 1 conexão.
+         --------------------------------------------------------------- */
+      const P_EXT = [10, 35, 69, 88, 84, 73, 78, 70]; // "\n#EXTINF"
+      const isCut = (u, i) => { for(let q = 0; q < 8; q++) if(u[i + q] !== P_EXT[q]) return false; return true; };
+      const findCut = (u, len, lim) => { // último "\n#EXTINF" até lim; senão o 1º depois
+        let i;
+        for(i = Math.min(lim, len - 8); i > 0; i--) if(isCut(u, i)) return i;
+        for(i = lim + 1; i <= len - 8; i++) if(isCut(u, i)) return i;
+        return -1;
       };
-      // Conexão caiu no meio do download: tenta CONTINUAR de onde parou
-      // (pedido "Range: bytes=N-"), sem perder o que já foi baixado e
-      // processado. Só aceita se o servidor responder 206 começando
-      // exatamente no byte N e for o MESMO arquivo (mesmo tamanho total /
-      // ETag / Last-Modified). Lista gerada na hora (ex: get.php) quase
-      // sempre não suporta — aí cai no plano B: recomeçar do zero.
+      const findFirst = (u, len) => { for(let i = 0; i <= len - 8; i++) if(isCut(u, i)) return i; return -1; };
+      const sendBlock = async (key, u8) => {
+        n++;
+        const tw = performance.now();
+        await pool.send(serverId, key, u8); // fila cheia = download espera
+        tWaitPool += performance.now() - tw;
+      };
+      const concat = (a, b) => { if(!a || !a.length) return b; if(!b || !b.length) return a; const r = new Uint8Array(a.length + b.length); r.set(a, 0); r.set(b, a.length); return r; };
+      const conns = Math.max(1, Math.min(6, parseInt((State.settings.performance || {}).downloadConnections, 10) || DEFAULT_SETTINGS.performance.downloadConnections));
+      const sizeKnown = totalBytes || estBytes || 0;
+      const K = (conns > 1 && sizeKnown >= 8 * CH && response.body && response.body.getReader) ? Math.min(conns, Math.floor(sizeKnown / (4 * CH))) : 1;
+      const bounds = []; for(let k = 0; k < K; k++) bounds.push(Math.floor(sizeKnown * k / K));
+      let effK = K; // vira 1 se o servidor não aceitar as partes
+      // uma faixa em andamento
+      const mkSeg = (k) => ({ k, start: K > 1 ? bounds[k] : 0, end: (K > 1 && k < K - 1) ? bounds[k + 1] : null,
+        got: 0, buf: new Uint8Array(2 * CH), used: 0, j: 0, head: k === 0 ? new Uint8Array(0) : null, tail: null, done: false,
+        reader: null, reading: false, readStart: 0, stallWhy: null, limit: null, overflow: [] });
+      const segs = [];
+      const seams = new Map(); // k -> {tail, head} costura entre faixa k e k+1
+      const trySeam = async (k) => {
+        const s = seams.get(k);
+        if(!s || s.tail == null || s.head == null || s.sent) return;
+        s.sent = true;
+        const u = concat(s.tail, s.head);
+        if(u.length) await sendBlock(k * 100000 + 99999, u);
+      };
+      // guarda bytes na faixa e solta blocos completos
+      const feed = async (seg, v) => {
+        if(seg.used + v.length > seg.buf.length){ const nb = new Uint8Array(Math.max(seg.buf.length * 2, seg.used + v.length)); nb.set(seg.buf.subarray(0, seg.used)); seg.buf = nb; }
+        seg.buf.set(v, seg.used); seg.used += v.length;
+        if(seg.head === null){ // faixa k>0: o começo (até o 1º "\n#EXTINF") vai pra costura
+          const p = findFirst(seg.buf, seg.used);
+          if(p < 0){ if(seg.used > 4 * CH) throw new Error('faixa ' + seg.k + ' sem entrada M3U'); return; }
+          seg.head = seg.buf.slice(0, p + 1);
+          seg.buf.copyWithin(0, p + 1, seg.used); seg.used -= p + 1;
+          const sm = seams.get(seg.k - 1) || {}; sm.head = seg.head; seams.set(seg.k - 1, sm);
+          await trySeam(seg.k - 1);
+        }
+        while(seg.used >= CH){
+          const cut = findCut(seg.buf, seg.used, CH);
+          if(cut < 0) break;
+          const bl = seg.buf.slice(0, cut + 1);
+          seg.buf.copyWithin(0, cut + 1, seg.used); seg.used -= cut + 1;
+          await sendBlock(seg.k * 100000 + seg.j++, bl);
+        }
+      };
+      // faixa terminou: o resto vira fim da costura (ou o último bloco da lista)
+      const finishSeg = async (seg) => {
+        if(seg.done) return; seg.done = true;
+        const rest = seg.buf.slice(0, seg.used); seg.buf = null; seg.used = 0;
+        if(seg.head === null){ // faixa inteira sem nenhum "\n#EXTINF": tudo é costura
+          seg.head = rest; const sm = seams.get(seg.k - 1) || {}; sm.head = rest; seams.set(seg.k - 1, sm); await trySeam(seg.k - 1);
+          if(seg.k < effK - 1){ const s2 = seams.get(seg.k) || {}; s2.tail = new Uint8Array(0); seams.set(seg.k, s2); await trySeam(seg.k); }
+          return;
+        }
+        if(seg.k < effK - 1){ const sm = seams.get(seg.k) || {}; sm.tail = rest; seams.set(seg.k, sm); await trySeam(seg.k); }
+        else if(rest.length || n === 0) await sendBlock(seg.k * 100000 + seg.j++, rest);
+      };
+      // Conexão caiu no meio: tenta CONTINUAR a faixa de onde parou ("Range: bytes=N-fim").
+      // Lista gerada na hora que não aceita → recomeça tudo do zero (tentativa normal).
       const etag0 = response.headers.get('ETag'), lastMod0 = response.headers.get('Last-Modified');
       const RESUMES = PerfMode.isTvDevice() ? 6 : 3, RESUME_WAIT_S = 5;
       let resumes = 0;
-      const tryResume = async (origErr) => {
-        if(!ServerModule.isRetryableNetworkError(origErr) || resumes >= RESUMES || bytes === 0) return null;
+      const tryResume = async (seg, origErr) => {
+        if(!ServerModule.isRetryableNetworkError(origErr) || resumes >= RESUMES || (K === 1 && bytes === 0)) return null;
         resumes++;
+        const pos = seg.start + seg.got;
         const why = origErr && (origErr.message || String(origErr));
-        pushDebugLog('Rede: "' + server.nome + '" caiu em ' + formatBytes(bytes) + ' (' + why + ') — tentando continuar de onde parou (' + resumes + '/' + RESUMES + ') em ' + RESUME_WAIT_S + 's.', true);
+        pushDebugLog('Rede: "' + server.nome + '" caiu em ' + formatBytes(bytes) + (K > 1 ? ' (parte ' + (seg.k + 1) + '/' + K + ')' : '') + ' (' + why + ') — tentando continuar de onde parou (' + resumes + '/' + RESUMES + ') em ' + RESUME_WAIT_S + 's.', true);
         try{ MemGuard.cleanBeforeRetry('"' + server.nome + '" vai continuar o download'); }catch(e){}
         await NetEvents.whenUp(60000);
-        const t0r = Date.now() - 8000; // rede voltou há pouco (ou durante a espera): continua na hora
+        const t0r = Date.now() - 8000;
         for(let sLeft = RESUME_WAIT_S; sLeft > 0; sLeft--){
           if(NetEvents.backAt > t0r) break;
           report({ phase:'download', status:'processing', downloaded: bytes, total: totalBytes, speed: 0,
@@ -6069,57 +6137,54 @@ const ServerModule = {
           await new Promise(res => setTimeout(res, 1000));
         }
         let r2;
-        try{ r2 = await fetch(server.url, { cache: 'no-store', headers: { 'Range': 'bytes=' + bytes + '-' } }); }
-        catch(e){ return tryResume(e); } // rede ainda fora: gasta mais uma tentativa
+        try{ r2 = await fetch(server.url, { cache: 'no-store', headers: { 'Range': 'bytes=' + pos + '-' + (seg.end != null ? seg.end - 1 : '') } }); }
+        catch(e){ return tryResume(seg, e); }
         const cr = r2.headers.get('Content-Range') || '';
         const m = /^bytes\s+(\d+)-\d+\/(\d+|\*)/i.exec(cr);
         const sameFile = (!etag0 || !r2.headers.get('ETag') || r2.headers.get('ETag') === etag0) &&
                          (!lastMod0 || !r2.headers.get('Last-Modified') || r2.headers.get('Last-Modified') === lastMod0) &&
                          (!totalBytes || !m || m[2] === '*' || +m[2] === totalBytes);
-        if(r2.status === 206 && m && +m[1] === bytes && sameFile && r2.body && r2.body.getReader){
-          pushDebugLog('Rede: "' + server.nome + '" continuou do byte ' + bytes + ' (' + formatBytes(bytes) + ' aproveitados).');
+        if(r2.status === 206 && m && +m[1] === pos && sameFile && r2.body && r2.body.getReader){
+          pushDebugLog('Rede: "' + server.nome + '" continuou do byte ' + pos + ' (' + formatBytes(bytes) + ' aproveitados).');
           return r2.body.getReader();
         }
         try{ r2.body && r2.body.cancel && r2.body.cancel(); }catch(e){}
         pushDebugLog('Rede: o servidor de "' + server.nome + '" não permite continuar (' + (r2.status === 200 ? 'mandou a lista inteira de novo' : 'HTTP ' + r2.status) + ') — recomeçando do zero.', true);
         return null;
       };
-      if(response.body && response.body.getReader){
-        let reader = response.body.getReader();
-        // Vigia: se passar STALL_MS sem chegar NADA, a conexão morreu (comum
-        // quando o Wi-Fi troca de faixa: não dá erro, só para) — derruba e
-        // segue o caminho normal de "continuar de onde parou" / tentar de novo.
-        const STALL_MS = PerfMode.isTvDevice() ? 15000 : 25000;
-        // UM cronômetro só por download (leve): confere 1x/s se a leitura atual
-        // está parada. Só conta enquanto ESPERA A REDE (não quando o download
-        // está esperando o processamento ou a limpeza).
-        let reading = false, readStart = 0, stallWhy = null, curReader = reader;
-        const watch = setInterval(() => {
-          if(!reading || stallWhy) return;
-          const idle = Date.now() - readStart;
-          if(idle > STALL_MS) stallWhy = 'download parado há ' + Math.round(STALL_MS / 1000) + 's (conexão morta)';
-          else if(NetEvents.backAt > readStart && idle > 3000) stallWhy = 'a rede caiu e voltou — reconectando';
-          if(stallWhy){ try{ curReader.cancel(); }catch(e){} }
-        }, 1000);
-        try{
+      const STALL_MS = PerfMode.isTvDevice() ? 15000 : 25000;
+      const watch = setInterval(() => { // 1 cronômetro só: confere 1x/s se alguma faixa parou
+        for(const seg of segs){
+          if(!seg.reading || seg.stallWhy) continue;
+          const idle = Date.now() - seg.readStart;
+          if(idle > STALL_MS) seg.stallWhy = 'download parado há ' + Math.round(STALL_MS / 1000) + 's (conexão morta)';
+          else if(NetEvents.backAt > seg.readStart && idle > 3000) seg.stallWhy = 'a rede caiu e voltou — reconectando';
+          if(seg.stallWhy){ try{ seg.reader.cancel(); }catch(e){} }
+        }
+      }, 1000);
+      // lê uma faixa até o fim (ou até o limite dela)
+      let decided = K === 1; // faixa 0 só é cortada no limite depois que as outras conexões confirmam (206)
+      const takeOverflow = async (seg) => { const ov = seg.overflow; seg.overflow = []; for(const v of ov){ seg.got += v.length; bytes += v.length; await feed(seg, v); } };
+      const runSeg = async (seg) => {
         for(;;){
+          if(seg.overflow.length && seg.end == null) await takeOverflow(seg);
           const tr = performance.now();
           let chunk;
           try{
-            reading = true; readStart = Date.now();
-            chunk = await reader.read();
-            reading = false;
-            if(stallWhy){ const w = stallWhy; stallWhy = null; throw new TypeError('network: ' + w); }
-          }
-          catch(readErr){
-            reading = false; stallWhy = null;
-            const r2 = await tryResume(readErr);
-            if(!r2) throw readErr; // não deu pra continuar: erro vai pro "tentar de novo do zero"
-            reader = r2; curReader = r2;
+            seg.reading = true; seg.readStart = Date.now();
+            chunk = await seg.reader.read();
+            seg.reading = false;
+            if(seg.stallWhy){ const w = seg.stallWhy; seg.stallWhy = null; throw new TypeError('network: ' + w); }
+          }catch(readErr){
+            seg.reading = false; seg.stallWhy = null;
+            if(seg.cancelled) return;
+            const r2 = await tryResume(seg, readErr);
+            if(!r2) throw readErr;
+            seg.reader = r2;
             continue;
           }
-          const { done, value } = chunk;
-          tNet += performance.now() - tr;
+          const { done } = chunk; let value = chunk.value;
+          if(K === 1) tNet += performance.now() - tr;
           if(!firstDataLogged && value){
             firstDataLogged = true; clearInterval(genTick);
             stg.marks.push(stg.name + ' ' + Math.round(performance.now() - stg.t) + ' ms');
@@ -6127,18 +6192,86 @@ const ServerModule = {
             pushDebugLog('⏱ "' + server.nome + '": até o 1º dado ' + tot + ' ms → ' + stg.marks.join(' • '), tot > 5000);
           }
           if(done) break;
-          bytes += value.byteLength;
-          buf += dec.decode(value, { stream: true });
-          await drain(false);
+          // faixa com fim: não passa do fim (a faixa 0 guarda o excedente até decidir)
+          if(seg.end != null){
+            const room = seg.end - (seg.start + seg.got);
+            if(value.length > room){
+              if(seg.k === 0 && !decided){ seg.overflow.push(value.slice(Math.max(0, room))); value = value.subarray(0, Math.max(0, room)); }
+              else value = value.subarray(0, Math.max(0, room));
+            }
+          }
+          seg.got += value.length; bytes += value.length;
+          if(value.length) await feed(seg, value);
           progress(false);
+          if(seg.end != null && seg.start + seg.got >= seg.end){
+            if(seg.k === 0 && !decided){
+              await seg.decision;
+              if(seg.end == null){ await takeOverflow(seg); continue; } // voltou a ser 1 conexão: segue lendo
+            }
+            try{ seg.reader.cancel(); }catch(e){}
+            break;
+          }
         }
-        } finally { clearInterval(watch); }
-        buf += dec.decode();
-      } else {
-        buf = await response.text();
-        bytes = buf.length;
-      }
-      await drain(true);
+        // faixa 0 acabou antes da decisão (lista menor que o esperado): espera saber se é a única
+        if(seg.k === 0 && !decided){ await seg.decision; if(seg.end == null) await takeOverflow(seg); }
+        await finishSeg(seg);
+      };
+      const tDl0 = performance.now();
+      try{
+        if(response.body && response.body.getReader){
+          const s0 = mkSeg(0); s0.reader = response.body.getReader(); segs.push(s0);
+          if(K > 1){
+            let resolveDecision; s0.decision = new Promise(r => { resolveDecision = r; });
+            // abre as outras conexões; qualquer uma sem 206 certo = volta pra 1 conexão
+            const extras = [];
+            const opens = [];
+            for(let k = 1; k < K; k++){
+              const seg = mkSeg(k); extras.push(seg);
+              const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null; seg.ctl = ctl;
+              const to = ctl ? setTimeout(() => { try{ ctl.abort(); }catch(e){} }, 7000) : null;
+              opens.push(fetch(server.url, { cache: 'no-store', signal: ctl ? ctl.signal : undefined,
+                headers: { 'Range': 'bytes=' + seg.start + '-' + (seg.end != null ? seg.end - 1 : '') } })
+                .then(r => { clearTimeout(to); seg.resp = r; })
+                .catch(e => { clearTimeout(to); seg.openErr = e; }));
+            }
+            const run0 = runSeg(s0);
+            await Promise.all(opens);
+            let totals = new Set(), bad = null;
+            for(const seg of extras){
+              if(seg.openErr){ bad = 'erro ao abrir (' + (seg.openErr.message || seg.openErr) + ')'; break; }
+              const cr = seg.resp.headers.get('Content-Range') || '';
+              const m = /^bytes\s+(\d+)-\d+\/(\d+|\*)/i.exec(cr);
+              if(seg.resp.status !== 206 || !m || +m[1] !== seg.start || !seg.resp.body){ bad = 'HTTP ' + seg.resp.status + (cr ? ' ' + cr : ''); break; }
+              if(m[2] !== '*') totals.add(+m[2]);
+            }
+            if(!bad && totalBytes && totals.size && !totals.has(totalBytes)) bad = 'tamanho diferente entre as conexões';
+            if(!bad && totals.size > 1) bad = 'tamanho diferente entre as conexões';
+            if(bad){
+              for(const seg of extras){ try{ seg.resp && seg.resp.body && seg.resp.body.cancel(); }catch(e){} }
+              pushDebugLog('⚡ "' + server.nome + '": download em ' + K + ' partes não aceito pelo servidor (' + bad + ') — seguindo com 1 conexão.');
+              s0.end = null; effK = 1; decided = true;
+              resolveDecision();
+              await run0;
+            } else {
+              pushDebugLog('⚡ "' + server.nome + '": baixando em ' + K + ' partes ao mesmo tempo (' + formatBytes(sizeKnown) + (totalBytes ? '' : ' estimado') + ').');
+              decided = true; s0.overflow = []; resolveDecision();
+              for(const seg of extras){ seg.reader = seg.resp.body.getReader(); seg.resp = null; segs.push(seg); }
+              // se alguma falhar de vez, cancela as outras (erro vai pra tentativa normal)
+              const all = [run0].concat(extras.map(seg => runSeg(seg)));
+              try{ await Promise.all(all); }
+              catch(e){ for(const seg of segs){ seg.cancelled = true; try{ seg.reader.cancel(); }catch(_){} } await Promise.allSettled(all); throw e; }
+            }
+          } else {
+            await runSeg(s0);
+          }
+        } else {
+          const u = new TextEncoder().encode(await response.text());
+          const s0 = mkSeg(0); segs.push(s0);
+          s0.got = u.length; bytes = u.length;
+          await feed(s0, u); await finishSeg(s0);
+        }
+      } finally { clearInterval(watch); }
+      if(K > 1) tNet = Math.max(0, performance.now() - tDl0 - tWaitPool);
       const tDownloaded = performance.now();
       pushDebugLog('⏱ "' + server.nome + '": download ' + Math.round(tDownloaded - tStart) + ' ms (' + formatBytes(bytes) + ', ' + n + ' blocos, processados junto) — esperando a rede ' +
         Math.round(tNet) + ' ms, esperando o processamento ' + Math.round(tWaitPool) + ' ms' +
@@ -10942,7 +11075,7 @@ async function renderSettingsView(container){
     const group = el('div', { class:'form-group' });
     group.appendChild(el('label', {}, [label]));
     const input = el('input', { type:'number', min: String(min !== undefined ? min : 0) });
-    input.value = key === 'maxConcurrentProcessing' ? effectiveMaxProcessing() : perf[key]; // mostra o valor que vale de verdade
+    input.value = key === 'maxConcurrentProcessing' ? effectiveMaxProcessing() : (perf[key] != null ? perf[key] : DEFAULT_SETTINGS.performance[key]); // mostra o valor que vale de verdade
     input.addEventListener('change', async function(){
       let v = parseInt(input.value, 10);
       if(isNaN(v) || v < (min !== undefined ? min : 0)) v = DEFAULT_SETTINGS.performance[key];
@@ -10960,6 +11093,7 @@ async function renderSettingsView(container){
 
   const perfRow = el('div', { class:'form-row' });
   perfRow.appendChild(makePerfField('Servidores importando ao mesmo tempo', 'maxConcurrentProcessing', 'Mínimo 1 — use 1 em aparelhos fracos' + (PerfMode.isLite() ? ' (no modo leve o padrão é 1)' : ''), 1));
+  perfRow.appendChild(makePerfField('Conexões por download', 'downloadConnections', 'Baixa a lista em partes ao mesmo tempo (1 a 6). Padrão 4. Servidor que não aceita: usa 1 sozinho.', 1));
   // Modo leve: sem desfoque/sombras/animações (TV e projetor ficam bem mais leves)
   const liteGroup = el('div', { class:'form-group' });
   liteGroup.appendChild(el('label', {}, ['Modo leve (visual simples, mais rápido)']));
