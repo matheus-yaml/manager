@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.5.3';
+<script>var APP_VERSION = '1.5.4';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -2884,6 +2884,7 @@ const MemGuard = {
     try{ QueryModule.invalidateCaches(); }catch(e){}
     State.favoritesCache = null;
     State.continueCache = null;
+    try{ if(typeof activeSearchOverlay === 'undefined' || !activeSearchOverlay) SearchIndex.release(); }catch(e){}
     let imgs = ImageMem.releaseOffscreen();
     const extra = [];
     if(deep){
@@ -5239,11 +5240,182 @@ const QueryModule = {
    na MESMA posição da tupla em contentBlocks) e só carrega o bloco pesado
    de conteúdo quando já sabe que tem resultado dentro dele.
    ====================================================================== */
+/* ======================================================================
+   ÍNDICE DE PESQUISA (worker próprio)
+   ------------------------------------------------------------------
+   Antes: cada pesquisa relia do banco os textos de busca de TODOS os
+   servidores (centenas de leituras) — no projetor, segundos por busca.
+   Agora um worker carrega esses textos UMA vez (nomes e categorias já
+   normalizados, séries também) e guarda em memória. Cada pesquisa vira
+   só indexOf em texto na memória (milissegundos); a tela lê do banco
+   apenas os blocos onde achou algo. Importou/excluiu servidor: o worker
+   recarrega só aquele servidor. Pouca memória: o worker é encerrado.
+   ====================================================================== */
+function searchWorkerMain(){
+  var db = null, idx = new Map(); // serverId -> { sig, t:[[{b,txt}],[{b,txt}]], sn:{txt,pos} }
+  var ACCS = 'àáâãäåèéêëìíîïòóôõöùúûüçñýÿ', ACCT = 'aaaaaaeeeeiiiiooooouuuucnyy';
+  var NONA = /[^\x00-\x7f]/, ACCRE = /[àáâãäåèéêëìíîïòóôõöùúûüçñýÿ]/g;
+  function norm(x){
+    x = String(x || '').toLowerCase();
+    if(!NONA.test(x)) return x;
+    x = x.replace(ACCRE, function(c){ return ACCT[ACCS.indexOf(c)]; });
+    return NONA.test(x) ? normalizeText(x) : x;
+  }
+  function open(){ return new Promise(function(ok, ko){ var r = indexedDB.open(DB_NAME); r.onsuccess = function(){ ok(r.result); }; r.onerror = function(){ ko(r.error); }; }); }
+  function getAll(store, range){
+    return new Promise(function(ok, ko){
+      var st = db.transaction(store).objectStore(store);
+      var rk = st.getAllKeys(range), rv = st.getAll(range);
+      rv.onsuccess = function(){ ok({ keys: rk.result || [], vals: rv.result || [] }); };
+      rv.onerror = rk.onerror = function(e){ ko(e.target.error); };
+    });
+  }
+  async function loadServer(s){
+    var catN = new Map(), out = { sig: s.sig, t: [[], []], sn: null };
+    for(var t = 0; t < 2; t++){
+      var valid = new Set(s.keys[t]);
+      var r = await getAll(STORES.searchBlocks, IDBKeyRange.bound([s.id, t], [s.id, t, []]));
+      for(var x = 0; x < r.keys.length; x++){
+        var b = r.keys[x][2], txt = r.vals[x];
+        if(!txt || !valid.has(b)) continue;
+        var L = txt.split('\n'), o = new Array(L.length);
+        for(var i = 0; i < L.length; i++){
+          var l = L[i], tab = l.indexOf('\t');
+          if(tab < 0){ o[i] = l; continue; }
+          var c = l.slice(tab + 1), cn = catN.get(c);
+          if(cn === undefined){ cn = norm(c).replace(/[\t\n]/g, ' '); catN.set(c, cn); }
+          o[i] = l.slice(0, tab) + '\t' + cn;
+        }
+        out.t[t].push({ b: b, txt: o.join('\n') });
+        r.vals[x] = null;
+      }
+    }
+    var sr = await getAll(STORES.seriesBlocks, IDBKeyRange.bound([s.id], [s.id, []]));
+    var names = [], pos = [];
+    for(var y = 0; y < sr.keys.length; y++){
+      var bl = sr.vals[y]; if(!bl) continue;
+      var sb = sr.keys[y][1];
+      for(var j = 0; j < bl.length; j++){ names.push(norm(bl[j][1]).replace(/\n/g, ' ')); pos.push(sb, j); }
+      sr.vals[y] = null;
+    }
+    out.sn = { txt: names.join('\n'), pos: Int32Array.from(pos) };
+    return out;
+  }
+  // linhas (em ordem) onde q aparece; no máx. lim
+  function findLines(txt, q, lim, cb){
+    var p = 0, line = 0, lp = 0, n = 0;
+    while(n < lim){
+      var at = txt.indexOf(q, p); if(at < 0) break;
+      for(;;){ var nl = txt.indexOf('\n', lp); if(nl < 0 || nl >= at) break; line++; lp = nl + 1; }
+      cb(line); n++;
+      var le = txt.indexOf('\n', at); if(le < 0) break;
+      p = le + 1;
+    }
+    return n;
+  }
+  self.onmessage = async function(ev){
+    var m = ev.data;
+    try{
+      if(!db) db = await open();
+      if(m.cmd === 'load'){
+        var keep = new Set();
+        for(var k = 0; k < m.servers.length; k++){
+          var s = m.servers[k]; keep.add(s.id);
+          var cur = idx.get(s.id);
+          if(cur && cur.sig === s.sig) continue;
+          idx.delete(s.id);
+          idx.set(s.id, await loadServer(s));
+        }
+        idx.forEach(function(v, key){ if(!keep.has(key)) idx.delete(key); });
+        self.postMessage({ id: m.id, ok: true });
+        return;
+      }
+      if(m.cmd === 'search'){
+        var q = m.q, max = m.max, res = { movie: [], live: [], series: [], capped: { movie: [], live: [], series: [] } };
+        var TN = ['live', 'movie'];
+        for(var a = 0; a < m.order.length; a++){
+          var sid = m.order[a], e = idx.get(sid); if(!e) continue;
+          for(var t2 = 0; t2 < 2; t2++){
+            var got = 0, out = res[TN[t2]], blocks = e.t[t2];
+            for(var z = 0; z < blocks.length && got <= max; z++){
+              var bk = blocks[z];
+              got += findLines(bk.txt, q, max + 1 - got, function(line){ out.push([sid, t2, bk.b, line]); });
+            }
+            if(got > max){ out.pop(); res.capped[TN[t2]].push(sid); }
+          }
+          var sg = 0;
+          sg = findLines(e.sn.txt, q, max + 1, function(line){ res.series.push([sid, e.sn.pos[2 * line], e.sn.pos[2 * line + 1]]); });
+          if(sg > max){ res.series.pop(); res.capped.series.push(sid); }
+        }
+        self.postMessage({ id: m.id, ok: true, res: res });
+      }
+    }catch(err){
+      self.postMessage({ id: m.id, ok: false, error: String(err && err.message || err) });
+    }
+  };
+}
+
+const SearchIndex = {
+  _w: null, _url: null, _id: 0, _pending: new Map(), _loadP: null, _loadedSig: '', _broken: false,
+  _worker(){
+    if(this._w || this._broken) return this._w;
+    try{
+      const src = 'var DB_NAME = ' + JSON.stringify(DB_NAME) + ';\nvar STORES = ' + JSON.stringify(STORES) + ';\n' +
+        normalizeText.toString() + '\n(' + searchWorkerMain.toString() + ')();';
+      this._url = URL.createObjectURL(new Blob([src], { type: 'application/javascript' }));
+      this._w = new Worker(this._url);
+      this._w.onmessage = (e) => { const p = this._pending.get(e.data.id); if(p){ this._pending.delete(e.data.id); e.data.ok ? p.ok(e.data) : p.ko(new Error(e.data.error)); } };
+      this._w.onerror = (e) => { this._broken = true; this.release(); };
+    }catch(e){ this._broken = true; this._w = null; }
+    return this._w;
+  },
+  _call(msg){
+    const w = this._worker(); if(!w) return Promise.reject(new Error('sem worker'));
+    const id = ++this._id; msg.id = id;
+    return new Promise((ok, ko) => { this._pending.set(id, { ok, ko }); w.postMessage(msg); });
+  },
+  _servers(){
+    return Array.from(State.servers.values()).filter(serverHasBlocks).map(s => ({
+      id: s.id, sig: String(s.lastSync || '') + '|' + (s.blocosSeries || 0) + '|' + JSON.stringify(s.blocos || ''),
+      keys: [blockKeys(s, 0), blockKeys(s, 1)]
+    }));
+  },
+  /** Carrega (ou atualiza) o índice. Só relê servidor que mudou. */
+  ensure(){
+    const servers = this._servers();
+    const sig = servers.map(s => s.id + '#' + s.sig).join(',');
+    if(this._loadP && this._loadedSig === sig) return this._loadP;
+    this._loadedSig = sig;
+    const t0 = performance.now();
+    this._loadP = this._call({ cmd: 'load', servers }).then(() => {
+      pushDebugLog('🔎 Índice de pesquisa pronto em ' + Math.round(performance.now() - t0) + ' ms (' + servers.length + ' servidor(es)).');
+    }).catch((e) => { this._loadP = null; this._loadedSig = ''; throw e; });
+    return this._loadP;
+  },
+  async search(q, max, order){
+    await this.ensure();
+    const r = await this._call({ cmd: 'search', q, max, order });
+    // projetor/TV: sem pesquisar por 3 min, solta a memória do índice
+    if(PerfMode.isLite()){ clearTimeout(this._idleT); this._idleT = setTimeout(() => { if(!activeSearchOverlay) this.release(); }, 180000); }
+    return r.res;
+  },
+  /** Solta a memória do índice (pouca RAM). Recarrega sozinho na próxima pesquisa. */
+  release(){
+    if(this._w){ try{ this._w.terminate(); }catch(e){} }
+    if(this._url){ try{ URL.revokeObjectURL(this._url); }catch(e){} }
+    for(const p of this._pending.values()){ try{ p.ko(new Error('índice encerrado')); }catch(e){} }
+    this._pending.clear();
+    this._w = null; this._url = null; this._loadP = null; this._loadedSig = '';
+  }
+};
+
 const GlobalSearchModule = {
   // nomes de série já normalizados, por servidor (normalizar 30 mil nomes a cada busca pesava muito)
   _seriesNorm: new Map(),
   invalidate(){ this._seriesNorm.clear(); },
-  async warm(){
+  // abrir a pesquisa: já prepara o índice enquanto a pessoa digita
+  warm(){ try{ SearchIndex.ensure().catch(() => {}); }catch(e){} },
+  async warmLegacy(){
     for(const srv of State.servers.values()){
       if(!serverHasBlocks(srv) || this._seriesNorm.has(srv.id)) continue;
       const { vals } = await IDB.getRangeKV(STORES.seriesBlocks, IDBKeyRange.bound([srv.id], [srv.id, []]));
@@ -5261,6 +5433,54 @@ const GlobalSearchModule = {
   },
   _seq: 0,
   async search(term, maxPerType){
+    const norm = normalizeText(term).trim();
+    if(!norm) return { movie:[], live:[], series:[], capped: { movie:new Set(), live:new Set(), series:new Set() } };
+    try{ return await this._searchIndexed(norm, maxPerType); }
+    catch(e){
+      if(e && e.message === 'busca antiga') throw e;
+      pushDebugLog('🔎 Índice de pesquisa indisponível (' + (e && e.message || e) + ') — pesquisando direto no banco.', true);
+      return this._searchLegacy(term, maxPerType);
+    }
+  },
+  /** Pesquisa pelo índice em memória (worker) + leitura só dos blocos com resultado. */
+  async _searchIndexed(norm, maxPerType){
+    const my = ++this._seq;
+    const servers = Array.from(State.servers.values()).filter(serverHasBlocks);
+    maxPerType = maxPerType || Math.max(10, Math.min(40, Math.floor(120 / Math.max(1, servers.length))));
+    const t0 = performance.now();
+    const hits = await SearchIndex.search(norm, maxPerType, servers.map(s => s.id));
+    if(my !== this._seq) throw new Error('busca antiga');
+    const t1 = performance.now();
+    const result = { movie:[], live:[], series:[], capped: { movie:new Set(hits.capped.movie), live:new Set(hits.capped.live), series:new Set(hits.capped.series) } };
+    const [favMovie, favLive, favSeries] = await Promise.all([QueryModule._favoriteIdSet('movie'), QueryModule._favoriteIdSet('live'), QueryModule._favoriteIdSet('series')]);
+    // lê cada bloco com resultado UMA vez (todos em paralelo)
+    const blocks = new Map();
+    const need = (store, key) => { const k = store + '|' + key.join('|'); if(!blocks.has(k)) blocks.set(k, IDB.getByKey(store, key).catch(() => null)); return k; };
+    const plan = { movie: [], live: [], series: [] };
+    for(const type of ['movie', 'live']) for(const h of hits[type]) plan[type].push([need(STORES.contentBlocks, [h[0], h[1], h[2]]), h]);
+    for(const h of hits.series) plan.series.push([need(STORES.seriesBlocks, [h[0], h[1]]), h]);
+    const keys = Array.from(blocks.keys()), vals = await Promise.all(keys.map(k => blocks.get(k)));
+    if(my !== this._seq) throw new Error('busca antiga');
+    const got = new Map(); keys.forEach((k, i) => got.set(k, vals[i]));
+    for(const type of ['movie', 'live']){
+      const fav = type === 'movie' ? favMovie : favLive;
+      for(const [k, h] of plan[type]){
+        const bloco = got.get(k); if(!bloco || !bloco[h[3]]) continue;
+        const c = QueryModule.tupleToContent(bloco[h[3]], h[1], h[0], h[2], h[3]);
+        c.favorito = fav.has(c.id);
+        result[type].push(c);
+      }
+    }
+    for(const [k, h] of plan.series){
+      const bloco = got.get(k); if(!bloco || !bloco[h[2]]) continue;
+      const s = QueryModule.seriesTupleToSummary(bloco[h[2]], h[0]);
+      s.favorito = favSeries.has(s.key);
+      result.series.push(s);
+    }
+    pushDebugLog('🔎 Pesquisa "' + norm + '": ' + Math.round(t1 - t0) + ' ms no índice + ' + Math.round(performance.now() - t1) + ' ms lendo ' + keys.length + ' bloco(s).');
+    return result;
+  },
+  async _searchLegacy(term, maxPerType){
     const norm = normalizeText(term).trim();
     const my = ++this._seq, stale = () => my !== this._seq; // busca nova começou: a antiga para na hora
     // capped[tipo] = servidores que bateram no limite (tem mais resultado lá do que o mostrado)
@@ -5500,6 +5720,7 @@ function openSearchPopup(term, initialFilters){
     }
   }
 
+  let renderSeq = 0;
   function renderResults(){
     if(!currentResults){ renderServerChips(); return; }
     body.innerHTML = '';
@@ -5511,15 +5732,30 @@ function openSearchPopup(term, initialFilters){
     if(activeType==='all' || activeType==='live') groups.push(['Ao Vivo', currentResults.live, renderContentCard]);
 
     let any = false;
+    // desenha as primeiras capas de cada grupo na hora e o resto aos poucos
+    // (centenas de cartões de uma vez travavam a tela no projetor)
+    const myRender = ++renderSeq, FIRST = PerfMode.isLite() ? 12 : 30, STEP = PerfMode.isLite() ? 12 : 40;
+    const rest = [];
     for(const [label, items, renderFn] of groups){
       const filtered = activeServer==='all' ? items : items.filter(i => i.serverId===activeServer);
       if(filtered.length===0) continue;
       any = true;
       body.appendChild(el('div', { class:'server-section-title' }, [label + ' (' + filtered.length + ')']));
       const grid = el('div', { class:'card-grid' });
-      for(const item of filtered){ grid.appendChild(renderFn(item)); }
+      for(let i = 0; i < Math.min(FIRST, filtered.length); i++) grid.appendChild(renderFn(filtered[i]));
+      if(filtered.length > FIRST) rest.push([grid, filtered, FIRST, renderFn]);
       body.appendChild(grid);
     }
+    const more = () => {
+      if(myRender !== renderSeq || !rest.length) return;
+      const r = rest[0], frag = document.createDocumentFragment();
+      const end = Math.min(r[1].length, r[2] + STEP);
+      for(let i = r[2]; i < end; i++) frag.appendChild(r[3](r[1][i]));
+      r[0].appendChild(frag); r[2] = end;
+      if(end >= r[1].length) rest.shift();
+      if(rest.length) setTimeout(more, 60);
+    };
+    if(rest.length) setTimeout(more, 120);
     if(!any) body.appendChild(renderEmptyState('🔍', 'Nada encontrado', 'Nenhum resultado com esses filtros.'));
   }
 
