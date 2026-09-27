@@ -48,7 +48,7 @@ cat > "$PIP/plugin.xml" <<'PIPEOF'
      coloca o app inteiro na janelinha flutuante do Android (8.0+). -->
 <plugin xmlns="http://apache.org/cordova/ns/plugins/1.0"
         xmlns:android="http://schemas.android.com/apk/res/android"
-        id="cordova-plugin-manager-pip" version="1.0.0">
+        id="cordova-plugin-manager-pip" version="1.1.0">
   <name>ManagerPip</name>
   <platform name="android">
     <config-file target="res/xml/config.xml" parent="/*">
@@ -65,6 +65,11 @@ cat > "$PIP/plugin.xml" <<'PIPEOF'
       <uses-permission android:name="android.permission.WAKE_LOCK" />
     </config-file>
     <source-file src="src/android/ManagerPip.java" target-dir="src/com/manager/pip" />
+    <!-- ExoPlayer (Media3): ao vivo no projetor com reserva configurável (ver ExoMini.java) -->
+    <source-file src="src/android/ExoMini.java" target-dir="src/com/manager/pip" />
+    <framework src="androidx.media3:media3-exoplayer:1.5.1" />
+    <framework src="androidx.media3:media3-exoplayer-hls:1.5.1" />
+    <framework src="androidx.media3:media3-ui:1.5.1" />
   </platform>
 </plugin>
 PIPEOF
@@ -120,12 +125,14 @@ public class ManagerPip extends CordovaPlugin {
             final int x = args.optInt(off), y = args.optInt(off + 1), w = args.optInt(off + 2), h = args.optInt(off + 3);
             final boolean visible = args.optBoolean(off + 4, true);
             final String bg = show ? args.optString(off + 5, "#0B0D16") : null;
+            // reserva do ExoPlayer em ms (>= 0 = usar ExoPlayer; -1 ou ausente = VideoView antigo)
+            final int reserve = show ? args.optInt(off + 6, -1) : -1;
             if (show) mCb = callback;
             cordova.getActivity().runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
                     try {
-                        if (show) miniOpen(url, bg);
+                        if (show) miniOpen(url, bg, reserve);
                         miniPlace(x, y, w, h, visible);
                         if (!show) callback.success();
                     } catch (Throwable t) { callback.error(t.getClass().getSimpleName() + ": " + t.getMessage()); }
@@ -141,7 +148,11 @@ public class ManagerPip extends CordovaPlugin {
                 @Override
                 public void run() {
                     try {
-                        if (mView != null) {
+                        if (mExo != null) {
+                            if ("miniPause".equals(act)) { mPaused = true; mExo.pause(); }
+                            else if ("miniResume".equals(act)) { mPaused = false; mExo.resume(); }
+                            else { mVol = vol; mExo.volume(vol); }
+                        } else if (mView != null) {
                             if ("miniPause".equals(act)) { mPaused = true; mView.pause(); }
                             else if ("miniResume".equals(act)) { mPaused = false; mLastMove = System.currentTimeMillis(); mView.start(); }
                             else { mVol = vol; if (mMp != null) mMp.setVolume(vol, vol); }
@@ -513,6 +524,7 @@ public class ManagerPip extends CordovaPlugin {
     // ================== MINI PLAYER NATIVO ==================
     private FrameLayout mBox;
     private VideoView mView;
+    private ExoMini mExo;          // ExoPlayer com reserva (projetor, ao vivo)
     private CallbackContext mCb;
     private String mUrl;
     private int mRetries = 0, mLastPos = -1;
@@ -535,7 +547,7 @@ public class ManagerPip extends CordovaPlugin {
      *  deixa um "buraco" no quadro). Assim tudo da página — painel de
      *  diagnóstico, popups, avisos — aparece POR CIMA do vídeo. O fundo da
      *  tela nativa ganha a cor de fundo do app, então o resto fica igual. */
-    private void miniOpen(String url, String bg) {
+    private void miniOpen(String url, String bg, int reserveMs) {
         Activity act = cordova.getActivity();
         ViewGroup content = (ViewGroup) act.findViewById(android.R.id.content);
         if (mBox == null) {
@@ -546,9 +558,34 @@ public class ManagerPip extends CordovaPlugin {
             try { content.setBackgroundColor(Color.parseColor(bg == null ? "#0B0D16" : bg)); } catch (Throwable t) { content.setBackgroundColor(0xFF0B0D16); }
             try { webView.getView().setBackgroundColor(Color.TRANSPARENT); } catch (Throwable ignore) {}
         }
-        if (url.equals(mUrl) && mView != null) return; // já tocando esse canal
+        if (url.equals(mUrl) && (mView != null || mExo != null)) return; // já tocando esse canal
         if (mView != null) { try { mView.stopPlayback(); } catch (Throwable ignore) {} mBox.removeView(mView); mView = null; }
+        if (mExo != null) { try { mExo.release(); mBox.removeView(mExo.view()); } catch (Throwable ignore) {} mExo = null; }
         mUrl = url; mRetries = 0; mPlayed = false; mPaused = false; mMp = null; mLastPos = -1; mLastMove = System.currentTimeMillis();
+        if (reserveMs >= 0) {
+            // ExoPlayer com reserva; se a biblioteca não estiver no APK, cai no VideoView
+            try {
+                final ExoMini[] self = new ExoMini[1];
+                final ExoMini ex = new ExoMini(act, reserveMs, new ExoMini.Listener() {
+                    public void send(String json) {
+                        if (json.startsWith("{\"event\":\"failed\"")) { mH.post(new Runnable() { public void run() { if (mExo != null && mExo == self[0]) miniClose("failed"); } }); return; }
+                        if (json.startsWith("{\"event\":\"playing\"")) mPlayed = true;
+                        mSend(json, true);
+                    }
+                });
+                mBox.addView(ex.view(), new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.CENTER));
+                self[0] = ex;
+                mExo = ex;
+                ex.volume(mVol);
+                ex.play(url);
+                mSend("{\"event\":\"engine\",\"name\":\"exoplayer\",\"reserve\":" + reserveMs + "}", true);
+                return;
+            } catch (Throwable t) {
+                if (mExo != null) { try { mExo.release(); mBox.removeView(mExo.view()); } catch (Throwable ignore) {} }
+                mExo = null;
+                mSend("{\"event\":\"engine\",\"name\":\"videoview\",\"why\":" + q(t.getClass().getSimpleName() + ": " + t.getMessage()) + "}", true);
+            }
+        }
         final VideoView v = new VideoView(act);
         v.setFocusable(false);
         mBox.addView(v, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.CENTER));
@@ -735,11 +772,221 @@ public class ManagerPip extends CordovaPlugin {
         mH.removeCallbacksAndMessages(null);
         mWatch = null;
         if (mView != null) { try { mView.stopPlayback(); } catch (Throwable ignore) {} mView = null; }
+        if (mExo != null) { try { mExo.release(); } catch (Throwable ignore) {} mExo = null; }
         if (mBox != null) { try { ((ViewGroup) mBox.getParent()).removeView(mBox); } catch (Throwable ignore) {} mBox = null; }
         try { webView.getView().setBackgroundColor(Color.BLACK); } catch (Throwable ignore) {}
         mUrl = null;
         if (mCb != null) mSend("{\"event\":" + q(reason) + ",\"played\":" + mPlayed + "}", false);
     }
+}
+PIPEOF
+cat > "$PIP/src/android/ExoMini.java" <<'PIPEOF'
+package com.manager.pip;
+
+import android.content.Context;
+import android.graphics.Color;
+import android.os.Handler;
+import android.os.Looper;
+import android.view.View;
+
+import androidx.media3.common.C;
+import androidx.media3.common.MediaItem;
+import androidx.media3.common.MimeTypes;
+import androidx.media3.common.PlaybackException;
+import androidx.media3.common.Player;
+import androidx.media3.datasource.DefaultHttpDataSource;
+import androidx.media3.datasource.HttpDataSource;
+import androidx.media3.exoplayer.DefaultLoadControl;
+import androidx.media3.exoplayer.ExoPlayer;
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
+import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy;
+import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy;
+import androidx.media3.extractor.DefaultExtractorsFactory;
+import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory;
+import androidx.media3.ui.AspectRatioFrameLayout;
+import androidx.media3.ui.PlayerView;
+
+/**
+ * Ao vivo no projetor com ExoPlayer (Media3) e uma RESERVA configurável.
+ *
+ * Por quê: os testes de rede mostraram buracos de 5–15s sem dados (servidor
+ * IPTV parando ou o Wi-Fi do projetor engasgando). O VideoView do Android não
+ * deixa escolher o buffer, então qualquer buraco maior que ~2–3s vira
+ * "Carregando". Aqui o canal só começa quando já tem `reserveMs` de vídeo
+ * guardado, e depois de um engasgo espera encher a reserva de novo — o vídeo
+ * fica esses segundos atrás do ao vivo, mas passa por cima dos buracos.
+ *
+ * Tudo que é do ExoPlayer fica nesta classe: se a biblioteca não estiver no
+ * APK, o ManagerPip pega o erro e volta pro VideoView.
+ */
+public class ExoMini {
+
+    public interface Listener { void send(String json); }
+
+    private final Listener mL;
+    private final int mReserveMs;
+    private final Handler mH = new Handler(Looper.getMainLooper());
+    private final ExoPlayer mPlayer;
+    private final PlayerView mView;
+    private String mUrl;
+    private boolean mPlayed = false, mReleased = false, mPaused = false;
+    private int mRetries = 0, mRebuffers = 0;
+    private long mBufferingSince = 0;
+    private Runnable mTick;
+
+    public ExoMini(Context ctx, int reserveMs, Listener l) {
+        mL = l;
+        mReserveMs = Math.max(2000, reserveMs);
+
+        // Reserva: só começa (e só volta depois de um engasgo) com mReserveMs guardado.
+        DefaultLoadControl lc = new DefaultLoadControl.Builder()
+            .setBufferDurationsMs(mReserveMs, mReserveMs + 15000, mReserveMs, mReserveMs)
+            .setTargetBufferBytes(48 * 1024 * 1024)      // teto de memória (~1 min de FHD)
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .build();
+
+        DefaultHttpDataSource.Factory http = new DefaultHttpDataSource.Factory()
+            .setUserAgent("Mozilla/5.0 (Linux; Android 11) ManagerTV ExoPlayer")
+            .setConnectTimeoutMs(10000)
+            .setReadTimeoutMs(10000)   // 10s sem dados = reconecta (a reserva segura a imagem)
+            .setAllowCrossProtocolRedirects(true);
+
+        // IPTV em .ts muitas vezes começa sem quadro-chave: aceita assim mesmo
+        DefaultExtractorsFactory ext = new DefaultExtractorsFactory()
+            .setTsExtractorFlags(DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES);
+
+        // Caiu a conexão no meio? Reconecta sozinho, sem parar o vídeo, pra sempre
+        // (depois que o canal já tocou). Antes de tocar, desiste rápido de
+        // canal quebrado (401/403/404) pra o app poder usar o outro player.
+        LoadErrorHandlingPolicy policy = new DefaultLoadErrorHandlingPolicy() {
+            @Override
+            public long getRetryDelayMsFor(LoadErrorHandlingPolicy.LoadErrorInfo info) {
+                if (!mPlayed) {
+                    if (info.exception instanceof HttpDataSource.InvalidResponseCodeException) {
+                        int c = ((HttpDataSource.InvalidResponseCodeException) info.exception).responseCode;
+                        if (c == 401 || c == 403 || c == 404 || c == 405 || c == 410) return C.TIME_UNSET;
+                    }
+                    if (info.errorCount > 4) return C.TIME_UNSET;
+                }
+                send("{\"event\":\"netretry\",\"n\":" + info.errorCount + ",\"why\":" + q(String.valueOf(info.exception)) + "}");
+                return Math.min(1000L * info.errorCount, 5000L);
+            }
+            @Override
+            public int getMinimumLoadableRetryCount(int dataType) { return Integer.MAX_VALUE; }
+        };
+
+        mPlayer = new ExoPlayer.Builder(ctx)
+            .setLoadControl(lc)
+            .setMediaSourceFactory(new DefaultMediaSourceFactory(http, ext).setLoadErrorHandlingPolicy(policy))
+            .build();
+
+        mView = new PlayerView(ctx);
+        mView.setUseController(false);
+        mView.setFocusable(false);
+        mView.setResizeMode(AspectRatioFrameLayout.RESIZE_MODE_FIT);
+        mView.setShutterBackgroundColor(Color.BLACK);
+        mView.setKeepContentOnPlayerReset(true);
+        mView.setPlayer(mPlayer);
+
+        mPlayer.addListener(new Player.Listener() {
+            @Override
+            public void onPlaybackStateChanged(int state) {
+                if (mReleased) return;
+                if (state == Player.STATE_BUFFERING) {
+                    mBufferingSince = System.currentTimeMillis();
+                    if (mPlayed) { mRebuffers++; send("{\"event\":\"buffering\",\"n\":" + mRebuffers + "}"); }
+                } else if (state == Player.STATE_READY) {
+                    mBufferingSince = 0;
+                    mRetries = 0;
+                    if (!mPlayed) { mPlayed = true; send("{\"event\":\"playing\",\"reserve\":" + mReserveMs + "}"); }
+                    else send("{\"event\":\"buffered\"}");
+                } else if (state == Player.STATE_ENDED) {
+                    retry("o stream terminou");
+                }
+            }
+            @Override
+            public void onPlayerError(PlaybackException e) {
+                if (mReleased) return;
+                if (e.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
+                    mPlayer.seekToDefaultPosition();
+                    mPlayer.prepare();
+                    return;
+                }
+                send("{\"event\":\"error\",\"what\":" + q(e.getErrorCodeName()) + ",\"extra\":" + q(String.valueOf(e.getMessage())) + "}");
+                if (!mPlayed && mRetries >= 1) { send("{\"event\":\"failed\",\"err\":" + q(e.getErrorCodeName()) + "}"); return; }
+                retry(e.getErrorCodeName());
+            }
+        });
+
+        // a cada 2s: quanto tem guardado (o app mostra "Enchendo reserva X/Ys")
+        // e vigia: preso carregando muito tempo = reconecta do zero
+        mTick = new Runnable() {
+            public void run() {
+                if (mReleased) return;
+                try {
+                    long buf = mPlayer.getTotalBufferedDuration();
+                    int st = mPlayer.getPlaybackState();
+                    send("{\"event\":\"stat\",\"buf\":" + buf + ",\"reserve\":" + mReserveMs + ",\"state\":" + st + ",\"played\":" + mPlayed + "}");
+                    if (!mPaused && st == Player.STATE_BUFFERING && mBufferingSince > 0
+                            && System.currentTimeMillis() - mBufferingSince > Math.max(30000, mReserveMs + 20000)) {
+                        mBufferingSince = System.currentTimeMillis();
+                        retry("sem dados há muito tempo");
+                    }
+                } catch (Throwable ignore) {}
+                mH.postDelayed(this, 2000);
+            }
+        };
+        mH.postDelayed(mTick, 2000);
+    }
+
+    public View view() { return mView; }
+
+    public void play(String url) {
+        mUrl = url;
+        mPlayed = false; mRetries = 0; mRebuffers = 0;
+        load();
+        mPlayer.setPlayWhenReady(!mPaused);
+    }
+
+    private void load() {
+        MediaItem.Builder b = new MediaItem.Builder()
+            .setUri(mUrl)
+            .setLiveConfiguration(new MediaItem.LiveConfiguration.Builder().setTargetOffsetMs(mReserveMs).build());
+        String low = mUrl.toLowerCase();
+        if (low.contains(".m3u8") || low.contains("output=hls") || low.contains("type=m3u8")) b.setMimeType(MimeTypes.APPLICATION_M3U8);
+        mPlayer.setMediaItem(b.build());
+        mPlayer.prepare();
+    }
+
+    private void retry(String why) {
+        if (mReleased) return;
+        mRetries++;
+        long wait = Math.min(10000L, 1500L * mRetries);
+        send("{\"event\":\"retry\",\"n\":" + mRetries + ",\"why\":" + q(why) + "}");
+        mH.postDelayed(new Runnable() {
+            public void run() {
+                if (mReleased) return;
+                try { mPlayer.stop(); } catch (Throwable ignore) {}
+                load();
+                mPlayer.setPlayWhenReady(!mPaused);
+            }
+        }, wait);
+    }
+
+    public void pause() { mPaused = true; mPlayer.setPlayWhenReady(false); }
+    public void resume() { mPaused = false; mBufferingSince = 0; mPlayer.setPlayWhenReady(true); }
+    public void volume(float v) { mPlayer.setVolume(v); }
+
+    public void release() {
+        mReleased = true;
+        mH.removeCallbacksAndMessages(null);
+        try { mView.setPlayer(null); } catch (Throwable ignore) {}
+        try { mPlayer.release(); } catch (Throwable ignore) {}
+    }
+
+    private static String q(String s) { return org.json.JSONObject.quote(s == null ? "" : s); }
+
+    private void send(String json) { if (!mReleased && mL != null) mL.send(json); }
 }
 PIPEOF
 echo "🖼️ Plugin de PiP preparado."
