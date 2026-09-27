@@ -974,6 +974,18 @@ public class ExoMini {
                     retry("o stream terminou");
                 }
             }
+            // o primeiro quadro já apareceu na tela: tira a bolinha de carregando
+            @Override
+            public void onRenderedFirstFrame() {
+                if (mReleased) return;
+                send("{\"event\":\"firstframe\"}");
+            }
+            // vídeo andando de fato (inclusive depois de um engasgo)
+            @Override
+            public void onIsPlayingChanged(boolean isPlaying) {
+                if (mReleased || !isPlaying) return;
+                send("{\"event\":\"isplaying\"}");
+            }
             @Override
             public void onPlayerError(PlaybackException e) {
                 if (mReleased) return;
