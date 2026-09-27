@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.2.0';
+<script>var APP_VERSION = '1.2.3';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -2298,6 +2298,7 @@ const MemMonitor = {
     lines.push(NetStatus.statusLine());
     try{ const ns = NetSpeed.statusLine(); if(ns) lines.push(ns); }catch(e){}
     try{ const rs = PlayerModule.reserveStatus(); if(rs) lines.push(rs); }catch(e){}
+    try{ const vs = PlayerModule.vodStatus(); if(vs) lines.push(vs); }catch(e){}
     // quanto as imagens da tela ocupam (bitmap = largura x altura x 4 bytes)
     try{
       let n = 0, bytes = 0;
@@ -6364,6 +6365,7 @@ const PlayerModule = {
       else if(o.event === 'stat'){
         if(o.state === 3 && o.played && !this._hybridPaused) this.hideBuffering(); // tocando: bolinha nunca fica por cima
         this._reserveBuf = o.buf;
+        if(o.state === 2) this._refreshBufLabel();
         this._liveOff = (o.off != null && o.off >= 0) ? o.off : null;
         this._speed = o.speed || 1;
         this._reserveTrack(o);
@@ -7775,7 +7777,18 @@ const PlayerModule = {
       // visíveis o tempo todo. Travado: some normalmente.
       if((this._sideHoldActive && !this._sideHoldLocked) || this._seekDragging){ this._scheduleHideControls(); return; }
       const fa = document.activeElement;
-      if(TvNav.on() && fa && fa.closest && fa.closest('#player-controls-bottom, #player-topbar')){ this._scheduleHideControls(); return; } // navegando nos botões com o controle
+      const inCtrl = TvNav.on() && fa && fa.closest && fa.closest('#player-controls-bottom, #player-topbar');
+      if(inCtrl){
+        // foco num botão mas sem mexer no controle: espera um pouco mais (5s no
+        // total) e some; o foco sai do botão (a próxima tecla não aperta nada
+        // escondido) e volta pra ele quando os controles reaparecerem (↑/↓)
+        this._hideControlsTimer = setTimeout(() => {
+          const f2 = document.activeElement;
+          if(f2 && f2.closest && f2.closest('#player-controls-bottom, #player-topbar')){ this._lastCtrlFocusId = f2.id || null; try{ f2.blur(); }catch(e){} }
+          qs('#player-overlay').classList.add('controls-hidden');
+        }, 2000);
+        return;
+      }
       qs('#player-overlay').classList.add('controls-hidden');
     }, 3000);
   },
@@ -7803,20 +7816,89 @@ const PlayerModule = {
     }
   },
 
+  /** Filme/série: a conexão do arquivo caiu (internet ou servidor). O
+   *  navegador para de vez nesse erro — mesmo com a parte cinza da barra
+   *  cheia — então reabrimos o arquivo sozinhos NO MESMO PONTO, sem mensagem.
+   *  Só mostra erro se nunca chegou a tocar ou se falhar muitas vezes seguidas. */
+  _vodRecover(content, token, video, url){
+    if(token !== this.playToken) return;
+    const me = video.error, code = me ? me.code : 0;
+    const t = this._vodLastTime || video.currentTime || 0;
+    this._vodFails = (this._vodFails || 0) + 1;
+    if((!this._vodStarted && this._vodFails > 2) || this._vodFails > 12 || code === 4 && !this._vodStarted){
+      this._retryOrFallback(content, token, 'Erro ao carregar o arquivo de vídeo.');
+      return;
+    }
+    const wait = Math.min(8000, 700 * this._vodFails);
+    pushDebugLog('🎬 A conexão do filme caiu' + (code ? ' (erro ' + code + ')' : '') + ' em ' + Math.floor(t / 60) + ':' + String(Math.floor(t % 60)).padStart(2, '0') +
+      ' — retomando do mesmo ponto (tentativa ' + this._vodFails + ').', true);
+    try{ if(t > 0 && video.duration) ProgressModule.saveProgress(content.id, t, video.duration, content.seriesKey, content._loc); }catch(e){}
+    this.showBuffering('Carregando stream...');
+    clearTimeout(this.retryTimer);
+    this.retryTimer = setTimeout(()=>{
+      if(token !== this.playToken) return;
+      const onMeta = ()=>{ video.removeEventListener('loadedmetadata', onMeta); if(token !== this.playToken) return; try{ if(t > 0) video.currentTime = t; }catch(e){} video.play().catch(()=>{}); };
+      video.addEventListener('loadedmetadata', onMeta);
+      video.addEventListener('error', ()=> this._vodRecover(content, token, video, url), { once:true });
+      video.src = url;
+      try{ video.load(); }catch(e){}
+    }, wait);
+  },
+
+  /** Segundos já baixados à frente do ponto atual (a parte cinza da barra). */
+  _bufferAhead(video){
+    try{
+      const t = video.currentTime, b = video.buffered;
+      for(let i = 0; i < b.length; i++){ if(b.start(i) <= t + 0.3 && b.end(i) >= t) return Math.max(0, b.end(i) - t); }
+    }catch(e){}
+    return 0;
+  },
+  /** Filme/série travou ("Carregando"): registra quanto tinha guardado à frente.
+   *  Muito guardado = não foi a internet, foi o aparelho decodificando o vídeo. */
+  _noteVodWait(video){
+    const c = this.currentContent;
+    if(!c || c.tipo === 'live' || this._hybrid || video.seeking || !this._vodStarted) return; // o carregando do começo é normal
+    const now = Date.now();
+    if(now - (this._vodWaitAt || 0) < 8000) return;
+    this._vodWaitAt = now;
+    const ahead = this._bufferAhead(video);
+    let q = '';
+    try{ const pq = video.getVideoPlaybackQuality && video.getVideoPlaybackQuality(); if(pq && pq.totalVideoFrames) q = ' • quadros perdidos: ' + pq.droppedVideoFrames + ' de ' + pq.totalVideoFrames + ' (' + Math.round(pq.droppedVideoFrames / pq.totalVideoFrames * 100) + '%)'; }catch(e){}
+    pushDebugLog('⏳ Filme/série carregando com ' + ahead.toFixed(1).replace('.', ',') + 's já baixados à frente' +
+      (ahead >= 3 ? ' — NÃO foi a internet: o aparelho não deu conta de processar o vídeo' : ' — acabou o que estava baixado (internet)') +
+      ' • rede ' + NetSpeed.fmt(NetSpeed.mbps) + ' • motor: ' + (this._engine || '?') + q + '.', true);
+  },
+  vodStatus(){
+    const c = this.currentContent, v = document.getElementById('video-player');
+    if(!c || c.tipo === 'live' || !v || !v.src && !this.hls) return '';
+    const o = document.getElementById('player-overlay');
+    if(!o || o.style.display !== 'flex') return '';
+    return 'Filme/série: ' + this._bufferAhead(v).toFixed(1).replace('.', ',') + 's baixados à frente (' + (this._engine || '?') + ')';
+  },
+
   _ensureVideoListeners(){
     if(this._videoListenersReady) return;
     const video = qs('#video-player');
     video.addEventListener('playing', ()=> {
       this.hideBuffering();
+      this._vodStarted = true;
       try{ NetStatus.noteOk(); }catch(e){}
       // voltou a tocar: próxima queda recomeça a contagem de tentativas do zero
       if(this.retryCount && this.currentContent && this.currentContent.tipo === 'live'){ pushDebugLog('📺 Ao vivo voltou a tocar.'); this.retryCount = 0; }
     });
     // vídeo recebendo dados = internet funcionando (no máx. 1 aviso a cada 5s)
-    video.addEventListener('progress', ()=> { const n = Date.now(); if(n - (this._lastNetNote || 0) > 5000){ this._lastNetNote = n; try{ NetStatus.noteOk(); }catch(e){} } });
-    video.addEventListener('waiting', ()=> this.showBuffering());
+    video.addEventListener('progress', ()=> { this._refreshBufLabel(); const n = Date.now(); if(n - (this._lastNetNote || 0) > 5000){ this._lastNetNote = n; try{ NetStatus.noteOk(); }catch(e){} } });
+    video.addEventListener('waiting', ()=> { this.showBuffering(); this._noteVodWait(video); });
     video.addEventListener('timeupdate', ()=>{
       this.lastTimeUpdateAt = Date.now();
+      // rede de segurança: vídeo andando = sem bolinha (às vezes o 'playing' não vem)
+      const t = video.currentTime;
+      if(this._lastTu != null && t > this._lastTu + 0.15 && !video.paused){
+        const b = document.getElementById('player-buffering');
+        if(b && b.style.display !== 'none' && !this._hybrid) this.hideBuffering();
+      }
+      this._lastTu = t;
+      if(t > 0 && !video.seeking){ this._vodLastTime = t; if(this._vodFails && this._vodStarted && !video.paused) this._vodFails = 0; }
       this._updateSeekUI();
       this._updateLiveSyncUI();
     });
@@ -7960,6 +8042,7 @@ const PlayerModule = {
     if(token !== this.playToken) return; // a newer open()/close() happened meanwhile
     const video = qs('#video-player');
     this.showBuffering();
+    this._vodStarted = false; this._vodWaitAt = 0; this._vodLastTime = 0;
     if(content && content.tipo === 'live') this._armLiveWatchdog(content, token);
     {
       const nat = this._nativeLiveUrl(content, video);
@@ -8031,8 +8114,10 @@ const PlayerModule = {
       }
     } else {
       // Movies/episodes with a recognized container (mp4/webm/etc.)
+      this._engine = 'navegador (arquivo)';
+      this._vodStarted = false; this._vodFails = 0;
       video.src = url;
-      video.addEventListener('error', ()=> this._retryOrFallback(content, token, 'Erro ao carregar o arquivo de vídeo.'), { once:true });
+      video.addEventListener('error', ()=> this._vodRecover(content, token, video, url), { once:true });
       video.play().catch(()=>{});
     }
 
@@ -8148,7 +8233,7 @@ const PlayerModule = {
       this.retryCount++;
       const wait = Math.min(10000, 1500 * this.retryCount);
       pushDebugLog('📺 Ao vivo: ' + message + ' — reconectando (tentativa ' + this.retryCount + ', em ' + Math.round(wait / 1000) + 's).', true);
-      if(this.retryCount === 1 || this.retryCount % 5 === 0) showToast('Reconectando o canal... (tentativa ' + this.retryCount + ')', 'error');
+      // sem aviso na tela: a bolinha "Carregando stream..." já mostra (detalhes no diagnóstico)
       this.cleanup();
       this.showBuffering();
       this.retryTimer = setTimeout(()=>{
@@ -8159,7 +8244,8 @@ const PlayerModule = {
     }
     if(this.retryCount < this.maxRetries){
       this.retryCount++;
-      showToast('Tentando reconectar ao stream... (' + this.retryCount + '/' + this.maxRetries + ')', 'error');
+      pushDebugLog('🎬 ' + message + ' — tentando de novo (' + this.retryCount + '/' + this.maxRetries + ').', true);
+      this.showBuffering('Carregando stream...');
       this.cleanup();
       this.retryTimer = setTimeout(()=>{
         if(token !== this.playToken) return;
@@ -8177,7 +8263,22 @@ const PlayerModule = {
     if(!b) return;
     b.style.display = 'flex';
     const sp = b.querySelector('span');
-    if(sp) sp.textContent = label || 'Carregando stream...';
+    if(sp) sp.textContent = label || this._autoBufLabel();
+  },
+  /** "Carregando stream..." = baixando de verdade (nada guardado à frente).
+   *  "Decodificando stream..." = já tem vídeo baixado, o aparelho ainda está processando. */
+  _autoBufLabel(){
+    let ahead = 0;
+    if(this._hybrid) ahead = (this._reserveBuf || 0) / 1000;
+    else { const v = qs('#video-player'); if(v && (v.src || this.hls || this.mpegtsPlayer)) ahead = this._bufferAhead(v); }
+    return ahead >= 1.5 ? 'Decodificando stream...' : 'Carregando stream...';
+  },
+  /** Atualiza o texto enquanto a bolinha está na tela (o buffer muda). */
+  _refreshBufLabel(){
+    const b = qs('#player-buffering');
+    if(!b || b.style.display === 'none') return;
+    const sp = b.querySelector('span'), txt = this._autoBufLabel();
+    if(sp && sp.textContent !== txt && /stream\.\.\.$/.test(sp.textContent)) sp.textContent = txt;
   },
   /** Acompanha a reserva do ExoPlayer: se ela cai enquanto toca, o servidor
    *  está mandando o vídeo mais devagar do que ele toca (a reserva não segura). */
@@ -11389,8 +11490,12 @@ const TvNav = {
           if(k === 'ArrowUp' || k === 'ArrowDown'){
             e.preventDefault();
             PlayerModule._showControls();
-            const pp = document.getElementById('player-playpause');
+            // volta pro botão que estava com foco quando os controles sumiram
+            const last = PlayerModule._lastCtrlFocusId && document.getElementById(PlayerModule._lastCtrlFocusId);
+            const pp = (last && last.offsetParent !== null) ? last : document.getElementById('player-playpause');
+            PlayerModule._lastCtrlFocusId = null;
             if(pp) this.focus(pp);
+            PlayerModule._scheduleHideControls();
           }
           return;
         }
