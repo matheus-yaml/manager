@@ -296,9 +296,11 @@ async function alterarSchema(nomeCriar, nomeApagar) {           // criar/apagar 
 /* ---------- pool de workers de parse ---------- */
 function criarPool(N, src, lista, comp, onRes) {
   var url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
-  var ws = [], livres = [], fila = [], ativos = 0, erro = null, aoFim = null;
+  var FILA_MAX = 3;                                   // blocos esperando na memória (~1 MB cada)
+  var ws = [], livres = [], esperando = [], filaBlocos = [], ativos = 0, erro = null, aoFim = null;
   function solta(w) {
-    if (fila.length) fila.shift()(w);
+    if (filaBlocos.length) { var b = filaBlocos.shift(); manda(w, b[0], b[1]); }   // 1º: blocos na fila de memória
+    else if (esperando.length) esperando.shift()(w);
     else { livres.push(w); if (!ativos && aoFim) aoFim(); }
   }
   function manda(w, i, bytes) {
@@ -317,22 +319,25 @@ function criarPool(N, src, lista, comp, onRes) {
     ws.push(w); livres.push(w);
   }
   return {
-    // NÃO espera: se tiver worker livre manda, senão devolve false (o bloco fica para depois)
+    // NÃO espera: worker livre → manda; senão entra na fila de memória (até FILA_MAX);
+    // fila cheia → devolve false (o bloco fica para depois, lido do banco)
     tentar: function (i, bytes) {
       if (erro) throw erro;
-      if (!livres.length) return false;
-      manda(livres.pop(), i, bytes); return true;
+      if (livres.length) { manda(livres.pop(), i, bytes); return true; }
+      if (filaBlocos.length < FILA_MAX) { filaBlocos.push([i, bytes]); return true; }
+      return false;
     },
+    naFila: function () { return filaBlocos.length; },
     // espera um worker livre (usado depois do download e no reprocessamento)
     enviar: async function (i) {
-      var w = livres.length ? livres.pop() : await new Promise(function (r) { fila.push(r); });
+      var w = livres.length ? livres.pop() : await new Promise(function (r) { esperando.push(r); });
       if (erro) { livres.push(w); throw erro; }
       manda(w, i, null);
     },
     terminar: async function () {
-      if (ativos) await new Promise(function (r) { aoFim = r; });
+      if (ativos || filaBlocos.length) await new Promise(function (r) { aoFim = r; });
       ws.forEach(function (x) { x.terminate(); });   // libera a memória dos parsers
-      ws = livres = null; URL.revokeObjectURL(url);
+      ws = livres = filaBlocos = null; URL.revokeObjectURL(url);
       if (erro) throw erro;
     }
   };
@@ -411,6 +416,7 @@ async function importar(m) {
   var t0 = Date.now();
   if (src.url) {
     var resp = await fetch(src.url);
+    tResp = Date.now() - t0;
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     rd = resp.body.getReader();
     total = +resp.headers.get('content-length') || 0;
@@ -429,16 +435,21 @@ async function importar(m) {
 
   var acc = novoAcc(), depois = [], pool = criarPool(N, m.parserSrc, nome, comp, function (d) { junta(acc, d); });
   var buf = new Uint8Array(CH * 2), usado = 0, n = 0, bytes = 0, last = 0;
+  // gravação crua SEM travar a rede: até EMVOO gravações em andamento enquanto o download continua
+  var EMVOO = 3, voando = [], tDisco = 0, tRede = 0, tResp = 0;
   async function put(bloco) {
     var tx = db.transaction(nome, 'readwrite', RW);
     tx.objectStore(nome).put(bloco, n);             // o put copia os bytes na hora → podemos transferir depois
+    voando.push(txDone(tx));
     if (!pool.tentar(n, bloco)) depois.push(n);     // worker livre? processa já. Senão, fica para depois.
     n++;
-    await txDone(tx);
+    if (voando.length >= EMVOO) { var w = Date.now(); await voando.shift(); tDisco += Date.now() - w; }
   }
   try {
     for (;;) {
+      var wr = Date.now();
       var c = await next();
+      tRede += Date.now() - wr;
       if (c.done) break;
       var v = c.value; c = null;
       bytes += v.byteLength;
@@ -454,10 +465,11 @@ async function importar(m) {
       if (Date.now() - last > 300) {
         last = Date.now();
         post({ status: 'Baixando/gravando ' + nome + '... ' + mb(bytes) + (total ? ' / ' + mb(total) + ' (' + Math.round(bytes / total * 100) + '%)' : '') +
-          ' — processados ' + acc.feitos + ', para depois ' + depois.length });
+          ' — processados ' + acc.feitos + ', na fila ' + pool.naFila() + ', para depois ' + depois.length });
       }
     }
     if (usado) await put(buf.slice(0, usado));
+    var wd = Date.now(); await Promise.all(voando); voando = []; tDisco += Date.now() - wd;
     buf = rd = next = file = fr = src = null;       // solta tudo do download
     var tD = Date.now() - t0, nd = depois.length;
     for (var k = 0; k < depois.length; k++) {
@@ -471,6 +483,8 @@ async function importar(m) {
   var tF = await finalizar(meta, acc, comp);
   return 'Lista ' + nome + ': ' + mb(bytes) + ' em ' + n + ' blocos — total ' + seg(Date.now() - t0) +
     ' (download+gravação crua ' + seg(tD) + '; ' + (n - nd) + ' blocos processados durante o download, ' + nd + ' depois)\n' +
+    'Download: 1ª resposta do servidor ' + seg(tResp) + ' · esperando rede ' + seg(tRede) + ' · esperando disco ' + seg(tDisco) +
+    ' · velocidade média ' + (bytes / 1048576 / Math.max(0.001, (tD - tResp) / 1000)).toFixed(1) + ' MB/s\n' +
     resumo(meta, acc, N, comp, tF);
 }
 
