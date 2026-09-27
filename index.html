@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.1.2';
+<script>var APP_VERSION = '1.1.3';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -278,6 +278,8 @@ a:focus,
 .net-row .net-status{flex:1;min-width:0;margin-bottom:0;}
 .sidebar-clock{flex-shrink:0;font-weight:600;color:var(--text-1);white-space:nowrap;font-variant-numeric:tabular-nums;}
 .sidebar-clock.bad{color:#f87171;}
+.sys-line{font-size:11px;white-space:nowrap;letter-spacing:-.1px;}
+.sys-line .low{color:var(--danger,#f87171);}
 .net-speed{font-weight:600;color:var(--text-1);margin:-2px 0 8px 15px;font-variant-numeric:tabular-nums;}
 .net-speed.low{color:#fbbf24;}
 /* TV/projetor: barra lateral estreita — relógio numa linha e o status embaixo */
@@ -1353,7 +1355,7 @@ html.tv .content-card .info .meta{line-height:16px;}
       <div id="live-cat-list" class="live-cat-list"></div>
     </div>
     <div id="sidebar-search-counters" class="search-counters" style="display:none;"></div>
-    <div class="footer-mini"><div class="net-row"><div id="net-status" class="net-status" tabindex="0" role="button" title="Toque para verificar de novo"><span class="dot"></span><span class="txt">Verificando internet…</span></div><span id="sidebar-clock" class="sidebar-clock"></span></div><div id="net-speed" class="net-speed" style="display:none;"></div><div id="sys-stats" class="net-speed" style="display:none;"></div>StreamManager &middot; <span id="app-version-label">v1.0.0</span></div>
+    <div class="footer-mini"><div class="net-row"><div id="net-status" class="net-status" tabindex="0" role="button" title="Toque para verificar de novo"><span class="dot"></span><span class="txt">Verificando internet…</span></div><span id="sidebar-clock" class="sidebar-clock"></span></div><div id="net-speed" class="net-speed" style="display:none !important;"></div><div id="sys-stats" class="net-speed sys-line" style="display:none;"></div>StreamManager &middot; <span id="app-version-label">v1.0.0</span></div>
   </nav>
 
   <div id="main">
@@ -2922,12 +2924,12 @@ UpdateLog.install();
    recebendo — se cair abaixo do que o canal precisa, vem o "Carregando".
    ====================================================================== */
 /* ============ SYSMON (rodapé da barra lateral) ============
-   "CPU 23% · 329 MB livres" — só no APK (plugin ManagerPip, ação sysStats).
+   "CPU 23% · 329 MB livres" (a cada 1s) — só no APK (plugin ManagerPip, ação sysStats).
    CPU do aparelho todo (/proc/stat); se o Android bloquear, CPU do app. */
 const SysMon = {
   _t: null, _last: null,
   start(){
-    const go = () => { if(this._t || !(window.cordova && window.cordova.exec)) return; this.poll(); this._t = setInterval(() => this.poll(), 3000); };
+    const go = () => { if(this._t || !(window.cordova && window.cordova.exec)) return; this.poll(); this._t = setInterval(() => this.poll(), 1000); };
     if(window.cordova) go(); else document.addEventListener('deviceready', go, { once: true });
   },
   poll(){
@@ -2942,13 +2944,32 @@ const SysMon = {
           if(o.cpuTotal != null && prev.tot != null && o.cpuTotal > prev.tot) cpu = 100 * (1 - (o.cpuIdle - prev.idle) / (o.cpuTotal - prev.tot));
           else if(o.selfTicks != null && prev.self != null) cpu = 100 * (o.selfTicks - prev.self) / (((now - prev.t) / 1000) * 100 * (o.cores || 1));
         }
-        const el = document.getElementById('sys-stats');
-        if(!el) return;
-        const mem = Math.round((o.avail || 0) / 1048576) + ' MB livres';
-        el.textContent = (cpu != null ? 'CPU ' + Math.max(0, Math.min(100, Math.round(cpu))) + '% · ' : '') + mem;
-        el.style.display = '';
+        if(cpu != null) this._cpu = Math.max(0, Math.min(100, Math.round(cpu)));
+        this._mem = Math.round((o.avail || 0) / 1048576);
+        this.render();
       }, () => { clearInterval(this._t); this._t = null; }, 'ManagerPip', 'sysStats', []);
     }catch(e){}
+  },
+  _cpu: null, _mem: null,
+  /** Uma linha só: "CPU 40% · 345 MB · ↓ 2,0 Mbps" */
+  render(){
+    const el = document.getElementById('sys-stats');
+    if(!el) return;
+    if(typeof PlayerModule !== 'undefined' && PlayerModule.isFullOpen && PlayerModule.isFullOpen()) return; // atrás do vídeo: não redesenha
+    const parts = [];
+    if(this._cpu != null) parts.push('CPU ' + this._cpu + '%');
+    if(this._mem != null) parts.push(this._mem + ' MB');
+    let net = null, low = false;
+    if(typeof NetSpeed !== 'undefined' && NetSpeed._ok){
+      const playing = !!(PlayerModule.currentContent && document.getElementById('player-overlay').style.display === 'flex');
+      net = '↓ ' + NetSpeed.fmt(NetSpeed.mbps);
+      low = playing && NetSpeed.mbps != null && NetSpeed.mbps < 1.5;
+    }
+    if(!parts.length && !net) return;
+    el.textContent = parts.join(' · ') + (parts.length && net ? ' · ' : '');
+    if(net){ const sp = document.createElement('span'); sp.textContent = net; if(low) sp.className = 'low'; el.appendChild(sp); }
+    el.title = 'CPU do aparelho • memória livre • velocidade da internet agora (média 1 min: ' + (typeof NetSpeed !== 'undefined' ? NetSpeed.fmt(NetSpeed.avg()) : '—') + ')';
+    el.style.display = '';
   }
 };
 
@@ -2957,7 +2978,7 @@ const NetSpeed = {
   start(){
     if(!(window.cordova && typeof window.cordova.exec === 'function')) return;
     this.tick();
-    setInterval(() => this.tick(), 2000);
+    setInterval(() => this.tick(), 1000);
   },
   tick(){
     if(this._ok === false) return;
@@ -2974,7 +2995,7 @@ const NetSpeed = {
           if(dt > 0.5){
             this.mbps = (total - this._last.total) * 8 / dt / 1e6;
             this.appMbps = app >= this._last.app ? (app - this._last.app) * 8 / dt / 1e6 : null;
-            this.hist.push(this.mbps); if(this.hist.length > 30) this.hist.shift(); // último minuto
+            this.hist.push(this.mbps); if(this.hist.length > 60) this.hist.shift(); // último minuto (1 leitura/s)
             this.render();
           }
         }
@@ -2990,7 +3011,7 @@ const NetSpeed = {
   render(){
     const e = document.getElementById('net-speed');
     if(!e) return;
-    e.style.display = '';
+    try{ SysMon.render(); }catch(err){} // a velocidade aparece na mesma linha da CPU/memória
     const playing = !!(PlayerModule.currentContent && document.getElementById('player-overlay').style.display === 'flex');
     e.textContent = '↓ ' + this.fmt(this.mbps) + (playing ? '  (vídeo)' : '');
     e.classList.toggle('low', playing && this.mbps != null && this.mbps < 1.5);
@@ -3722,6 +3743,33 @@ const NetStatus = {
     const loop = () => { this._timer = setTimeout(() => { if(document.visibilityState !== 'hidden') this.check(); loop(); }, every()); };
     setTimeout(() => this.check(), 1500);
     loop();
+    // checagem rápida a cada 1s (só "tem internet?"); a completa (data/hora) segue a cada 30–45s
+    setInterval(() => this.quick(), 1000);
+  },
+  _qBusy: false, _qFails: 0,
+  async quick(){
+    if(this._qBusy || this._busy || document.visibilityState === 'hidden') return;
+    this._qBusy = true;
+    let ok = false;
+    try{ await this._fetch('http://connectivitycheck.gstatic.com/generate_204?q=' + Date.now(), { mode: 'no-cors', cache: 'no-store' }, 3000); ok = true; }catch(e){}
+    this._qBusy = false;
+    if(ok){
+      this._qFails = 0; this._lastOk = Date.now();
+      if(this.state && this.state.kind === 'bad' && !this.state.clock){
+        this.state = { kind: 'ok', text: 'Internet ok', at: Date.now() };
+        this.render();
+        try{ pushDebugLog('🌐 Internet voltou.'); }catch(e){}
+      }
+    } else {
+      if(++this._qFails === 1) this._qFailSince = Date.now();
+      // 2 falhas seguidas = sem internet
+      if(this._qFails >= 2 && (!this.state || this.state.kind !== 'bad')){
+        const secs = Math.round((Date.now() - this._qFailSince) / 1000);
+        this.state = { kind: 'bad', text: 'Sem internet', sub: 'sem resposta há ' + secs + 's', at: Date.now() };
+        this.render();
+        try{ pushDebugLog('🌐 Sem internet — nenhuma resposta há ' + secs + 's.', true); }catch(e){}
+      }
+    }
   }
 };
 
