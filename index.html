@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.4.3';
+<script>var APP_VERSION = '1.4.5';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -1854,7 +1854,9 @@ self.onmessage = async function(ev){
    * worker livre — isso limita a memória: no máximo N blocos (~1 MB cada)
    * em processamento; se os workers ficam pra trás, o download espera. */
   function createPool(N, onResult, queueMax){
-    const QMAX = queueMax === undefined ? 2 : queueMax;
+    // queueMax pode ser função (fila que cresce/encolhe conforme a RAM livre)
+    const qmax = typeof queueMax === 'function' ? queueMax : () => (queueMax === undefined ? 2 : queueMax);
+    let peakQ = 0;
     const blobUrl = URL.createObjectURL(new Blob([buildWorkerSrc()], { type: 'application/javascript' }));
     let workers = [], free = [], queue = [], roomWaiters = [], active = 0, error = null, onIdle = null;
     const post = (w, job) => { active++; w.postMessage({ cmd:'bloco', serverId: job.serverId, i: job.i, texto: job.texto }); };
@@ -1889,13 +1891,15 @@ self.onmessage = async function(ev){
         if(error) throw error;
         const job = { serverId, i, texto };
         if(free.length){ post(free.pop(), job); return; }
-        while(queue.length >= QMAX){
+        while(queue.length >= qmax()){
           await new Promise(r => roomWaiters.push(r));
           if(error) throw error;
         }
         if(free.length){ post(free.pop(), job); return; }
         queue.push(job);
+        if(queue.length > peakQ) peakQ = queue.length;
       },
+      peakQueue(){ return peakQ; },
       async finish(){
         while(queue.length || active){
           if(!active && queue.length && free.length){ post(free.pop(), queue.shift()); continue; }
@@ -5927,7 +5931,13 @@ const ServerModule = {
           for(const c of sp[5]) if(x[5].indexOf(c) === -1) x[5].push(c);
           x[6].push(d.i);
         }
-      }, PerfMode.isLite() ? 6 : 10);
+      }, PerfMode.isLite() ? () => {
+        // projetor/TV: o processador é mais lento que a rede. Com RAM sobrando, deixa
+        // mais blocos esperando na fila (cada ~1 MB) pro download não frear esperando o
+        // processamento. Mínimo 18 (pedido: performance).
+        const m = (typeof SysMon !== 'undefined' && SysMon._mem) || 0;
+        return m > 350 ? 24 : 18;
+      } : 10);
       pushDebugLog('Importação "' + server.nome + '": ' + N + ' worker(s) processando junto com o download.');
 
       // 3) download em streaming → blocos de ~1 MB → pool
@@ -6081,7 +6091,7 @@ const ServerModule = {
       const tDownloaded = performance.now();
       pushDebugLog('⏱ "' + server.nome + '": download ' + Math.round(tDownloaded - tStart) + ' ms (' + formatBytes(bytes) + ', ' + n + ' blocos, processados junto) — esperando a rede ' +
         Math.round(tNet) + ' ms, esperando o processamento ' + Math.round(tWaitPool) + ' ms' +
-        (tWaitPool > tNet ? ' → gargalo: PROCESSADOR' : ' → gargalo: REDE/Wi-Fi'));
+        (tWaitPool > tNet ? ' → gargalo: PROCESSADOR' : ' → gargalo: REDE/Wi-Fi') + ' • fila máx ' + pool.peakQueue() + ' blocos • RAM livre ' + ((typeof SysMon !== 'undefined' && SysMon._mem) || '?') + ' MB');
       report({ phase:'process', status:'processing', processed: acc.cnt[0] + acc.cnt[1] + acc.cnt[2], total: 0,
         counts: { live: acc.cnt[0], movie: acc.cnt[1], series: acc.cnt[2] }, seriesCount: acc.series.size });
 
