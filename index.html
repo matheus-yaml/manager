@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.2.5';
+<script>var APP_VERSION = '1.2.6';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -2004,10 +2004,13 @@ const State = {
     suggest: { type:'all', mode:'__foryou', current:null, more:[], loading:false, empty:false, rolls:0 },
     searchTerm: '',
     filters: {
-      movie: { server: 'all', category: 'all', page: 1, favoritesOnly:false },
-      series: { server: 'all', category: 'all', page: 1, favoritesOnly:false },
-      live: { server: 'all', category: 'all', page: 1, favoritesOnly:false }
+      movie: { server: 'all', category: 'all', page: 1, favoritesOnly:false, watchedOnly:false },
+      series: { server: 'all', category: 'all', page: 1, favoritesOnly:false, watchedOnly:false },
+      live: { server: 'all', category: 'all', page: 1, favoritesOnly:false, watchedOnly:false }
     },
+    // Ao Vivo / Filmes / Séries: a barra lateral vira a lista de categorias;
+    // "← Menu" esconde (volta ao menu normal) até entrar de novo na tela
+    catSideHidden: { live:false, movies:false, series:false },
     categoryFilterText: { movie:'', series:'', live:'' },
     isImporting: false,
     serversUpdating: new Set(), // ids dos servidores em atualização agora — bolinha pisca na tela de Servidores
@@ -2024,15 +2027,17 @@ const State = {
 
 function pageCacheKey(type, filters){
   const pageSize = State.settings.pageSize || PAGE_SIZE_DEFAULT;
-  return type + '|' + filters.server + '|' + filters.category + '|' + filters.favoritesOnly + '|' + filters.page + '|' + pageSize;
+  return type + '|' + filters.server + '|' + filters.category + '|' + filters.favoritesOnly + watchedKey(filters) + '|' + filters.page + '|' + pageSize;
 }
 /** Chave só do "conjunto de filtros" (sem a página) — servidores e
  * categorias disponíveis não mudam entre páginas do MESMO filtro, então
  * não faz sentido recalcular isso de novo a cada vez que você passa de
  * página. Separado do cache de página (que muda a cada página mesmo). */
 function filterMetaCacheKey(type, filters){
-  return type + '|' + filters.server + '|' + filters.category + '|' + filters.favoritesOnly + '|meta';
+  return type + '|' + filters.server + '|' + filters.category + '|' + filters.favoritesOnly + watchedKey(filters) + '|meta';
 }
+/** "Assistidos" muda conforme a pessoa assiste: a chave leva a versão do progresso. */
+function watchedKey(filters){ return filters.watchedOnly ? '|w' + (State.progressVer || 0) : ''; }
 function invalidatePageCache(type){
   for(const k of Array.from(State.pageCache.keys())){
     if(!type || k.indexOf(type + '|') === 0) State.pageCache.delete(k);
@@ -4673,6 +4678,21 @@ const QueryModule = {
     };
   },
 
+  /** Ids "assistidos": filme/episódio com progresso (começou ou terminou),
+   *  canais ao vivo abertos recentemente, e séries com algum episódio assistido. */
+  _watchedIdSet(type){
+    const set = new Set();
+    for(const [id, p] of State.progress){
+      if(type === 'live'){ if(p.live) set.add(id); continue; }
+      if(p.live || p.naoIniciado) continue;
+      const seen = p.concluido || p.porcentagem > 0 || p.currentTime > 0;
+      if(!seen) continue;
+      if(type === 'series'){ if(p.seriesKey) set.add(p.seriesKey); }
+      else if(!p.seriesKey) set.add(id);
+    }
+    return set;
+  },
+
   async _favoriteIdSet(type){
     const list = await IDB.getAll(STORES.favorites);
     return new Set(list.filter(f => f.type === type).map(f => f.id));
@@ -4696,7 +4716,7 @@ const QueryModule = {
    * (O(nº de servidores), não O(itens)). undefined = não dá pra confiar
    * (favoritesOnly ligado — favorito não é pré-computável). */
   _fastTotal(type, filters, serverIds){
-    if(filters.favoritesOnly) return undefined;
+    if(filters.favoritesOnly || filters.watchedOnly) return undefined;
     const hasCat = filters.category && filters.category !== 'all';
     const field = type === 'movie' ? 'movieCategoryCounts' : 'liveCategoryCounts';
     const match = CategoryGroups.matcher(filters.category, type === 'live' ? 'live' : 'vod');
@@ -4720,6 +4740,7 @@ const QueryModule = {
   async getContentPage(type, filters, page, pageSize){
     const tipoInt = TIPO_INT[type];
     const favSet = await this._favoriteIdSet(type);
+    const watched = filters.watchedOnly ? this._watchedIdSet(type) : null;
     const targetStart = (page - 1) * pageSize;
     const serverIds = this._relevantServerIds(filters, tipoInt);
     const fastTotal = this._fastTotal(type, filters, serverIds);
@@ -4741,6 +4762,7 @@ const QueryModule = {
           if(hasCat && !catMatch(t[2])) continue;
           const isFav = favSet.has(t[0]);
           if(filters.favoritesOnly && !isFav) continue;
+          if(watched && !watched.has(t[0])) continue;
           if(matched >= targetStart && collected.length < pageSize){
             const c = this.tupleToContent(t, tipoInt, serverId, b, i);
             c.favorito = isFav;
@@ -4790,13 +4812,14 @@ const QueryModule = {
 
   async getSeriesPage(filters, page, pageSize){
     const favIds = await this._favoriteIdSet('series');
+    const watched = filters.watchedOnly ? this._watchedIdSet('series') : null;
     const targetStart = (page - 1) * pageSize;
     const hasCat = !!(filters.category && filters.category !== 'all');
     const seriesCatMatch = CategoryGroups.matcher(filters.category);
     const serverIds = this._relevantSeriesServerIds(filters);
 
     let fastTotal;
-    if(!filters.favoritesOnly){
+    if(!filters.favoritesOnly && !filters.watchedOnly){
       fastTotal = 0;
       for(const id of serverIds){
         const c = await this._seriesCounts(id);
@@ -4821,6 +4844,7 @@ const QueryModule = {
           if(hasCat && !(Array.isArray(t[5]) ? t[5] : [t[5]]).some(seriesCatMatch)) continue;
           const isFav = favIds.has(t[0]);
           if(filters.favoritesOnly && !isFav) continue;
+          if(watched && !watched.has(t[0])) continue;
           if(matched >= targetStart && collected.length < pageSize){
             const s = this.seriesTupleToSummary(t, serverId);
             s.favorito = isFav;
@@ -6048,6 +6072,7 @@ const ProgressModule = {
     };
     State.progress.set(contentId, progress);
     State.dashboardCache = null;
+    State.progressVer = (State.progressVer || 0) + 1;
     State.continueCache = null;
     try{ await IDB.put(STORES.progress, progress); }catch(err){}
     // Acabou de concluir um episódio: o próximo entra no Continuar
@@ -6068,6 +6093,7 @@ const ProgressModule = {
     };
     State.progress.set(next.id, entry);
     State.dashboardCache = null;
+    State.progressVer = (State.progressVer || 0) + 1;
     State.continueCache = null;
     try{ await IDB.put(STORES.progress, entry); }catch(err){}
     try{ updateSidebarCounts(); }catch(e){}
@@ -6105,6 +6131,7 @@ const ProgressModule = {
     const drop = lives.slice(5);
     for(const d of drop) State.progress.delete(d.contentId);
     State.dashboardCache = null;
+    State.progressVer = (State.progressVer || 0) + 1;
     State.continueCache = null;
     try{
       await IDB.put(STORES.progress, entry);
@@ -6119,6 +6146,7 @@ const ProgressModule = {
    * do Continuar Assistindo. */
   async resetProgress(contentId){
     State.progress.delete(contentId);
+    State.progressVer = (State.progressVer || 0) + 1;
     State.dashboardCache = null;
     State.continueCache = null;
     try{ await IDB.delete(STORES.progress, contentId); }catch(e){}
@@ -8858,19 +8886,9 @@ async function renderListView(type, titleLabel, container){
   if(State.ui.currentView !== (type === 'movie' ? 'movies' : 'live')) return; // usuário já navegou pra outro lugar
   if(loading) loading.remove();
 
-  if(serverIds.length > 0){
-    const chipRow = el('div', { class:'chip-row' });
-    chipRow.appendChild(el('button', { class:'chip' + (filters.server==='all'?' active':''), onclick:()=>{ filters.server='all'; filters.category='all'; filters.page=1; Router.render(); } }, ['Todos']));
-    for(const sid of serverIds){
-      chipRow.appendChild(el('button', { class:'chip' + (filters.server===sid?' active':''), onclick:((id)=>()=>{ filters.server=id; filters.category='all'; filters.page=1; Router.render(); })(sid) }, [getServerName(sid)]));
-    }
-    container.appendChild(chipRow);
-  }
-
-  const filterRow = el('div', { class:'filter-row' });
-  filterRow.appendChild(renderCategorySelectWithFilter(type, filters, catOptions));
-  filterRow.appendChild(el('button', { class:'chip' + (filters.favoritesOnly?' active':''), onclick:()=>{ filters.favoritesOnly = !filters.favoritesOnly; filters.page=1; Router.render(); } }, ['★ Favoritos']));
-  container.appendChild(filterRow);
+  // servidores + ★ Favoritos + ✓ Assistidos; categorias ficam na barra lateral
+  container.appendChild(renderTopFilterRow(type, filters, serverIds));
+  renderCatSidebar(type, filters, catOptions);
 
   const pageSize = State.settings.pageSize || PAGE_SIZE_DEFAULT;
   const totalPages = Math.max(1, Math.ceil(pageResult.total / pageSize));
@@ -8880,7 +8898,7 @@ async function renderListView(type, titleLabel, container){
   if(counterEl0) counterEl0.textContent = pageResult.total;
 
   if(pageResult.total === 0){
-    container.appendChild(renderEmptyState('📭', 'Nenhum conteúdo encontrado', 'Nenhum conteúdo importado ainda com esses filtros.'));
+    container.appendChild(renderEmptyState('📭', 'Nenhum conteúdo encontrado', (filters.favoritesOnly || filters.watchedOnly) ? emptyFilterMsg('filme', filters) : 'Nenhum conteúdo importado ainda com esses filtros.'));
     return;
   }
 
@@ -8955,23 +8973,39 @@ const LiveView = {
   }
 };
 
-function renderLiveSidebar(filters, catOptions){
+/** Barra lateral de categorias — Ao Vivo, Filmes e Séries (mesmo layout).
+ *  kind: 'live' | 'movie' | 'series'. */
+function renderLiveSidebar(filters, catOptions){ return renderCatSidebar('live', filters, catOptions); }
+async function renderCatSidebar(kind, filters, catOptions){
   const list = qs('#live-cat-list'), input = qs('#live-cat-filter'), back = qs('#live-side-back');
   if(!list || !input) return;
+  const view = kind === 'movie' ? 'movies' : kind;
   // contagem por categoria (do servidor escolhido, ou de todos)
-  const counts = new Map(); let total = 0;
+  const counts = new Map(), groupCounts = new Map(); let total = 0;
   for(const [id, srv] of State.servers){
     if(filters.server !== 'all' && id !== filters.server) continue;
-    const cc = srv.liveCategoryCounts || {};
-    for(const k in cc){ counts.set(k, (counts.get(k) || 0) + cc[k]); total += cc[k]; }
+    if(kind === 'series'){
+      if(!serverHasBlocks(srv) || !(srv.blocosSeries > 0)) continue;
+      let sc = null; try{ sc = await QueryModule._seriesCounts(id); }catch(e){}
+      if(!sc) continue;
+      total += sc.total;
+      for(const k in sc.perCat) counts.set(k, (counts.get(k) || 0) + sc.perCat[k]);
+      for(const k in sc.perGroup) groupCounts.set(k, (groupCounts.get(k) || 0) + sc.perGroup[k]);
+    } else {
+      const cc = (kind === 'live' ? srv.liveCategoryCounts : srv.movieCategoryCounts) || {};
+      for(const k in cc){ counts.set(k, (counts.get(k) || 0) + cc[k]); total += cc[k]; }
+    }
   }
-  const g = CategoryGroups.build(catOptions, 'live');
-  const sumOf = (members) => members.reduce((a, m) => a + (counts.get(m) || 0), 0);
+  if(State.ui.currentView !== view) return; // mudou de tela enquanto contava
+  const ckind = kind === 'live' ? 'live' : 'vod';
+  const g = CategoryGroups.build(catOptions, ckind);
+  const sumOf = (name, members) => kind === 'series' ? (groupCounts.get(name) || 0) : members.reduce((a, m) => a + (counts.get(m) || 0), 0);
+  const grp = (n) => ({ v: CategoryGroups.token(n), l: n, members: g.members.get(n) || [], n: sumOf(n, g.members.get(n) || []) });
   const sections = [
     ['', [{ v:'all', l:'Todas as categorias', n: total, members: [] }]],
-    ['Grupos', g.genres.map(n => ({ v: CategoryGroups.token(n), l: n, members: g.members.get(n) || [], n: sumOf(g.members.get(n) || []) }))],
-    ['Plataformas', g.platforms.map(n => ({ v: CategoryGroups.token(n), l: n, members: g.members.get(n) || [], n: sumOf(g.members.get(n) || []) }))],
-    ['Categorias', g.other.map(c => ({ v: c, l: c, members: [], n: counts.get(c) || 0 }))]
+    [kind === 'live' ? 'Grupos' : 'Gêneros', g.genres.map(grp)],
+    ['Plataformas', g.platforms.map(grp)],
+    [kind === 'live' ? 'Categorias' : 'Outras categorias', g.other.map(c => ({ v: c, l: c, members: [], n: counts.get(c) || 0 }))]
   ];
   const fill = () => {
     const q = normalizeText(input.value || '');
@@ -8990,6 +9024,7 @@ function renderLiveSidebar(filters, catOptions){
           filters.category = it.v; filters.page = 1;
           if(window.innerWidth <= 900){ qs('#sidebar').classList.remove('open'); qs('#sidebar-overlay').classList.remove('open'); }
           Router.render();
+          if(kind !== 'live') try{ qs('#content-area').scrollTop = 0; }catch(e){}
           if(TvNav.on()) TvNav.focusSoon('#live-cat-list .live-cat.active');
         });
         list.appendChild(b);
@@ -8999,22 +9034,53 @@ function renderLiveSidebar(filters, catOptions){
     if(q && !shown) list.appendChild(el('div', { class:'live-cat-empty' }, ['Nenhuma categoria encontrada']));
   };
   // o campo é fixo (não é recriado): teclado do celular não fecha a cada letra
+  input._kind = kind;
   if(!input._wired){
     input._wired = true;
     input.addEventListener('input', () => {
-      State.ui.categoryFilterText.live = input.value;
+      State.ui.categoryFilterText[input._kind || 'live'] = input.value;
       clearTimeout(input._t);
       input._t = setTimeout(() => { if(input._fill) input._fill(); }, 120);
     });
     back.addEventListener('click', () => {
-      State.ui.liveSideHidden = true;
+      const v = State.ui.currentView;
+      State.ui.catSideHidden[v] = true;
       qs('#sidebar').classList.remove('live-side-on');
-      if(TvNav.on()){ const n = document.querySelector('#sidebar .nav-item[data-view="live"]'); if(n) TvNav.focus(n); }
+      if(TvNav.on()){ const n = document.querySelector('#sidebar .nav-item[data-view="' + v + '"]'); if(n) TvNav.focus(n); }
     });
   }
-  if(input.value !== (State.ui.categoryFilterText.live || '') && document.activeElement !== input) input.value = State.ui.categoryFilterText.live || '';
+  const txt = State.ui.categoryFilterText[kind] || '';
+  if(input.value !== txt && document.activeElement !== input) input.value = txt;
   input._fill = fill;
   fill();
+}
+
+/** Linha do topo de Filmes/Séries/Ao Vivo: servidores + ★ Favoritos + ✓ Assistidos
+ *  (+ no celular: atalho pras categorias da barra lateral). */
+function renderTopFilterRow(kind, filters, serverIds, extraClass){
+  const view = kind === 'movie' ? 'movies' : kind;
+  const top = el('div', { class:'chip-row' + (extraClass ? ' ' + extraClass : '') });
+  if(serverIds.length > 0){
+    top.appendChild(el('button', { class:'chip' + (filters.server==='all'?' active':''), onclick:()=>{ filters.server='all'; filters.category='all'; filters.page=1; Router.render(); } }, ['Todos']));
+    for(const sid of serverIds){
+      top.appendChild(el('button', { class:'chip' + (filters.server===sid?' active':''), onclick:((id)=>()=>{ filters.server=id; filters.category='all'; filters.page=1; Router.render(); })(sid) }, [getServerName(sid)]));
+    }
+  }
+  top.appendChild(el('button', { class:'chip' + (filters.favoritesOnly?' active':''), onclick:()=>{ filters.favoritesOnly = !filters.favoritesOnly; filters.page=1; Router.render(); } }, ['★ Favoritos']));
+  top.appendChild(el('button', { class:'chip' + (filters.watchedOnly?' active':''), title: kind === 'live' ? 'Canais abertos recentemente' : 'Com algo já assistido', onclick:()=>{ filters.watchedOnly = !filters.watchedOnly; filters.page=1; Router.render(); } }, ['✓ Assistidos']));
+  top.appendChild(el('button', { class:'chip live-cats-chip', onclick:()=>{
+    State.ui.catSideHidden[view] = false; qs('#sidebar').classList.add('live-side-on');
+    qs('#sidebar').classList.add('open'); qs('#sidebar-overlay').classList.add('open');
+  } }, ['☰ ' + (filters.category === 'all' ? 'Categorias' : CategoryGroups.label(filters.category))]));
+  return top;
+}
+
+/** Mensagem da lista vazia conforme os filtros ligados. */
+function emptyFilterMsg(noun, filters){
+  if(filters.favoritesOnly && filters.watchedOnly) return 'Nenhum ' + noun + ' favorito e assistido com esses filtros.';
+  if(filters.watchedOnly) return 'Nenhum ' + noun + ' assistido com esses filtros.';
+  if(filters.favoritesOnly) return 'Nenhum ' + noun + ' favorito com esses filtros.';
+  return 'Nenhum ' + noun + ' com esses filtros.';
 }
 
 async function renderLiveView(container){
@@ -9032,19 +9098,8 @@ async function renderLiveView(container){
   if(State.ui.currentView !== 'live') return;
   if(loading) loading.remove();
 
-  // servidores + favoritos (+ no celular: atalho pras categorias)
-  const top = el('div', { class:'chip-row live-top' });
-  if(serverIds.length > 0){
-    top.appendChild(el('button', { class:'chip' + (filters.server==='all'?' active':''), onclick:()=>{ filters.server='all'; filters.category='all'; filters.page=1; Router.render(); } }, ['Todos']));
-    for(const sid of serverIds){
-      top.appendChild(el('button', { class:'chip' + (filters.server===sid?' active':''), onclick:((id)=>()=>{ filters.server=id; filters.category='all'; filters.page=1; Router.render(); })(sid) }, [getServerName(sid)]));
-    }
-  }
-  top.appendChild(el('button', { class:'chip' + (filters.favoritesOnly?' active':''), onclick:()=>{ filters.favoritesOnly = !filters.favoritesOnly; filters.page=1; Router.render(); } }, ['★ Favoritos']));
-  top.appendChild(el('button', { class:'chip live-cats-chip', onclick:()=>{
-    State.ui.liveSideHidden = false; qs('#sidebar').classList.add('live-side-on');
-    qs('#sidebar').classList.add('open'); qs('#sidebar-overlay').classList.add('open');
-  } }, ['☰ ' + (filters.category === 'all' ? 'Categorias' : CategoryGroups.label(filters.category))]));
+  // servidores + favoritos + assistidos (+ no celular: atalho pras categorias)
+  const top = renderTopFilterRow('live', filters, serverIds, 'live-top');
   container.appendChild(top);
 
   // player embutido + informações do canal
@@ -9074,7 +9129,7 @@ async function renderLiveView(container){
   const scroller = el('div', { class:'live-scroll' });
   container.appendChild(scroller);
   if(pageResult.total === 0){
-    scroller.appendChild(renderEmptyState('📭', 'Nenhum canal encontrado', filters.favoritesOnly ? 'Nenhum canal favorito com esses filtros.' : 'Nenhum canal com esses filtros.'));
+    scroller.appendChild(renderEmptyState('📭', 'Nenhum canal encontrado', emptyFilterMsg('canal', filters)));
   } else {
     const grid = el('div', { class:'live-grid' });
     LiveView._byId = new Map();
@@ -9124,19 +9179,9 @@ async function renderSeriesListView(container){
   if(State.ui.currentView !== 'series') return;
   if(loading) loading.remove();
 
-  if(serverIds.length > 0){
-    const chipRow = el('div', { class:'chip-row' });
-    chipRow.appendChild(el('button', { class:'chip'+(filters.server==='all'?' active':''), onclick:()=>{ filters.server='all'; filters.category='all'; filters.page=1; Router.render(); } }, ['Todos']));
-    for(const sid of serverIds){
-      chipRow.appendChild(el('button', { class:'chip'+(filters.server===sid?' active':''), onclick:((id)=>()=>{ filters.server=id; filters.category='all'; filters.page=1; Router.render(); })(sid) }, [getServerName(sid)]));
-    }
-    container.appendChild(chipRow);
-  }
-
-  const filterRow = el('div', { class:'filter-row' });
-  filterRow.appendChild(renderCategorySelectWithFilter('series', filters, catOptions));
-  filterRow.appendChild(el('button', { class:'chip'+(filters.favoritesOnly?' active':''), onclick:()=>{ filters.favoritesOnly=!filters.favoritesOnly; filters.page=1; Router.render(); } }, ['★ Favoritos']));
-  container.appendChild(filterRow);
+  // servidores + ★ Favoritos + ✓ Assistidos; categorias ficam na barra lateral
+  container.appendChild(renderTopFilterRow('series', filters, serverIds));
+  renderCatSidebar('series', filters, catOptions);
 
   const pageSize = State.settings.pageSize || PAGE_SIZE_DEFAULT;
   const totalPages = Math.max(1, Math.ceil(pageResult.total / pageSize));
@@ -9146,7 +9191,7 @@ async function renderSeriesListView(container){
   if(seriesCounterEl) seriesCounterEl.textContent = pageResult.total;
 
   if(pageResult.total === 0){
-    container.appendChild(renderEmptyState('📺', 'Nenhuma série encontrada', 'Nenhuma série importada ainda com esses filtros.'));
+    container.appendChild(renderEmptyState('📺', 'Nenhuma série encontrada', filters.watchedOnly && !filters.favoritesOnly ? 'Nenhuma série assistida com esses filtros.' : filters.favoritesOnly ? 'Nenhuma série favorita' + (filters.watchedOnly ? ' e assistida' : '') + ' com esses filtros.' : 'Nenhuma série importada ainda com esses filtros.'));
     return;
   }
 
@@ -11657,7 +11702,8 @@ const Router = {
 
     qs('#page-title').textContent = VIEW_TITLES[view] || '';
     // Ao Vivo: barra lateral vira a lista de categorias; fora dele, o player mini para
-    qs('#sidebar').classList.toggle('live-side-on', view === 'live' && !State.ui.liveSideHidden);
+    const catView = view === 'live' || view === 'movies' || view === 'series';
+    qs('#sidebar').classList.toggle('live-side-on', catView && !State.ui.catSideHidden[view]);
     contentArea.classList.toggle('live-mode', view === 'live');
     if(view !== 'live'){ PlayerModule.stopMini(); try{ NativeVideo.miniStop(); }catch(e){} }
     qsa('.nav-item').forEach(function(item){
@@ -11684,7 +11730,7 @@ const Router = {
   },
 
   goTo(view){
-    if(view === 'live') State.ui.liveSideHidden = false; // clicou em Ao Vivo: mostra as categorias
+    if(view === 'live' || view === 'movies' || view === 'series') State.ui.catSideHidden[view] = false; // entrou na tela: mostra as categorias
     State.ui.currentView = view;
     State.ui.returnTo = null; // navegou pelo menu: "voltar" de uma série aberta depois não herda a origem antiga
     if(view !== 'series-detail') State.ui.activeSeriesKey = null;
@@ -11695,7 +11741,7 @@ const Router = {
     this.render();
     // celular: ao entrar no Ao Vivo a barra lateral fica aberta mostrando as
     // categorias (fecha ao escolher uma ou ao tocar fora)
-    if(window.innerWidth <= 900 && !(view === 'live' && !State.ui.liveSideHidden)){
+    if(window.innerWidth <= 900 && !((view === 'live' || view === 'movies' || view === 'series') && !State.ui.catSideHidden[view])){
       qs('#sidebar').classList.remove('open');
       qs('#sidebar-overlay').classList.remove('open');
     }
