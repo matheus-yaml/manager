@@ -130,12 +130,14 @@ public class ManagerPip extends CordovaPlugin {
             final int reserve = show ? args.optInt(off + 6, -1) : -1;
             // endereço reserva (.ts) caso o principal (HLS) não abra no ExoPlayer
             final String fb = show ? args.optString(off + 7, "") : "";
+            // projetor: modo rápido de reconexão (Wi-Fi que troca de faixa)
+            final boolean fast = show && args.optBoolean(off + 8, false);
             if (show) mCb = callback;
             cordova.getActivity().runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
                     try {
-                        if (show) miniOpen(url, bg, reserve, fb);
+                        if (show) miniOpen(url, bg, reserve, fb, fast);
                         miniPlace(x, y, w, h, visible);
                         if (!show) callback.success();
                     } catch (Throwable t) { callback.error(t.getClass().getSimpleName() + ": " + t.getMessage()); }
@@ -613,7 +615,7 @@ public class ManagerPip extends CordovaPlugin {
      *  deixa um "buraco" no quadro). Assim tudo da página — painel de
      *  diagnóstico, popups, avisos — aparece POR CIMA do vídeo. O fundo da
      *  tela nativa ganha a cor de fundo do app, então o resto fica igual. */
-    private void miniOpen(String url, String bg, int reserveMs, String fallback) {
+    private void miniOpen(String url, String bg, int reserveMs, String fallback, boolean fast) {
         Activity act = cordova.getActivity();
         ViewGroup content = (ViewGroup) act.findViewById(android.R.id.content);
         if (mBox == null) {
@@ -625,7 +627,13 @@ public class ManagerPip extends CordovaPlugin {
             paintAppBg(act, content);
             try { webView.getView().setBackgroundColor(Color.TRANSPARENT); } catch (Throwable ignore) {}
         }
-        if (url.equals(mUrl) && (mView != null || mExo != null)) return; // já tocando esse canal
+        if (url.equals(mUrl) && (mView != null || mExo != null)) {
+            // já tocando esse canal (ex.: estava na prévia do quadro): avisa o app
+            // que está tocando, senão a bolinha de carregando fica por cima do vídeo
+            boolean on = mExo != null ? mExo.played() : mPlayed;
+            if (on) mSend("{\"event\":\"playing\",\"same\":true}", true);
+            return;
+        }
         if (mView != null) { try { mView.stopPlayback(); } catch (Throwable ignore) {} mBox.removeView(mView); mView = null; }
         if (mExo != null) { try { mExo.release(); mBox.removeView(mExo.view()); } catch (Throwable ignore) {} mExo = null; }
         mUrl = url; mRetries = 0; mPlayed = false; mPaused = false; mMp = null; mLastPos = -1; mLastMove = System.currentTimeMillis();
@@ -633,13 +641,14 @@ public class ManagerPip extends CordovaPlugin {
             // ExoPlayer com reserva; se a biblioteca não estiver no APK, cai no VideoView
             try {
                 final ExoMini[] self = new ExoMini[1];
+                if (fast) watchNetwork();
                 final ExoMini ex = new ExoMini(act, reserveMs, new ExoMini.Listener() {
                     public void send(String json) {
                         if (json.startsWith("{\"event\":\"failed\"")) { mH.post(new Runnable() { public void run() { if (mExo != null && mExo == self[0]) miniClose("failed"); } }); return; }
                         if (json.startsWith("{\"event\":\"playing\"")) mPlayed = true;
                         mSend(json, true);
                     }
-                });
+                }, fast);
                 mBox.addView(ex.view(), new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.CENTER));
                 self[0] = ex;
                 mExo = ex;
@@ -783,8 +792,14 @@ public class ManagerPip extends CordovaPlugin {
             android.net.NetworkRequest req = new android.net.NetworkRequest.Builder()
                 .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET).build();
             cm.registerNetworkCallback(req, new android.net.ConnectivityManager.NetworkCallback() {
-                @Override public void onAvailable(android.net.Network n) { netEvent("rede conectada"); }
-                @Override public void onLost(android.net.Network n) { netEvent("REDE CAIU (Android perdeu a conexão)"); }
+                @Override public void onAvailable(android.net.Network n) {
+                    netEvent("rede conectada");
+                    mH.post(new Runnable() { public void run() { if (mExo != null) mExo.networkBack(); } });
+                }
+                @Override public void onLost(android.net.Network n) {
+                    netEvent("REDE CAIU (Android perdeu a conexão)");
+                    mH.post(new Runnable() { public void run() { if (mExo != null) mExo.networkLost(); } });
+                }
                 @Override public void onLosing(android.net.Network n, int ms) { netEvent("rede prestes a cair"); }
                 @Override public void onUnavailable() { netEvent("rede indisponível"); }
                 @Override public void onCapabilitiesChanged(android.net.Network n, android.net.NetworkCapabilities c) {
@@ -904,21 +919,31 @@ public class ExoMini {
     private long mBufferingSince = 0;
     private Runnable mTick;
 
-    public ExoMini(Context ctx, int reserveMs, Listener l) {
+    /** Projetor: Wi-Fi que troca de faixa (2,4 <-> 5 GHz) e às vezes refaz a
+     *  rede. Modo "rápido": desiste antes de conexão morta, reconecta na hora
+     *  em que a rede volta e retoma com menos vídeo guardado depois de engasgar. */
+    private final boolean mFast;
+    private boolean mNetLost = false;
+    private Runnable mNetCheck;
+
+    public ExoMini(Context ctx, int reserveMs, Listener l) { this(ctx, reserveMs, l, false); }
+
+    public ExoMini(Context ctx, int reserveMs, Listener l, boolean fast) {
+        mFast = fast;
         mL = l;
         mReserveMs = Math.max(2000, reserveMs);
 
         // Reserva: só começa (e só volta depois de um engasgo) com mReserveMs guardado.
         DefaultLoadControl lc = new DefaultLoadControl.Builder()
-            .setBufferDurationsMs(mReserveMs, mReserveMs + 15000, mReserveMs, mReserveMs)
+            .setBufferDurationsMs(mReserveMs, mReserveMs + 15000, mReserveMs, fast ? Math.min(1000, mReserveMs) : mReserveMs)
             .setTargetBufferBytes(48 * 1024 * 1024)      // teto de memória (~1 min de FHD)
             .setPrioritizeTimeOverSizeThresholds(true)
             .build();
 
         DefaultHttpDataSource.Factory http = new DefaultHttpDataSource.Factory()
             .setUserAgent("Mozilla/5.0 (Linux; Android 11) ManagerTV ExoPlayer")
-            .setConnectTimeoutMs(10000)
-            .setReadTimeoutMs(10000)   // 10s sem dados = reconecta (a reserva segura a imagem)
+            .setConnectTimeoutMs(fast ? 6000 : 10000)
+            .setReadTimeoutMs(fast ? 4000 : 10000)   // sem dados por esse tempo = conexão morta, reconecta
             .setAllowCrossProtocolRedirects(true);
 
         // IPTV em .ts muitas vezes começa sem quadro-chave: aceita assim mesmo
@@ -939,7 +964,7 @@ public class ExoMini {
                     if (info.errorCount > 4) return C.TIME_UNSET;
                 }
                 send("{\"event\":\"netretry\",\"n\":" + info.errorCount + ",\"why\":" + q(String.valueOf(info.exception)) + "}");
-                return Math.min(1000L * info.errorCount, 5000L);
+                return fast ? Math.min(500L * info.errorCount, 2000L) : Math.min(1000L * info.errorCount, 5000L);
             }
             @Override
             public int getMinimumLoadableRetryCount(int dataType) { return Integer.MAX_VALUE; }
@@ -1067,6 +1092,38 @@ public class ExoMini {
             }
         }, wait);
     }
+
+    /** O Android avisou que a rede caiu (a conexão do vídeo vai morrer). */
+    public void networkLost() {
+        if (mReleased || !mFast) return;
+        mNetLost = true;
+        send("{\"event\":\"netlost\"}");
+    }
+
+    /** A rede voltou: se o vídeo está parado esperando, reconecta JÁ (sem
+     *  esperar o tempo de desistir da conexão antiga). */
+    public void networkBack() {
+        if (mReleased || !mFast || !mNetLost) return;
+        mNetLost = false;
+        if (mNetCheck != null) mH.removeCallbacks(mNetCheck);
+        final int[] tries = {0};
+        mNetCheck = new Runnable() {
+            public void run() {
+                if (mReleased) return;
+                // ainda tocando do que tinha guardado? espera um pouco antes de mexer
+                if (mPlayer.getPlaybackState() != Player.STATE_BUFFERING && tries[0]++ < 3) { mH.postDelayed(this, 700); return; }
+                if (mPlayer.getPlaybackState() == Player.STATE_BUFFERING) {
+                    send("{\"event\":\"netback\"}");
+                    try { mPlayer.stop(); } catch (Throwable ignore) {}
+                    load();
+                    mPlayer.setPlayWhenReady(!mPaused);
+                }
+            }
+        };
+        mH.postDelayed(mNetCheck, 300);
+    }
+
+    public boolean played() { return mPlayed; }
 
     public void pause() { mPaused = true; mPlayer.setPlayWhenReady(false); }
     public void resume() { mPaused = false; mBufferingSince = 0; mPlayer.setPlayWhenReady(true); }
