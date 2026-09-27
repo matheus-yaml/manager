@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.4.5';
+<script>var APP_VERSION = '1.4.8';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -1721,7 +1721,10 @@ function accRep(c){ return ACC[c]; }
 // maioria dos casos: ASCII puro = só minúsculas; acento comum = tabela.
 function fastNorm(str){
   if(!str) return '';
-  var x = String(str).toLowerCase();
+  return fastNormLower(String(str).toLowerCase());
+}
+// igual fastNorm, pra quem já tem o texto em minúsculas (evita baixar a caixa 2x)
+function fastNormLower(x){
   if(!NON_ASCII.test(x)) return x;
   x = x.replace(ACC_RE, accRep);
   return NON_ASCII.test(x) ? normalizeText(x) : x;
@@ -1748,8 +1751,8 @@ function groupIsLive(grupo){
 // Mesma regra de classify() (ver ParserModule.classify), com a parte do
 // grupo calculada 1x por grupo em vez de 1x por item.
 var LIVE_TS_RE = /\\/ts(\\?.*)?$/i, LIVE_DOT_TS_RE = /\\.ts(\\?.*)?$/i;
-function classifyFast(nome, url, grupo){
-  var ln = nome.toLowerCase();
+function classifyFast(nome, url, grupo, ln){
+  if(ln === undefined) ln = nome.toLowerCase();
   for(var i = 0; i < SERIES_PATTERNS.length; i++) if(SERIES_PATTERNS[i].test(ln)) return 2;
   var lu = url.toLowerCase();
   for(var j = 0; j < VIDEO_EXTENSIONS.length; j++) if(lu.indexOf(VIDEO_EXTENSIONS[j]) !== -1) return 1;
@@ -1761,8 +1764,9 @@ function classifyFast(nome, url, grupo){
 async function blocoPool(db, serverId, bi, texto, keepRaw){
   var s = texto;
   if(s == null){ s = await req(db.transaction(STORES.rawBlocks).objectStore(STORES.rawBlocks).get([serverId, bi])); if(typeof s !== 'string') s = ''; }
+  var t0 = performance.now();
   var rows = [[], [], []], busca = [[], [], []], cnt = [0, 0, 0];
-  var grupos = [new Map(), new Map(), new Map()], series = new Map();
+  var grupos = [new Map(), new Map(), new Map()], series = new Map(), baseKey = new Map();
   var p = 0, L = s.length, inf = null;
   while(p < L){
     var e = s.indexOf('\\n', p); if(e < 0) e = L;
@@ -1774,12 +1778,15 @@ async function blocoPool(db, serverId, bi, texto, keepRaw){
     var nome = (c >= 0 ? inf.slice(c + 1).trim() : '') || attr(inf, 'tvg-name="') || url;
     var grupo = attr(inf, 'group-title="') || 'Sem categoria';
     if(grupo.indexOf('\\t') !== -1 || grupo.indexOf('\\n') !== -1) grupo = grupo.replace(/[\\t\\n]/g, ' ');
-    var t = classifyFast(nome, url, grupo);
+    var ln = nome.toLowerCase();
+    var t = classifyFast(nome, url, grupo, ln);
     var logo = attr(inf, 'tvg-logo="');
     var tup = [stableContentId(serverId, url), nome, grupo, url, logo];
     if(t === 2){
       var baseName = extractSeriesBaseName(nome);
-      var seriesKey = serverId + '::' + fastNorm(baseName);
+      // episódios da mesma série têm o mesmo nome-base: normaliza 1x por série
+      var seriesKey = baseKey.get(baseName);
+      if(seriesKey === undefined){ seriesKey = serverId + '::' + fastNorm(baseName); baseKey.set(baseName, seriesKey); }
       var se = extractSeasonEpisodeStrict(nome);
       tup.push(seriesKey, se ? se.season : 0, se ? se.episode : 0);
       // série parcial: 0 key, 1 nome, 2 capa, 3 qtdEps, 4 temporadas[], 5 categorias[]
@@ -1792,13 +1799,14 @@ async function blocoPool(db, serverId, bi, texto, keepRaw){
       if(sr[5].indexOf(grupo) === -1) sr[5].push(grupo);
     }
     rows[t].push(tup);
-    busca[t].push(fastNorm(nome) + '\\t' + grupo);
+    busca[t].push(fastNormLower(ln) + '\\t' + grupo);
     var gm = grupos[t]; gm.set(grupo, (gm.get(grupo) || 0) + 1);
     cnt[t]++;
     inf = null;
   }
   // A lista crua NÃO é mais gravada (nada no app relê ela): eram ~80 MB a
   // mais de escrita no disco a cada importação — pesado no eMMC de TV/projetor.
+  var t1 = performance.now();
   var tx = db.transaction(keepRaw && texto != null ? [STORES.rawBlocks, STORES.contentBlocks, STORES.searchBlocks] : [STORES.contentBlocks, STORES.searchBlocks], 'readwrite', RW);
   if(keepRaw && texto != null) tx.objectStore(STORES.rawBlocks).put(texto, [serverId, bi]);
   s = texto = null;
@@ -1807,11 +1815,14 @@ async function blocoPool(db, serverId, bi, texto, keepRaw){
     tx.objectStore(STORES.contentBlocks).put(rows[k], [serverId, k, bi]);
     tx.objectStore(STORES.searchBlocks).put(busca[k].join('\\n'), [serverId, k, bi]);
   }
+  var t2 = performance.now();
   rows = busca = null;
   await txDone(tx);
+  var t3 = performance.now();
   // O resumo vai por postMessage (cópia) — nada daqui fica preso no worker.
   return {
     i: bi, cnt: cnt,
+    ms: [t1 - t0, t2 - t1, t3 - t2], // interpretar • preparar gravação (cópia dos dados) • esperar o banco gravar
     grupos: grupos.map(function(g){ return Array.from(g.entries()); }),
     series: Array.from(series.values())
   };
@@ -5797,7 +5808,13 @@ const ServerModule = {
   _workersPerImport: 0,
   workersTotal(){
     const cores = navigator.hardwareConcurrency || 2;
-    return Math.max(1, Math.min(PerfMode.isLite() ? 3 : 6, cores - 1));
+    if(PerfMode.isLite()){
+      // projetor/TV: sem vídeo tocando, usa TODOS os núcleos pra processar a lista
+      // (a thread principal só recebe o download, quase não usa CPU); com vídeo, deixa 1 livre.
+      const playing = typeof PlayerModule !== 'undefined' && PlayerModule.currentContent;
+      return Math.max(1, Math.min(4, playing ? cores - 1 : cores));
+    }
+    return Math.max(1, Math.min(6, cores - 1));
   },
 
   /**
@@ -5907,13 +5924,14 @@ const ServerModule = {
       const gen = this._importGen[serverId] = (this._importGen[serverId] || 0) + 1; // cancela limpeza antiga desse servidor
 
       // 2) resumo acumulado (o que cada worker devolve)
-      const acc = { cnt:[0,0,0], blocks:[[],[],[]], grupos:[new Map(),new Map(),new Map()], series:new Map(), done:0 };
+      const acc = { cnt:[0,0,0], blocks:[[],[],[]], grupos:[new Map(),new Map(),new Map()], series:new Map(), done:0, ms:[0,0,0] };
       const N = this._workersPerImport || this.workersTotal();
       stage('Preparando processamento...');
       // fila de blocos maior: o download continua puxando enquanto os workers
       // processam (antes, com 2 na fila, a rede parava a cada pouco = velocidade oscilando)
       pool = BlockSyncWorker.createPool(N, (d) => {
         acc.done++;
+        if(d.ms){ acc.ms[0] += d.ms[0]; acc.ms[1] += d.ms[1]; acc.ms[2] += d.ms[2]; }
         for(let t = 0; t < 3; t++){
           if(!d.cnt[t]) continue;
           acc.cnt[t] += d.cnt[t];
@@ -6092,11 +6110,17 @@ const ServerModule = {
       pushDebugLog('⏱ "' + server.nome + '": download ' + Math.round(tDownloaded - tStart) + ' ms (' + formatBytes(bytes) + ', ' + n + ' blocos, processados junto) — esperando a rede ' +
         Math.round(tNet) + ' ms, esperando o processamento ' + Math.round(tWaitPool) + ' ms' +
         (tWaitPool > tNet ? ' → gargalo: PROCESSADOR' : ' → gargalo: REDE/Wi-Fi') + ' • fila máx ' + pool.peakQueue() + ' blocos • RAM livre ' + ((typeof SysMon !== 'undefined' && SysMon._mem) || '?') + ' MB');
-      report({ phase:'process', status:'processing', processed: acc.cnt[0] + acc.cnt[1] + acc.cnt[2], total: 0,
-        counts: { live: acc.cnt[0], movie: acc.cnt[1], series: acc.cnt[2] }, seriesCount: acc.series.size });
-
-      // 4) espera os últimos blocos e encerra os workers
-      await pool.finish(); pool = null;
+      // 4) download acabou; os blocos que ficaram na fila ainda estão sendo processados.
+      //    Mostra isso como continuação (% de blocos prontos), não como uma etapa nova.
+      const finRep = () => report({ phase:'download', status:'processing', finishing: true, blocksDone: acc.done, blocksTotal: n,
+        downloaded: bytes, counts: { live: acc.cnt[0], movie: acc.cnt[1], series: acc.cnt[2] }, seriesCount: acc.series.size });
+      finRep();
+      const finTick = setInterval(finRep, 300);
+      try{ await pool.finish(); } finally { clearInterval(finTick); }
+      pool = null;
+      pushDebugLog('⏱ "' + server.nome + '": fim do processamento ' + Math.round(performance.now() - tDownloaded) + ' ms depois do download.');
+      { const m = acc.ms, tot = m[0] + m[1] + m[2] || 1, per = (x) => Math.round(x / Math.max(1, acc.done));
+        pushDebugLog('⏱ "' + server.nome + '": por bloco (média de ' + acc.done + ', ' + N + ' worker(s)) — interpretar ' + per(m[0]) + ' ms (' + Math.round(m[0] / tot * 100) + '%) • preparar gravação ' + per(m[1]) + ' ms (' + Math.round(m[1] / tot * 100) + '%) • banco gravando ' + per(m[2]) + ' ms (' + Math.round(m[2] / tot * 100) + '%) • núcleos: ' + (navigator.hardwareConcurrency || '?') + '.'); }
 
       // 5) séries (ordenadas por nome) em blocos + totais
       const arr = Array.from(acc.series.values()); acc.series = null;
@@ -10561,7 +10585,13 @@ async function runImportWithProgressModal(servers){
     if(patch.phase === 'download'){
       dotEl.className = 'status-dot processing';
       statusEl.className = 'sp-status proc';
-      if(patch.retryIn && patch.retryResume){
+      if(patch.finishing){
+        const pct = patch.blocksTotal ? Math.min(100, patch.blocksDone / patch.blocksTotal * 100) : 100;
+        statusEl.textContent = 'Baixado · terminando de processar ' + Math.floor(pct) + '%';
+        fillEl.style.width = pct + '%';
+        const c = patch.counts || {movie:0,live:0};
+        detailEl.textContent = formatBytes(patch.downloaded || 0) + '  •  Filmes: ' + c.movie + '  Séries: ' + (patch.seriesCount || 0) + '  Ao Vivo: ' + c.live;
+      } else if(patch.retryIn && patch.retryResume){
         statusEl.textContent = 'Conexão caiu — continuando de onde parou (' + patch.retryAttempt + '/' + patch.retryMax + ') em ' + patch.retryIn + 's';
         if(patch.total) fillEl.style.width = Math.min(100, (patch.downloaded/patch.total)*100) + '%';
         detailEl.textContent = formatBytes(patch.downloaded) + ' já baixados' + (patch.retryWhy ? ' • ' + patch.retryWhy : '');
