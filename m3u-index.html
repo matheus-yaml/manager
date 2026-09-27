@@ -127,13 +127,24 @@ function lerValor(v, comp) {
 var TEM_OPFS = typeof navigator !== 'undefined' && !!(navigator.storage && navigator.storage.getDirectory) &&
   typeof FileSystemFileHandle !== 'undefined';
 function arqCru(lista) { return lista + '.m3u'; }
+// pasta OPFS ou null se o navegador não permitir (ex.: página aberta por content:// ou file:// → SecurityError)
+async function raizOPFS() {
+  if (!TEM_OPFS) return null;
+  try { return await navigator.storage.getDirectory(); } catch (e) { return null; }
+}
 async function arquivoCru(lista) {
-  var root = await navigator.storage.getDirectory();
+  var root = await raizOPFS();
+  if (!root) throw new Error('Lista crua está em arquivo (OPFS), mas o navegador não permite acesso a arquivos aqui. Baixe a lista de novo.');
   return (await root.getFileHandle(arqCru(lista))).getFile();
 }
 // devolve os bytes do bloco cru i (cache = {} opcional para reaproveitar o File entre leituras)
 async function lerCru(db, lista, i, cache) {
   var v = await req(db.transaction(lista).objectStore(lista).get(i));
+  if (v && v.g !== undefined) {                 // modo banco em GRUPOS: bloco i está dentro do valor 'g<n>'
+    var gv = cache && cache.gk === v.g ? cache.gv : await req(db.transaction(lista).objectStore(lista).get('g' + v.g));
+    if (cache) { cache.gk = v.g; cache.gv = gv; }
+    return gv.subarray(v.o, v.o + v.l);
+  }
   if (v && v.o !== undefined) {
     var f = (cache && cache.f) || await arquivoCru(lista);
     if (cache) cache.f = f;
@@ -247,18 +258,9 @@ async function bloco(lista, i, bytes, comp) {
   rows = busca = dic = null;
   var tc = Date.now() - T; T = Date.now();
 
-  var tx = db.transaction(['conteudos', 'busca'], 'readwrite', RW);
-  var cs = tx.objectStore('conteudos'), bs = tx.objectStore('busca');
-  for (k = 0; k < 2; k++) {
-    var key = [lista, k, i];
-    if (cnt[k]) { cs.put(val[k], key); bs.put(bus[k], key); } else { cs.delete(key); bs.delete(key); }   // apaga sobra antiga
-  }
-  val = bus = null;
-  await txDone(tx);
-  var tw = Date.now() - T;
-
+  // NÃO grava aqui: devolve ao coordenador, que grava tudo numa transação só no fim (poucos MB no total)
   return {
-    i: i, cnt: cnt, bytes: nbytes, tl: tl, tp: tp, tc: tc, tw: tw,
+    i: i, cnt: cnt, bytes: nbytes, tl: tl, tp: tp, tc: tc, tw: 0, val: val, bus: bus,
     grupos: grupos.map(function (g) { return Array.from(g.entries()); }),
     series: Array.from(series.values())
   };
@@ -270,7 +272,9 @@ self.onmessage = async function (ev) {
     if (!db) db = await abrir();
     var r = await bloco(m.lista, m.i, m.bytes, m.comp);
     m = null;
-    self.postMessage(r);
+    var tr = [];                                      // transfere os buffers (sem cópia)
+    [r.val[0], r.val[1], r.bus[0], r.bus[1]].forEach(function (x) { if (x) tr.push(x.buffer || x); });
+    self.postMessage(r, tr);
   } catch (e) {
     self.postMessage({ erro: String(e && e.message || e) });
   }
@@ -316,42 +320,49 @@ async function alterarSchema(nomeCriar, nomeApagar) {           // criar/apagar 
 
 /* ---------- calibração: mede o disco DESTE aparelho (banco x arquivo) ---------- */
 async function calibrar() {
-  var MBS = 8, blk = new Uint8Array(CH), r = { idb: 0, opfs: 0 }, t, i;
+  var MBS = 8, r = { v: 2, idb: {}, opfs: 0 }, t, i;
+  var blk = new Uint8Array(CH * 8);
   for (i = 0; i < blk.length; i++) blk[i] = 65 + (i % 26);
   post({ status: 'Medindo o disco deste aparelho (uma vez só)...' });
-  // banco: igual à importação (blocos de 1 MB, até 3 gravações em andamento)
   await alterarSchema('__calib', null);
-  t = Date.now();
-  var voando = [];
-  for (i = 0; i < MBS; i++) {
-    var tx = db.transaction('__calib', 'readwrite', RW); tx.objectStore('__calib').put(blk.slice(), i);
-    voando.push(txDone(tx)); if (voando.length >= 3) await voando.shift();
+  // banco: grava 8 MB em gravações de 1, 4 e 8 MB (até 2 em andamento), como na importação
+  var tams = [1, 4, 8];
+  for (var q = 0; q < tams.length; q++) {
+    var G = tams[q], voando = [];
+    t = Date.now();
+    for (i = 0; i < MBS / G; i++) {
+      var tx = db.transaction('__calib', 'readwrite', RW); tx.objectStore('__calib').put(blk.slice(0, G * CH), q * 100 + i);
+      voando.push(txDone(tx)); if (voando.length >= 2) await voando.shift();
+    }
+    await Promise.all(voando);
+    r.idb[G] = MBS / Math.max(0.001, (Date.now() - t) / 1000);
   }
-  await Promise.all(voando);
-  r.idb = MBS / Math.max(0.001, (Date.now() - t) / 1000);
   await alterarSchema(null, '__calib');
   // arquivo: escrita sequencial + 1 flush no fim
-  if (TEM_OPFS) {
+  var root = await raizOPFS();
+  if (root) {
     try {
-      var root = await navigator.storage.getDirectory();
       var fh = await root.getFileHandle('__calib.bin', { create: true });
       var h = await fh.createSyncAccessHandle();
       t = Date.now();
       h.truncate(0);
-      for (i = 0; i < MBS; i++) h.write(blk, { at: i * CH });
+      for (i = 0; i < MBS; i++) h.write(blk.subarray(0, CH), { at: i * CH });
       h.flush(); h.close();
       r.opfs = MBS / Math.max(0.001, (Date.now() - t) / 1000);
       await root.removeEntry('__calib.bin');
     } catch (e) { r.opfs = 0; }
   }
-  r.melhor = r.opfs > r.idb ? 'opfs' : 'idb';
+  r.grupo = 1;
+  for (q = 0; q < tams.length; q++) if (r.idb[tams[q]] > r.idb[r.grupo] * 1.1) r.grupo = tams[q];   // maior só se ganhar >10%
+  r.melhor = r.opfs > r.idb[r.grupo] ? 'opfs' : 'idb';
   ultimaCalib = r;
   post({ calib: r });
   return r;
 }
 function textoCalib(r) {
-  return 'Disco deste aparelho: banco ' + r.idb.toFixed(1) + ' MB/s · arquivo ' + (r.opfs ? r.opfs.toFixed(1) + ' MB/s' : 'indisponível') +
-    ' → usando ' + (r.melhor === 'opfs' ? 'arquivo (OPFS)' : 'banco (IndexedDB)');
+  return 'Disco deste aparelho: banco ' + [1, 4, 8].map(function (g) { return g + ' MB/gravação ' + r.idb[g].toFixed(1) + ' MB/s'; }).join(', ') +
+    ' · arquivo ' + (r.opfs ? r.opfs.toFixed(1) + ' MB/s' : 'indisponível') +
+    ' → usando ' + (r.melhor === 'opfs' ? 'arquivo (OPFS)' : 'banco com ' + r.grupo + ' MB por gravação');
 }
 
 /* ---------- pool de workers de parse ---------- */
@@ -407,11 +418,12 @@ function criarPool(N, src, lista, comp, onRes) {
 /* ---------- acumulador dos resumos ---------- */
 function novoAcc() {
   return { cnt: [0, 0, 0], blocos: [[], [], []], grupos: [new Map(), new Map(), new Map()], series: new Map(),
-           feitos: 0, tl: 0, tp: 0, tc: 0, tw: 0, bytes: 0 };
+           feitos: 0, tl: 0, tp: 0, tc: 0, tw: 0, bytes: 0, estr: [] };
 }
 function junta(acc, d) {
   acc.feitos++; acc.tl += d.tl; acc.tp += d.tp; acc.tc += d.tc; acc.tw += d.tw; acc.bytes += d.bytes;
   for (var t = 0; t < 3; t++) acc.cnt[t] += d.cnt[t];
+  for (t = 0; t < 2; t++) if (d.val[t]) acc.estr.push([t, d.i, d.val[t], d.bus[t]]);
   for (t = 0; t < 2; t++) {
     if (!d.cnt[t]) continue;
     acc.blocos[t].push(d.i);
@@ -440,16 +452,20 @@ async function finalizar(meta, acc, comp) {
   var ss = tx.objectStore('series');
   for (var j = 0; j < arr.length; j += BLOCO) ss.put(arr.slice(j, j + BLOCO), [lista, nsb++]);
   ss.delete(IDBKeyRange.bound([lista, nsb], [lista, Infinity]));
-  for (var t = 0; t < 3; t++) {                     // tipo 2 não é mais gravado em conteudos/busca
-    var ini = t < 2 ? n : -Infinity;
-    tx.objectStore('conteudos').delete(IDBKeyRange.bound([lista, t, ini], [lista, t, Infinity]));
-    tx.objectStore('busca').delete(IDBKeyRange.bound([lista, t, ini], [lista, t, Infinity]));
+  // estruturado (ao vivo/filmes) inteiro numa transação só: apaga o antigo e grava o novo
+  var cs = tx.objectStore('conteudos'), bs = tx.objectStore('busca');
+  cs.delete(faixa(lista)); bs.delete(faixa(lista));
+  for (var e = 0; e < acc.estr.length; e++) {
+    var x = acc.estr[e], key = [lista, x[0], x[1]];
+    cs.put(x[2], key); bs.put(x[3], key);
   }
+  acc.estr = null;
   meta.processada = true; meta.formato = 6; meta.comp = comp; meta.total = acc.cnt; meta.series = arr.length; meta.blocos_series = nsb;
   meta.blocos = acc.blocos.map(function (b) { return b.sort(num); });
   meta.grupos = acc.grupos.map(function (g) { return Array.from(g.entries()).sort(porNome); });
   tx.objectStore('listas').put(meta);
   await txDone(tx);
+  acc.tw = Date.now() - T;
   return Date.now() - T;
 }
 function resumo(meta, acc, N, comp, tF) {
@@ -457,7 +473,7 @@ function resumo(meta, acc, N, comp, tF) {
   return c[0].toLocaleString() + ' ao vivo, ' + c[1].toLocaleString() + ' filmes, ' + c[2].toLocaleString() +
     ' episódios (' + meta.series.toLocaleString() + ' séries) — ' + N + ' workers, ' + (comp ? 'compactado' : 'sem compactação') +
     '\nSoma nos workers: ' + (acc.tl ? 'leitura ' + seg(acc.tl) + ' · ' : '') + 'interpretação ' + seg(acc.tp) +
-    ' · ' + (comp ? 'compactação ' : 'codificação ') + seg(acc.tc) + ' · gravação ' + seg(acc.tw) + ' · finalização ' + seg(tF) +
+    ' · ' + (comp ? 'compactação ' : 'codificação ') + seg(acc.tc) + ' · gravação final do estruturado ' + seg(tF) +
     ' · estruturado gravado ' + mb(acc.bytes);
 }
 
@@ -492,12 +508,14 @@ async function importar(m) {
     };
   }
   // onde gravar a lista crua: 'opfs' (arquivo) ou 'idb' (banco). auto = o que a calibração mediu como mais rápido
-  var modo = m.cru;
-  if (modo === 'auto') modo = (m.calib || await calibrar()).melhor;
+  var modo = m.cru, calib = m.calib || (modo === 'auto' || modo === 'idb' ? await calibrar() : null);
+  if (modo === 'auto') modo = calib.melhor;
+  var G = calib ? calib.grupo : 4;                   // blocos de 1 MB por gravação no banco
   if (modo === 'opfs' && !TEM_OPFS) modo = 'idb';
   await alterarSchema(nome, null);
   var tx0 = db.transaction(nome, 'readwrite', RW); tx0.objectStore(nome).clear(); await txDone(tx0);
-  var root = TEM_OPFS ? await navigator.storage.getDirectory() : null, sah = null, pos = 0, indice = [];
+  var root = await raizOPFS(), sah = null, pos = 0, indice = [];
+  if (!root && modo === 'opfs') modo = 'idb';        // arquivo não permitido neste navegador → banco
   if (modo === 'opfs') {
     try {
       sah = await (await root.getFileHandle(arqCru(nome), { create: true })).createSyncAccessHandle();
@@ -509,13 +527,30 @@ async function importar(m) {
   var acc = novoAcc(), depois = [], pool = criarPool(N, m.parserSrc, nome, comp, function (d) { junta(acc, d); });
   var buf = new Uint8Array(CH * 2), usado = 0, n = 0, bytes = 0, last = 0;
   // gravação crua SEM travar a rede: até EMVOO gravações em andamento enquanto o download continua
-  var EMVOO = 3, voando = [], tDisco = 0, tRede = 0, tResp = 0;
+  var EMVOO = G > 1 ? 2 : 3, voando = [], tDisco = 0, tRede = 0, tResp = 0;
+  var gbuf = null, gusado = 0, gnum = 0, gblocos = 0, indiceG = [];
+  function gravaGrupo() {                           // grava o grupo acumulado numa gravação só
+    if (!gblocos) return;
+    var tx = db.transaction(nome, 'readwrite', RW);
+    tx.objectStore(nome).put(gbuf.slice(0, gusado), 'g' + gnum);
+    voando.push(txDone(tx));
+    gnum++; gusado = 0; gblocos = 0;
+  }
   async function put(bloco) {
     if (sah) {                                      // arquivo: escrita sequencial direta, sem sobrecarga do banco
       var w0 = Date.now();
       sah.write(bloco, { at: pos });
       tDisco += Date.now() - w0;
       indice.push({ o: pos, l: bloco.length }); pos += bloco.length;
+    } else if (G > 1) {                             // banco em grupos: copia o bloco para o grupo atual
+      if (!gbuf || gusado + bloco.length > gbuf.length) {
+        var ng = new Uint8Array(Math.max(G * CH + CH, gusado + bloco.length));
+        if (gbuf) ng.set(gbuf.subarray(0, gusado)); gbuf = ng;
+      }
+      gbuf.set(bloco, gusado);
+      indiceG.push({ g: gnum, o: gusado, l: bloco.length });
+      gusado += bloco.length; gblocos++;
+      if (gblocos >= G) gravaGrupo();
     } else {
       var tx = db.transaction(nome, 'readwrite', RW);
       tx.objectStore(nome).put(bloco, n);           // o put copia os bytes na hora → podemos transferir depois
@@ -524,7 +559,7 @@ async function importar(m) {
     if (!pool.tentar(n, bloco)) depois.push(n);     // worker livre (ou fila)? processa já. Senão, fica para depois.
     n++;
     if (voando.length >= EMVOO) { var w = Date.now(); await voando.shift(); tDisco += Date.now() - w; }
-    else if (sah) await new Promise(function (r) { setTimeout(r, 0); });   // escrita síncrona: cede a vez p/ receber respostas dos workers
+    else await new Promise(function (r) { setTimeout(r, 0); });   // cede a vez p/ receber respostas dos workers (libera-os p/ o próximo bloco)
   }
   try {
     for (;;) {
@@ -550,7 +585,14 @@ async function importar(m) {
       }
     }
     if (usado) await put(buf.slice(0, usado));
+    if (G > 1 && !sah) gravaGrupo();
     var wd = Date.now(); await Promise.all(voando); voando = [];
+    if (indiceG.length) {                           // índice: bloco i → {g: grupo, o: posição, l: tamanho}
+      var txg = db.transaction(nome, 'readwrite', RW), sg = txg.objectStore(nome);
+      for (var ig = 0; ig < indiceG.length; ig++) sg.put(indiceG[ig], ig);
+      await txDone(txg); indiceG = null;
+    }
+    gbuf = null;
     if (sah) {                                      // 1 flush só no fim + índice dos blocos na tabela lista_<servidor>
       sah.flush(); sah.close(); sah = null;
       var txi = db.transaction(nome, 'readwrite', RW), si = txi.objectStore(nome);
@@ -572,7 +614,7 @@ async function importar(m) {
   var tF = await finalizar(meta, acc, comp);
   return 'Lista ' + nome + ': ' + mb(bytes) + ' em ' + n + ' blocos — total ' + seg(Date.now() - t0) +
     ' (download+gravação crua ' + seg(tD) + '; ' + (n - nd) + ' blocos processados durante o download, ' + nd + ' depois)\n' +
-    'Lista crua em: ' + (modo === 'opfs' ? 'arquivo (OPFS)' : 'banco (IndexedDB)') + ' · ' +
+    'Lista crua em: ' + (modo === 'opfs' ? 'arquivo (OPFS)' : 'banco, ' + G + ' MB por gravação') + ' · ' +
     'Download: 1ª resposta do servidor ' + seg(tResp) + ' · esperando rede ' + seg(tRede) + ' · esperando disco ' + seg(tDisco) +
     ' · velocidade média ' + (bytes / 1048576 / Math.max(0.001, (tD - tResp) / 1000)).toFixed(1) + ' MB/s\n' +
     resumo(meta, acc, N, comp, tF);
@@ -605,7 +647,8 @@ async function excluir(lista) {
   tx.objectStore('listas').delete(lista);
   await txDone(tx);
   await alterarSchema(null, lista);
-  if (TEM_OPFS) { try { await (await navigator.storage.getDirectory()).removeEntry(arqCru(lista)); } catch (e) {} }
+  var root = await raizOPFS();
+  if (root) { try { await root.removeEntry(arqCru(lista)); } catch (e) {} }
   return 'Lista ' + lista + ' excluída.';
 }
 
@@ -614,7 +657,7 @@ self.onmessage = async function (ev) {
   try {
     var cores = self.navigator.hardwareConcurrency || 2;
     m.N = m.nw > 0 ? m.nw : Math.max(1, Math.min(2, cores - 1));   // auto: até 2 (sobra CPU p/ rede, banco e tela)
-    if (m.cmd === 'importar') { txt = await importar(m); if (m.cru === 'auto' && !m.calib) txt += '\n' + textoCalib(ultimaCalib); }
+    if (m.cmd === 'importar') { txt = await importar(m); if (ultimaCalib) txt += '\n' + textoCalib(ultimaCalib); }
     else if (m.cmd === 'processar') txt = await processar(m);
     else if (m.cmd === 'excluir') txt = await excluir(m.nome);
     else if (m.cmd === 'calibrar') txt = textoCalib(await calibrar());
@@ -706,7 +749,7 @@ function rodarWorker(msg) {
   w.postMessage(msg);
 }
 // resultado da calibração do disco (guardado neste aparelho; se o armazenamento local falhar, mede de novo)
-function lerCalib() { try { var c = JSON.parse(localStorage.getItem('iptv_calib') || 'null'); return c && c.melhor ? c : null; } catch (e) { return null; } }
+function lerCalib() { try { var c = JSON.parse(localStorage.getItem('iptv_calib') || 'null'); return c && c.v === 2 && c.melhor ? c : null; } catch (e) { return null; } }
 function salvarCalib(c) { try { localStorage.setItem('iptv_calib', JSON.stringify(c)); } catch (e) {} }
 function setBusy(b) { ['btnUrl', 'btnProc', 'btnDel', 'btnCalib', 'file', 'nw', 'comp', 'cru'].forEach(function (id) { $(id).disabled = b; }); }
 
