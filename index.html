@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.2.3';
+<script>var APP_VERSION = '1.2.4';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -7845,6 +7845,12 @@ const PlayerModule = {
     }, wait);
   },
 
+  /** Guarda as faixas já baixadas (fora de um pulo), pra consultar durante o pulo. */
+  _snapBuffered(video){
+    if(!video || video.seeking) return;
+    try{ const r = [], b = video.buffered; for(let i = 0; i < b.length; i++) r.push([b.start(i), b.end(i)]); if(r.length) this._bufSnap = r; }catch(e){}
+  },
+
   /** Segundos já baixados à frente do ponto atual (a parte cinza da barra). */
   _bufferAhead(video){
     try{
@@ -7887,7 +7893,7 @@ const PlayerModule = {
       if(this.retryCount && this.currentContent && this.currentContent.tipo === 'live'){ pushDebugLog('📺 Ao vivo voltou a tocar.'); this.retryCount = 0; }
     });
     // vídeo recebendo dados = internet funcionando (no máx. 1 aviso a cada 5s)
-    video.addEventListener('progress', ()=> { this._refreshBufLabel(); const n = Date.now(); if(n - (this._lastNetNote || 0) > 5000){ this._lastNetNote = n; try{ NetStatus.noteOk(); }catch(e){} } });
+    video.addEventListener('progress', ()=> { this._snapBuffered(video); this._refreshBufLabel(); const n = Date.now(); if(n - (this._lastNetNote || 0) > 5000){ this._lastNetNote = n; try{ NetStatus.noteOk(); }catch(e){} } });
     video.addEventListener('waiting', ()=> { this.showBuffering(); this._noteVodWait(video); });
     video.addEventListener('timeupdate', ()=>{
       this.lastTimeUpdateAt = Date.now();
@@ -7898,6 +7904,7 @@ const PlayerModule = {
         if(b && b.style.display !== 'none' && !this._hybrid) this.hideBuffering();
       }
       this._lastTu = t;
+      this._snapBuffered(video);
       if(t > 0 && !video.seeking){ this._vodLastTime = t; if(this._vodFails && this._vodStarted && !video.paused) this._vodFails = 0; }
       this._updateSeekUI();
       this._updateLiveSyncUI();
@@ -8042,7 +8049,7 @@ const PlayerModule = {
     if(token !== this.playToken) return; // a newer open()/close() happened meanwhile
     const video = qs('#video-player');
     this.showBuffering();
-    this._vodStarted = false; this._vodWaitAt = 0; this._vodLastTime = 0;
+    this._vodStarted = false; this._vodWaitAt = 0; this._vodLastTime = 0; this._bufSnap = null;
     if(content && content.tipo === 'live') this._armLiveWatchdog(content, token);
     {
       const nat = this._nativeLiveUrl(content, video);
@@ -8270,7 +8277,19 @@ const PlayerModule = {
   _autoBufLabel(){
     let ahead = 0;
     if(this._hybrid) ahead = (this._reserveBuf || 0) / 1000;
-    else { const v = qs('#video-player'); if(v && (v.src || this.hls || this.mpegtsPlayer)) ahead = this._bufferAhead(v); }
+    else {
+      const v = qs('#video-player');
+      if(v && (v.src || this.hls || this.mpegtsPlayer)){
+        ahead = this._bufferAhead(v);
+        // logo depois de avançar/voltar alguns navegadores (ex.: o do projetor)
+        // dizem por um instante que não tem nada baixado — usa o que estava
+        // baixado ANTES do pulo pra decidir o texto
+        if(ahead < 1.5 && this._bufSnap){
+          const t = v.currentTime;
+          for(const [a, b] of this._bufSnap){ if(a <= t + 0.3 && b > t){ ahead = Math.max(ahead, b - t); break; } }
+        }
+      }
+    }
     return ahead >= 1.5 ? 'Decodificando stream...' : 'Carregando stream...';
   },
   /** Atualiza o texto enquanto a bolinha está na tela (o buffer muda). */
