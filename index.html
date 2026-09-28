@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.6.9';
+<script>var APP_VERSION = '1.7.0';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -4892,6 +4892,7 @@ const QueryModule = {
    * últimos blocos montados pra abrir a mesma série de novo ser instantâneo. */
   _epCache: new Map(),
   async _epBlock(serverId, b){
+    if(Cat._srv(serverId)) return Cat.eps(serverId, b); // formato da página de testes: lido da lista crua
     const ck = serverId + '|' + b;
     const hit = this._epCache.get(ck);
     if(hit){ this._epCache.delete(ck); this._epCache.set(ck, hit); return hit; }
@@ -4933,7 +4934,7 @@ const QueryModule = {
     const perCat = Object.create(null), perGroup = Object.create(null);
     let total = 0;
     for(let b = 0; b < ((srv && srv.blocosSeries) || 0); b++){
-      const bloco = await IDB.getByKey(STORES.seriesBlocks, [serverId, b]);
+      const bloco = await Cat.series(serverId, b);
       if(!bloco) continue;
       for(const t of bloco){
         total++;
@@ -5059,7 +5060,7 @@ const QueryModule = {
       const srv = State.servers.get(serverId);
       for(const b of blockKeys(srv, tipoInt)){
         if(pageDone()) break serverLoop;
-        const bloco = await IDB.getByKey(STORES.contentBlocks, [serverId, tipoInt, b]);
+        const bloco = await Cat.content(serverId, tipoInt, b);
         if(!bloco) continue;
         for(let i = 0; i < bloco.length; i++){
           const t = bloco[i];
@@ -5141,7 +5142,7 @@ const QueryModule = {
       const srv = State.servers.get(serverId);
       for(let b = 0; b < (srv.blocosSeries || 0); b++){
         if(pageDone()) break serverLoop;
-        const bloco = await IDB.getByKey(STORES.seriesBlocks, [serverId, b]);
+        const bloco = await Cat.series(serverId, b);
         if(!bloco) continue;
         for(let i = 0; i < bloco.length; i++){
           const t = bloco[i];
@@ -5192,7 +5193,7 @@ const QueryModule = {
     const srv = State.servers.get(serverId);
     if(!serverHasBlocks(srv)) return null;
     for(let b = 0; b < (srv.blocosSeries || 0); b++){
-      const bloco = await IDB.getByKey(STORES.seriesBlocks, [serverId, b]);
+      const bloco = await Cat.series(serverId, b);
       if(!bloco) continue;
       for(const t of bloco){
         if(t[0] === seriesKey){
@@ -5246,7 +5247,7 @@ const QueryModule = {
       const b = bkeys[bk];
       const len = await (async () => {
         // pula blocos inteiros sem montar os itens enquanto ainda está no "offset"
-        const bloco = await IDB.getByKey(STORES.contentBlocks, [serverId, tipoInt, b]);
+        const bloco = await Cat.content(serverId, tipoInt, b);
         if(!bloco) return 0;
         if(skip >= bloco.length){ skip -= bloco.length; return bloco.length; }
         for(let i = bloco.length - 1 - skip; i >= 0 && items.length < limit; i--){
@@ -5301,7 +5302,7 @@ const QueryModule = {
     const readBlock = async (s, t, b) => {
       const k = s + '|' + t + '|' + b;
       if(blockCache && blockCache.has(k)) return blockCache.get(k);
-      const v = t === 2 ? await this._epBlock(s, b) : await IDB.getByKey(STORES.contentBlocks, [s, t, b]);
+      const v = t === 2 ? await this._epBlock(s, b) : await Cat.content(s, t, b);
       if(blockCache) blockCache.set(k, v);
       return v;
     };
@@ -5318,7 +5319,8 @@ const QueryModule = {
     const serverId = serverIdFromContentId(id);
     const srv = State.servers.get(serverId);
     if(!serverHasBlocks(srv)) return null;
-    for(const t of [1, 2, 0]){
+    // formato da página de testes: episódio fora do lugar não é procurado na lista crua inteira (pesado demais)
+    for(const t of (srv.fmt === 'm6' ? [1, 0] : [1, 2, 0])){
       for(const b of blockKeys(srv, t)){
         const bloco = await readBlock(serverId, t, b);
         if(!bloco) continue;
@@ -5386,7 +5388,58 @@ function searchWorkerMain(){
       rv.onerror = rk.onerror = function(e){ ko(e.target.error); };
     });
   }
+  var db2 = null, TDEC = new TextDecoder();
+  function open2(){
+    if(db2) return Promise.resolve(db2);
+    return new Promise(function(ok, ko){ var r = indexedDB.open(M6_DBN); r.onsuccess = function(){ db2 = r.result; db2.onversionchange = function(){ try{ db2.close(); }catch(e){} db2 = null; }; ok(db2); }; r.onerror = function(){ ko(r.error); }; });
+  }
+  async function getAll2(store, range){
+    var d = await open2();
+    return new Promise(function(ok, ko){
+      var st = d.transaction(store).objectStore(store);
+      var rk = st.getAllKeys(range), rv = st.getAll(range);
+      rv.onsuccess = function(){ ok({ keys: rk.result || [], vals: rv.result || [] }); };
+      rv.onerror = rk.onerror = function(e){ ko(e.target.error); };
+    });
+  }
+  async function getOne2(store, key){
+    var d = await open2();
+    return new Promise(function(ok, ko){ var r = d.transaction(store).objectStore(store).get(key); r.onsuccess = function(){ ok(r.result); }; r.onerror = function(){ ko(r.error); }; });
+  }
+  function txt2(v){ return typeof v === 'string' ? v : TDEC.decode(v); }
+  // servidor no formato da página de testes (iptv_db): busca/séries de lá
+  async function loadServerM6(s){
+    var catN = new Map(), out = { sig: s.sig, lista: s.lista, t: [[], []], sn: null };
+    for(var t = 0; t < 2; t++){
+      var valid = new Set(s.keys[t]);
+      var r = await getAll2('busca', IDBKeyRange.bound([s.lista, t], [s.lista, t, []]));
+      for(var x = 0; x < r.keys.length; x++){
+        var b = r.keys[x][2]; if(r.vals[x] == null || !valid.has(b)) continue;
+        var L = txt2(r.vals[x]).split('\n'), o = new Array(L.length);
+        for(var i = 0; i < L.length; i++){
+          var l = L[i], tab = l.indexOf('\t');
+          if(tab < 0){ o[i] = l; continue; }
+          var c = l.slice(tab + 1), cn = catN.get(c);
+          if(cn === undefined){ cn = norm(c).replace(/[\t\n]/g, ' '); catN.set(c, cn); }
+          o[i] = l.slice(0, tab) + '\t' + cn;
+        }
+        out.t[t].push({ b: b, txt: o.join('\n') });
+        r.vals[x] = null;
+      }
+    }
+    var sr = await getAll2('series', IDBKeyRange.bound([s.lista], [s.lista, []]));
+    var names = [], pos = [];
+    for(var y = 0; y < sr.keys.length; y++){
+      var bl = sr.vals[y]; if(!bl) continue;
+      var sb = sr.keys[y][1];
+      for(var j = 0; j < bl.length; j++){ names.push(norm(bl[j][0]).replace(/\n/g, ' ')); pos.push(sb, j); }
+      sr.vals[y] = null;
+    }
+    out.sn = { txt: names.join('\n'), pos: Int32Array.from(pos) };
+    return out;
+  }
   async function loadServer(s){
+    if(s.lista) return loadServerM6(s);
     var catN = new Map(), out = { sig: s.sig, t: [[], []], sn: null };
     for(var t = 0; t < 2; t++){
       var valid = new Set(s.keys[t]);
@@ -5522,8 +5575,38 @@ function searchWorkerMain(){
           if(!need2.has(k)) need2.set(k, [st, key]);
           keys2.push(k);
         });
-        var got2 = await getBlocks(need2);
-        var tuples = m.hits.map(function(x, i){ var bl = got2.get(keys2[i]); var h = x[1]; return bl ? (bl[x[0] === 's' ? h[2] : h[3]] || null) : null; });
+        // servidores no formato da página de testes: lê do iptv_db e converte pra tupla do app
+        var m6 = new Map();
+        for(var xi = 0; xi < m.hits.length; xi++){
+          var hx = m.hits[xi][1], e6 = idx.get(hx[0]);
+          if(!e6 || !e6.lista) continue;
+          var isS = m.hits[xi][0] === 's', k6 = (isS ? 's|' : 'c|') + hx[0] + '|' + hx[1] + (isS ? '' : '|' + hx[2]);
+          if(!m6.has(k6)){
+            var c6 = bcache.get('m6|' + k6);
+            if(!c6){
+              if(isS){ var sv = await getOne2('series', [e6.lista, hx[1]]); c6 = sv ? { s: sv } : null; }
+              else {
+                var cv = await getOne2('conteudos', [e6.lista, hx[1], hx[2]]);
+                if(cv != null){ var tx6 = txt2(cv), p6 = tx6.indexOf('\n'); c6 = { h: JSON.parse(p6 < 0 ? tx6 : tx6.slice(0, p6)), rows: p6 < 0 ? [] : tx6.slice(p6 + 1).split('\n') }; }
+              }
+              if(c6){ bcache.set('m6|' + k6, c6); while(bcache.size > BMAX) bcache.delete(bcache.keys().next().value); }
+            }
+            m6.set(k6, c6 || null);
+          }
+          need2.delete(keys2[xi]); keys2[xi] = { m6: k6 };
+        }
+        var got2 = need2.size ? await getBlocks(need2) : new Map();
+        var tuples = m.hits.map(function(x, i){
+          var h = x[1];
+          if(keys2[i] && keys2[i].m6){
+            var c = m6.get(keys2[i].m6); if(!c) return null;
+            if(x[0] === 's'){ var sx = c.s[h[2]]; return sx ? [h[0] + '::' + sx[5], sx[0], sx[2], sx[3], 0, [sx[1]], sx[4]] : null; }
+            var row = c.rows[h[3]]; if(row == null) return null;
+            var cc = row.split('\t'), url = c.h.b[+cc[2]] + cc[3];
+            return [stableContentId(h[0], url), cc[0], c.h.g[+cc[1]], url, cc[4] !== '' ? c.h.l[+cc[4]] + cc[5] : ''];
+          }
+          var bl = got2.get(keys2[i]); return bl ? (bl[x[0] === 's' ? h[2] : h[3]] || null) : null;
+        });
         self.postMessage({ id: m.id, ok: true, tuples: tuples, blocks: need2.size });
         return;
       }
@@ -5539,6 +5622,7 @@ const SearchIndex = {
     if(this._w || this._broken) return this._w;
     try{
       const src = 'var DB_NAME = ' + JSON.stringify(DB_NAME) + ';\nvar STORES = ' + JSON.stringify(STORES) + ';\n' +
+        'var M6_DBN = ' + JSON.stringify(M6.fns().DBN) + ';\n' + fnv1a.toString() + '\n' + stableContentId.toString() + '\n' +
         normalizeText.toString() + '\n(' + searchWorkerMain.toString() + ')();';
       this._url = URL.createObjectURL(new Blob([src], { type: 'application/javascript' }));
       this._w = new Worker(this._url);
@@ -5554,8 +5638,8 @@ const SearchIndex = {
   },
   _servers(){
     return Array.from(State.servers.values()).filter(serverHasBlocks).map(s => ({
-      id: s.id, sig: String(s.lastSync || '') + '|' + (s.blocosSeries || 0) + '|' + JSON.stringify(s.blocos || ''),
-      keys: [blockKeys(s, 0), blockKeys(s, 1)]
+      id: s.id, sig: String(s.fmt || '') + '|' + String(s.lastSync || '') + '|' + (s.blocosSeries || 0) + '|' + JSON.stringify(s.blocos || ''),
+      keys: [blockKeys(s, 0), blockKeys(s, 1)], lista: s.fmt === 'm6' ? s.lista : null
     }));
   },
   /** Carrega (ou atualiza) o índice. Só relê servidor que mudou. */
@@ -5682,6 +5766,25 @@ const GlobalSearchModule = {
     // 1 servidor, 1 tipo: lê TODOS os textos de busca numa leitura só (antes: 1 leitura por bloco)
     const contentScan = async (type, srv, favSet, out) => {
       const tipoInt = TIPO_INT[type];
+      if(srv.fmt === 'm6'){
+        let got = 0;
+        for(const b of blockKeys(srv, tipoInt)){
+          const txt = await Cat.search(srv.id, tipoInt, b); if(stale()) return; if(!txt) continue;
+          const linhas = txt.split('\n'), idxs = []; let capped = false;
+          for(let i = 0; i < linhas.length; i++){
+            const L = linhas[i], tab = L.indexOf('\t'), nome = tab >= 0 ? L.slice(0, tab) : L;
+            let hit = nome.indexOf(norm) !== -1;
+            if(!hit && tab >= 0){ const cat = L.slice(tab + 1); let cn = catNorm.get(cat); if(cn === undefined){ cn = this._norm(cat); catNorm.set(cat, cn); } hit = cn.indexOf(norm) !== -1; }
+            if(!hit) continue;
+            if(got + idxs.length >= maxPerType){ result.capped[type].add(srv.id); capped = true; break; }
+            idxs.push(i);
+          }
+          if(idxs.length){ const bloco = await Cat.content(srv.id, tipoInt, b); if(stale()) return;
+            for(const i of idxs){ if(!bloco || !bloco[i]) continue; const c = QueryModule.tupleToContent(bloco[i], tipoInt, srv.id, b, i); c.favorito = favSet.has(c.id); out.push(c); got++; } }
+          if(capped) break;
+        }
+        return;
+      }
       const valid = new Set(blockKeys(srv, tipoInt));
       const hi = [srv.id, tipoInt, []];
       let lo = [srv.id, tipoInt], loOpen = false, got = 0, stop = false;
@@ -5730,6 +5833,16 @@ const GlobalSearchModule = {
     };
 
     const seriesScan = async (srv, favIds, out) => {
+      if(srv.fmt === 'm6'){
+        let got = 0;
+        outer: for(let b = 0; b < (srv.blocosSeries || 0); b++){
+          const bloco = await Cat.series(srv.id, b); if(stale()) return; if(!bloco) continue;
+          for(const t of bloco){ if(this._norm(t[1]).indexOf(norm) === -1) continue;
+            if(got >= maxPerType){ result.capped.series.add(srv.id); break outer; }
+            const sm = QueryModule.seriesTupleToSummary(t, srv.id); sm.favorito = favIds.has(sm.key); out.push(sm); got++; }
+        }
+        return;
+      }
       let cache = this._seriesNorm.get(srv.id);
       if(!cache){
         const { vals } = await IDB.getRangeKV(STORES.seriesBlocks, IDBKeyRange.bound([srv.id], [srv.id, []]));
@@ -6708,6 +6821,172 @@ const M3uTest = {
   }
 };
 
+/* ======================================================================
+   IMPORTAÇÃO "M6" = EXATAMENTE a da página de testes (m3u-index v5)
+   ------------------------------------------------------------------
+   Download, processamento e gravação usam o MESMO código da página de testes
+   (os scripts shared-src, parser-src e worker-src são tirados dela, sem nenhuma
+   mudança) e o MESMO banco (iptv_db): lista crua em lista_<servidor>, ao vivo e
+   filmes em "conteudos"/"busca", séries em "series", episódios lidos da lista
+   crua quando a série é aberta. O app só lê esse formato (ver Cat).
+   ====================================================================== */
+const M6 = {
+  _src: null, _fns: null, _db: null, _dbP: null,
+  src(){
+    if(!this._src){
+      const doc = new DOMParser().parseFromString(M3uTest.html(), 'text/html');
+      this._src = {
+        shared: doc.getElementById('shared-src').textContent,
+        parser: doc.getElementById('parser-src').textContent,
+        worker: doc.getElementById('worker-src').textContent
+      };
+    }
+    return this._src;
+  },
+  /** funções da página de testes (as mesmas regras de interpretação) para ler episódios */
+  fns(){
+    if(!this._fns){
+      this._fns = new Function(this.src().shared + '\nreturn { DBN: DBN, norm: norm, texto: texto, lerCru: lerCru, cadaEntrada: cadaEntrada, classifica: classifica, nomeDe: nomeDe, serieDe: serieDe, attr: attr, infoGrupo: infoGrupo, SE_RE: SE_RE };')();
+    }
+    return this._fns;
+  },
+  tableName(serverId){ const s = this.fns().norm(String(serverId)).replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, ''); return 'lista_' + (s || 'sem_nome'); },
+  db(){
+    if(this._db) return Promise.resolve(this._db);
+    if(this._dbP) return this._dbP;
+    this._dbP = new Promise((ok, ko) => {
+      const r = indexedDB.open(this.fns().DBN);
+      r.onupgradeneeded = () => {
+        const d = r.result;
+        if(!d.objectStoreNames.contains('listas')) d.createObjectStore('listas', { keyPath: 'nome' });
+        ['conteudos', 'busca', 'series'].forEach((n) => { if(!d.objectStoreNames.contains(n)) d.createObjectStore(n); });
+      };
+      r.onsuccess = () => {
+        this._db = r.result; this._dbP = null;
+        this._db.onversionchange = () => { try{ this._db.close(); }catch(e){} this._db = null; }; // libera pro worker criar/apagar tabelas
+        ok(this._db);
+      };
+      r.onerror = () => { this._dbP = null; ko(r.error); };
+    });
+    return this._dbP;
+  },
+  async get(store, key){
+    const db = await this.db();
+    return new Promise((ok, ko) => {
+      try{ const q = db.transaction(store).objectStore(store).get(key); q.onsuccess = () => ok(q.result); q.onerror = () => ko(q.error); }
+      catch(e){ ko(e); }
+    });
+  },
+  lerCalib(){ try{ const c = JSON.parse(localStorage.getItem('iptv_calib') || 'null'); return c && c.v === 2 && c.melhor ? c : null; }catch(e){ return null; } },
+  salvarCalib(c){ try{ localStorage.setItem('iptv_calib', JSON.stringify(c)); }catch(e){} },
+  /** Roda o worker coordenador da página de testes (igual ao rodarWorker dela). */
+  run(msg, onStatus){
+    const src = this.src();
+    if(this._db){ try{ this._db.close(); }catch(e){} this._db = null; }
+    msg.parserSrc = src.shared + '\n' + src.parser;
+    const url = URL.createObjectURL(new Blob([src.shared, '\n', src.worker], { type: 'text/javascript' }));
+    const w = new Worker(url);
+    return new Promise((resolve, reject) => {
+      const fim = () => { try{ w.terminate(); }catch(e){} URL.revokeObjectURL(url); };
+      w.onmessage = (e) => {
+        const d = e.data;
+        if(d.calib){ this.salvarCalib(d.calib); return; }
+        if(d.previa){ return; }
+        if(d.erro){ fim(); reject(new Error(d.erro)); }
+        else if(d.fim){ fim(); resolve(d.status); }
+        else if(d.status && onStatus) onStatus(d.status);
+      };
+      w.onerror = (e) => { fim(); reject(new TypeError('Erro no worker: ' + (e && e.message))); };
+      w.postMessage(msg);
+    });
+  },
+  /** Lê o status de texto da página de testes pra barra de progresso do app. */
+  parseStatus(t){
+    let m = /Baixando\/gravando [^.]*\.\.\. ([\d.]+) MB(?: \/ ([\d.]+) MB)?/.exec(t);
+    if(m){
+      const p = /processados (\d+), na fila (\d+), para depois (\d+)/.exec(t);
+      return { phase: 'dl', bytes: +m[1] * 1048576, total: m[2] ? +m[2] * 1048576 : null, feitos: p ? +p[1] : 0, depois: p ? +p[3] : 0 };
+    }
+    m = /Processando blocos restantes\.\.\. (\d+)\/(\d+)/.exec(t);
+    if(m) return { phase: 'rest', done: +m[1], total: +m[2] };
+    if(/Medindo o disco/.test(t)) return { phase: 'calib' };
+    return null;
+  }
+};
+
+/* ======================================================================
+   CAT — leitura do catálogo nos dois formatos
+   - servidor importado pelo motor da página de testes (srv.fmt === 'm6'):
+     lê do iptv_db (conteudos/busca/series + lista crua) e devolve no formato
+     que as telas do app já usam (tuplas).
+   - servidor antigo (ainda não atualizado): lê como sempre.
+   ====================================================================== */
+const Cat = {
+  _c: new Map(), MAX: 12,
+  clear(){ this._c.clear(); this._grp = new Map(); },
+  _hit(k){ const v = this._c.get(k); if(v !== undefined){ this._c.delete(k); this._c.set(k, v); } return v; },
+  _put(k, v){ this._c.set(k, v); if(this._c.size > this.MAX) this._c.delete(this._c.keys().next().value); return v; },
+  _srv(id){ const s = State.servers.get(id); return s && s.fmt === 'm6' ? s : null; },
+  /** Ao vivo (t=0) / filmes (t=1): [id, nome, categoria, url, capa] */
+  async content(serverId, t, b){
+    const s = this._srv(serverId);
+    if(!s) return IDB.getByKey(STORES.contentBlocks, [serverId, t, b]);
+    const k = 'c|' + serverId + '|' + t + '|' + b, hit = this._hit(k);
+    if(hit) return hit;
+    const v = await M6.get('conteudos', [s.lista, t, b]);
+    if(v == null) return null;
+    const txt = M6.fns().texto(v), p = txt.indexOf('\n');
+    const h = JSON.parse(p < 0 ? txt : txt.slice(0, p));
+    const rows = p < 0 ? [] : txt.slice(p + 1).split('\n'), out = new Array(rows.length);
+    for(let i = 0; i < rows.length; i++){
+      const c = rows[i].split('\t');
+      const url = h.b[+c[2]] + c[3];
+      out[i] = [stableContentId(serverId, url), c[0], h.g[+c[1]], url, c[4] !== '' ? h.l[+c[4]] + c[5] : ''];
+    }
+    return this._put(k, out);
+  },
+  /** texto de busca: "nome_normalizado\tcategoria" por linha (mesma posição do item) */
+  async search(serverId, t, b){
+    const s = this._srv(serverId);
+    if(!s) return IDB.getByKey(STORES.searchBlocks, [serverId, t, b]);
+    const v = await M6.get('busca', [s.lista, t, b]);
+    return v == null ? null : M6.fns().texto(v);
+  },
+  /** série no formato do app: [chave, nome, capa, qtdEps, qtdTemporadas, categorias[], blocos crus[]] */
+  seriesTuple(serverId, x){ return [serverId + '::' + x[5], x[0], x[2], x[3], 0, [x[1]], x[4]]; },
+  async series(serverId, b){
+    const s = this._srv(serverId);
+    if(!s) return IDB.getByKey(STORES.seriesBlocks, [serverId, b]);
+    const k = 's|' + serverId + '|' + b, hit = this._hit(k);
+    if(hit) return hit;
+    const v = await M6.get('series', [s.lista, b]);
+    if(!v) return null;
+    return this._put(k, v.map(x => this.seriesTuple(serverId, x)));
+  },
+  /** episódios de 1 bloco da lista crua (lidos na hora, com as regras da página de testes):
+   *  [id, nome, categoria, url, capa, chaveSérie, temporada, episódio] */
+  async eps(serverId, b){
+    const s = this._srv(serverId);
+    if(!s) return null;
+    const k = 'e|' + serverId + '|' + b, hit = this._hit(k);
+    if(hit) return hit;
+    const F = M6.fns(), db = await M6.db();
+    if(!this._grp) this._grp = new Map();
+    const cache = this._grp.get(serverId) || {}; this._grp.set(serverId, cache);
+    const v = await F.lerCru(db, s.lista, b, cache);
+    if(v == null) return null;
+    const cru = F.texto(v), out = [], cg = new Map();
+    F.cadaEntrada(cru, (inf, url) => {
+      const nome = F.nomeDe(inf, url), c = F.classifica(cg, inf, url, nome);
+      if(c.t !== 2) return;
+      const se = c.se || F.SE_RE.exec(nome), sn = F.serieDe(nome, se);
+      out.push([stableContentId(serverId, url), nome, F.attr(inf, 'group-title="'), url, F.attr(inf, 'tvg-logo="'),
+        serverId + '::' + F.norm(sn), se ? +se[1] : 0, se ? +se[2] : 0]);
+    });
+    return this._put(k, out);
+  }
+};
+
 const ServerModule = {
 
   async loadAllFromDB(){
@@ -6777,9 +7056,11 @@ const ServerModule = {
     const favIds = (await IDB.getAll(STORES.favorites).catch(()=>[])).map(f => f.id).filter(belongs);
     await IDB.deleteMany(STORES.favorites, favIds).catch(()=>{});
 
+    const srv0 = State.servers.get(serverId);
     await IDB.delete(STORES.servers, serverId);
     State.servers.delete(serverId);
     Purger.add(serverId);
+    if(srv0 && srv0.fmt === 'm6'){ M6.run({ cmd: 'excluir', nome: srv0.lista }).catch((e) => pushDebugLog('Excluir lista do servidor: ' + (e && e.message || e), true)); Cat.clear(); }
     QueryModule.invalidateCaches();
     State.pageCache.clear(); State.dashboardCache = null; State.favoritesCache = null; State.continueCache = null;
   },
@@ -6946,6 +7227,77 @@ const ServerModule = {
     }
   },
 
+  /** Importação = página de testes (M6). Mesmo download, mesmo processamento, mesma gravação. */
+  async _importOnce(server, statusCallback, quietNetworkErrors){
+    const report = (patch) => { if(statusCallback) statusCallback(patch); };
+    const serverId = server.id, t0 = performance.now();
+    Purger.cancel(serverId);
+    try{
+      report({ phase:'download', status:'processing', downloaded:0, total:null, speed:0, stage: 'Conectando ao servidor...' });
+      const lista = M6.tableName(serverId);
+      const perf = State.settings.performance || {};
+      const conns = Math.max(1, Math.min(4, parseInt(perf.downloadConnections, 10) || DEFAULT_SETTINGS.performance.downloadConnections));
+      const wch = ServerModule.workersChoice();
+      const msg = { cmd: 'importar', src: { url: server.url }, nome: lista, nw: wch === 'auto' ? 0 : wch, comp: false,
+        cru: 'idb', calib: M6.lerCalib(), conexoes: conns };
+      let lastB = 0, lastT = Date.now(), speed = 0, first = false;
+      const txt = await M6.run(msg, (st) => {
+        const p = M6.parseStatus(st);
+        if(!p){ return; }
+        if(p.phase === 'calib'){ report({ phase:'download', status:'processing', downloaded:0, total:null, speed:0, stage: 'Medindo o disco (1ª vez)...' }); return; }
+        if(p.phase === 'dl'){
+          if(!first){ first = true; pushDebugLog('⏱ "' + server.nome + '": 1º dado ' + Math.round(performance.now() - t0) + ' ms depois do clique.'); }
+          const now = Date.now(), dt = (now - lastT) / 1000;
+          if(dt > 0.3){ speed = (p.bytes - lastB) / dt; lastB = p.bytes; lastT = now; }
+          report({ phase:'download', status:'processing', downloaded: p.bytes, total: p.total, estTotal: p.total ? null : (server.lastBytes || null), speed,
+            counts: { live: 0, movie: 0, series: 0 }, seriesCount: 0 });
+          return;
+        }
+        if(p.phase === 'rest') report({ phase:'download', status:'processing', finishing: true, blocksDone: p.done, blocksTotal: p.total, downloaded: lastB,
+          counts: { live: 0, movie: 0, series: 0 }, seriesCount: 0 });
+      });
+      pushDebugLog('⏱ "' + server.nome + '" (motor da página de testes):\n' + txt);
+      const meta = await M6.get('listas', lista);
+      if(!meta || !meta.processada) throw new Error('lista não foi processada');
+      const toObj = (arr) => { const o = {}; for(const [g, c] of arr) o[g] = c; return o; };
+      const cats = (arr) => arr.map(x => x[0]).sort();
+      const raw = meta.chaves || Array.from({ length: meta.blocos_crus }, (_, i) => i);
+      const counts = { live: meta.total[0], movie: meta.total[1], series: meta.total[2] };
+      Object.assign(server, {
+        fmt: 'm6', lista,
+        counts, seriesCount: meta.series,
+        blocos: [meta.blocos[0].length, meta.blocos[1].length, raw.length],
+        blocosIdx: [meta.blocos[0], meta.blocos[1], raw],
+        blocosSeries: meta.blocos_series,
+        blocosCrus: raw.length,
+        bytes: meta.bytes,
+        liveCategories: cats(meta.grupos[0]), movieCategories: cats(meta.grupos[1]), seriesCategories: cats(meta.grupos[2]),
+        liveCategoryCounts: toObj(meta.grupos[0]), movieCategoryCounts: toObj(meta.grupos[1]), seriesCategoryCounts: toObj(meta.grupos[2]),
+        lastSync: Date.now(), lastStatus: 'ok', lastError: null, lastBytes: meta.bytes
+      });
+      delete server.epMap; delete server.urlPrefixes; delete server.logoPrefixes; delete server.legacyFormat;
+      try{ await IDB.put(STORES.servers, server); }catch(e){}
+      Purger.add(serverId); // o conteúdo no formato antigo do app (se tinha) não é mais usado
+      QueryModule.invalidateCaches(); Cat.clear();
+      State.pageCache.clear(); State.dashboardCache = null; State.favoritesCache = null; State.continueCache = null;
+      const total = counts.live + counts.movie + counts.series;
+      report({ phase:'process', status:'done', processed: total, total: total, counts, seriesCount: meta.series });
+      return { ok: true, count: total };
+    }catch(err0){
+      let err = err0;
+      const hm = /HTTP (\d{3})/.exec(String(err && err.message || ''));
+      if(hm){ err = new Error('HTTP ' + hm[1]); err.status = +hm[1]; }
+      else if(/fetch|network|rede|conex/i.test(String(err && err.message || ''))){ err = new TypeError(String(err.message)); }
+      const retryable = ServerModule.isRetryableNetworkError(err);
+      if(retryable && quietNetworkErrors) return { ok:false, error: err, retryable: true };
+      const message = err && err.status ? ('Erro ' + err.status) : (err && err.message ? err.message : 'Erro desconhecido');
+      report({ phase: 'error', status:'error', message });
+      server.lastStatus = 'error'; server.lastError = message;
+      try{ await IDB.put(STORES.servers, server); }catch(e){}
+      return { ok:false, error: err, retryable };
+    }
+  },
+
   _importGen: {},
   /* ---- download em segundo plano (worker) ---- */
   _dlSetting(){ return ((State.settings && State.settings.performance) || {}).dlWorker || 'auto'; },
@@ -7001,7 +7353,7 @@ const ServerModule = {
     }catch(err){ pushDebugLog('🧹 Limpeza das sobras parou (' + (err && err.message || err) + ') — sem problema, não são lidas.', true); }
   },
 
-  async _importOnce(server, statusCallback, quietNetworkErrors){
+  async _importOnceApp(server, statusCallback, quietNetworkErrors){
     const report = (patch) => { if(statusCallback) statusCallback(patch); };
     const tStart = performance.now();
     const serverId = server.id;
@@ -12322,7 +12674,7 @@ const SuggestModule = {
       const mkeys = blockKeys(srv, 1), n = mkeys.length, start = this._rand(n);
       for(let k = 0; k < n; k++){
         const b = mkeys[(start + k) % n];
-        const bloco = await IDB.getByKey(STORES.contentBlocks, [srv.id, 1, b]).catch(() => null);
+        const bloco = await Cat.content(srv.id, 1, b).catch(() => null);
         if(!bloco) continue;
         const idx = [];
         for(let i = 0; i < bloco.length; i++){
@@ -12358,7 +12710,7 @@ const SuggestModule = {
       const n = srv.blocosSeries, start = this._rand(n);
       for(let k = 0; k < n; k++){
         const b = (start + k) % n;
-        const bloco = await IDB.getByKey(STORES.seriesBlocks, [srv.id, b]).catch(() => null);
+        const bloco = await Cat.series(srv.id, b).catch(() => null);
         if(!bloco) continue;
         const idx = [];
         for(let i = 0; i < bloco.length; i++){
@@ -12457,7 +12809,7 @@ const CrossServer = {
     for(const srv of State.servers.values()){
       if(!serverHasBlocks(srv)) continue;
       for(const b of blockKeys(srv, 1)){
-        const txt = await IDB.getByKey(STORES.searchBlocks, [srv.id, 1, b]).catch(() => null);
+        const txt = await Cat.search(srv.id, 1, b).catch(() => null);
         if(typeof txt !== 'string') continue;
         const lines = txt.split('\n');
         const hits = [];
@@ -12468,7 +12820,7 @@ const CrossServer = {
           if(titleKey(nm) === key) hits.push(i);
         }
         if(!hits.length) continue;
-        const bloco = await IDB.getByKey(STORES.contentBlocks, [srv.id, 1, b]).catch(() => null);
+        const bloco = await Cat.content(srv.id, 1, b).catch(() => null);
         if(!bloco) continue;
         for(const i of hits) if(bloco[i]) out.push(QueryModule.tupleToContent(bloco[i], 1, srv.id, b, i));
       }
@@ -12483,7 +12835,7 @@ const CrossServer = {
     for(const srv of State.servers.values()){
       if(!serverHasBlocks(srv)) continue;
       for(let b = 0; b < (srv.blocosSeries || 0); b++){
-        const bloco = await IDB.getByKey(STORES.seriesBlocks, [srv.id, b]).catch(() => null);
+        const bloco = await Cat.series(srv.id, b).catch(() => null);
         if(!bloco) continue;
         for(const t of bloco){
           if(titleKey(t[1]) !== key) continue;
