@@ -127,16 +127,18 @@ function lerValor(v, comp) {
 // ---- lista crua: blocos no banco (bytes) OU num arquivo OPFS com índice {o: posição, l: tamanho} no banco ----
 var TEM_OPFS = typeof navigator !== 'undefined' && !!(navigator.storage && navigator.storage.getDirectory) &&
   typeof FileSystemFileHandle !== 'undefined';
-function arqCru(lista) { return lista + '.m3u'; }
+// arquivo OPFS da lista crua; cada importação ("geração") tem o seu — a antiga é apagada depois, em segundo plano
+function arqCru(lista, gen) { return gen ? lista + '.' + gen + '.m3u' : lista + '.m3u'; }
+var GEN = 1e6;                                   // chaves da geração g: g*1e6 ... g*1e6 + 999999
 // pasta OPFS ou null se o navegador não permitir (ex.: página aberta por content:// ou file:// → SecurityError)
 async function raizOPFS() {
   if (!TEM_OPFS) return null;
   try { return await navigator.storage.getDirectory(); } catch (e) { return null; }
 }
-async function arquivoCru(lista) {
+async function arquivoCru(nomeArq) {
   var root = await raizOPFS();
   if (!root) throw new Error('Lista crua está em arquivo (OPFS), mas o navegador não permite acesso a arquivos aqui. Baixe a lista de novo.');
-  return (await root.getFileHandle(arqCru(lista))).getFile();
+  return (await root.getFileHandle(nomeArq)).getFile();
 }
 // devolve os bytes do bloco cru i (cache = {} opcional para reaproveitar o File entre leituras)
 async function lerCru(db, lista, i, cache) {
@@ -147,8 +149,9 @@ async function lerCru(db, lista, i, cache) {
     return gv.subarray(v.o, v.o + v.l);
   }
   if (v && v.o !== undefined) {
-    var f = (cache && cache.f) || await arquivoCru(lista);
-    if (cache) cache.f = f;
+    var fn = v.f || arqCru(lista);
+    var f = cache && cache.fn === fn ? cache.f : await arquivoCru(fn);
+    if (cache) { cache.f = f; cache.fn = fn; }
     return new Uint8Array(await f.slice(v.o, v.o + v.l).arrayBuffer());
   }
   return v;
@@ -286,7 +289,7 @@ self.onmessage = async function (ev) {
 <script id="worker-src" type="text/plain">
 'use strict';
 var CH = 1 << 20, BLOCO = 2000;
-var criar = null, apagar = null, db = null, ultimaCalib = null;
+var criar = null, apagar = null, db = null, ultimaCalib = null, genEmCurso = 0, lixoEmCurso = [];
 function post(m) { self.postMessage(m); }
 function faixa(lista) { return IDBKeyRange.bound([lista], [lista, []]); }   // todas as chaves [lista, ...]
 
@@ -513,16 +516,38 @@ async function importar(m) {
   var G = calib ? calib.grupo : 4;                   // blocos de 1 MB por gravação no banco
   if (modo === 'opfs' && !TEM_OPFS) modo = 'idb';
   await alterarSchema(nome, null);
-  var tx0 = db.transaction(nome, 'readwrite', RW); tx0.objectStore(nome).clear(); await txDone(tx0);
+  // APAGA A LISTA ANTERIOR ANTES DO DOWNLOAD (cenário real), com poucas operações grandes:
+  // 1 clear() da tabela crua + 1 delete por faixa nos dados organizados, numa transação só.
+  var tApaga = 0;
+  if (antigo) {
+    post({ status: 'Apagando a lista anterior' + (antigo.bytes ? ' (' + mb(antigo.bytes) + ')' : '') + '...' });
+    var TA = Date.now();
+    var txa = db.transaction([nome, 'conteudos', 'busca', 'series', 'listas'], 'readwrite', RW);
+    txa.objectStore(nome).clear();
+    txa.objectStore('conteudos').delete(faixa(nome));
+    txa.objectStore('busca').delete(faixa(nome));
+    txa.objectStore('series').delete(faixa(nome));
+    txa.objectStore('listas').delete(nome);
+    await txDone(txa);
+    var rootA = await raizOPFS();
+    if (rootA) {
+      var ksA = []; try { for await (var kA of rootA.keys()) ksA.push(kA); } catch (e) {}
+      for (var ia = 0; ia < ksA.length; ia++) if (ksA[ia] === arqCru(nome) || ksA[ia].indexOf(nome + '.') === 0) { try { await rootA.removeEntry(ksA[ia]); } catch (e) {} }
+    }
+    tApaga = Date.now() - TA;
+    post({ status: 'Lista anterior apagada em ' + tApaga + ' ms. Conectando...' });
+  }
+  var gen = ((antigo && antigo.gen) || 0) + 1, OFF = gen * GEN;
+  var lixo = [];                                    // tudo da lista anterior já foi apagado acima
+  genEmCurso = gen; lixoEmCurso = lixo;
   var root = await raizOPFS(), sah = null;
   if (!root && modo === 'opfs') modo = 'idb';        // arquivo não permitido neste navegador → banco
   if (modo === 'opfs') {
     try {
-      sah = await (await root.getFileHandle(arqCru(nome), { create: true })).createSyncAccessHandle();
+      sah = await (await root.getFileHandle(arqCru(nome, gen), { create: true })).createSyncAccessHandle();
       sah.truncate(0);
     } catch (e) { sah = null; modo = 'idb'; }
   }
-  if (modo !== 'opfs' && root) { try { await root.removeEntry(arqCru(nome)); } catch (e) {} }
 
   // ---- 2. abre as conexões ----
   var segs = [], total = 0;
@@ -591,7 +616,7 @@ async function importar(m) {
   function gravaGrupo() {
     if (!gblocos) return;
     var tx = db.transaction(nome, 'readwrite', RW);
-    tx.objectStore(nome).put(gbuf.slice(0, gusado), 'g' + gnum);
+    tx.objectStore(nome).put(gbuf.slice(0, gusado), 'g' + gen + '_' + gnum);
     voando.push(txDone(tx));
     gnum++; gusado = 0; gblocos = 0;
   }
@@ -599,14 +624,14 @@ async function importar(m) {
     chaves.push(chave);
     if (sah) {                                      // arquivo: escreve na posição exata do original
       var w0 = Date.now(); sah.write(bloco, { at: posAbs }); tDisco += Date.now() - w0;
-      indice.push([chave, { o: posAbs, l: bloco.length }]);
+      indice.push([chave, { o: posAbs, l: bloco.length, f: arqCru(nome, gen) }]);
     } else if (G > 1) {                             // banco em grupos (blocos de qualquer segmento)
       if (!gbuf || gusado + bloco.length > gbuf.length) {
         var ng = new Uint8Array(Math.max(G * CH + CH, gusado + bloco.length));
         if (gbuf) ng.set(gbuf.subarray(0, gusado)); gbuf = ng;
       }
       gbuf.set(bloco, gusado);
-      indice.push([chave, { g: gnum, o: gusado, l: bloco.length }]);
+      indice.push([chave, { g: gen + '_' + gnum, o: gusado, l: bloco.length }]);
       gusado += bloco.length; gblocos++;
       if (gblocos >= G) gravaGrupo();
     } else {
@@ -651,7 +676,7 @@ async function importar(m) {
         if (cut < 0) break;
         var bl = sg.buf.slice(0, cut + 1), p0 = sg.pos;
         sg.buf.copyWithin(0, cut + 1, sg.usado); sg.usado -= cut + 1; sg.pos += cut + 1;
-        await emite(bl, sg.k * BASE + sg.j++, p0);
+        await emite(bl, OFF + sg.k * BASE + sg.j++, p0);
       }
       progresso();
       if (acabou) { sg.cancelar(); break; }
@@ -666,7 +691,7 @@ async function importar(m) {
     for (var s2 = 0; s2 < segs.length; s2++) {
       var sg = segs[s2], prox = segs[s2 + 1];
       var pedaco = prox ? junta2(sg.cauda, prox.cabeca || new Uint8Array(0)) : sg.cauda;
-      if (pedaco.length) await emite(pedaco, prox ? sg.k * BASE + BASE - 1 : sg.k * BASE + sg.j++, sg.caudaPos);
+      if (pedaco.length) await emite(pedaco, OFF + (prox ? sg.k * BASE + BASE - 1 : sg.k * BASE + sg.j++), sg.caudaPos);
     }
     segs.forEach(function (x) { x.cauda = x.cabeca = null; });
     if (G > 1 && !sah) gravaGrupo();
@@ -688,9 +713,11 @@ async function importar(m) {
     if (previa) { try { await previa; } catch (e) {} }
   }
   chaves.sort(num);
-  var meta = { nome: nome, origem: origem, bytes: bytes, blocos_crus: chaves.length, chaves: chaves, data: Date.now(), cru: modo };
+  var meta = { nome: nome, origem: origem, bytes: bytes, blocos_crus: chaves.length, chaves: chaves, data: Date.now(), cru: modo, gen: gen, lixo: lixo };
   var tF = await finalizar(meta, acc, comp);
-  return 'Lista ' + nome + ': ' + mb(bytes) + ' em ' + chaves.length + ' blocos — total ' + seg(Date.now() - t0) +
+  var txtLimpa = await limpar();                     // só sobras de importações que falharam (normalmente nada)
+  return (antigo ? 'Lista anterior apagada em ' + tApaga + ' ms (antes do download)\n' : '') +
+    (txtLimpa ? txtLimpa + '\n' : '') + 'Lista ' + nome + ': ' + mb(bytes) + ' em ' + chaves.length + ' blocos — total ' + seg(Date.now() - t0) +
     ' (download+gravação crua ' + seg(tD) + '; ' + (chaves.length - nd) + ' blocos processados durante o download, ' + nd + ' depois)' +
     (acc.previaEm ? ' — canais disponíveis em ' + seg(acc.previaEm - t0) : '') + '\n' +
     'Rede: ' + notaRede + ' · Lista crua em: ' + (modo === 'opfs' ? 'arquivo (OPFS)' : 'banco, ' + G + ' MB por gravação') + '\n' +
@@ -707,7 +734,7 @@ async function gravarPrevia(nome, origem, acc, comp, modo) {
   cs.delete(faixa(nome)); bs.delete(faixa(nome));
   for (var e = 0; e < estr.length; e++) { var x = estr[e], key = [nome, x[0], x[1]]; cs.put(x[2], key); bs.put(x[3], key); }
   tx.objectStore('listas').put({
-    nome: nome, origem: origem, bytes: 0, blocos_crus: 0, data: Date.now(), cru: modo, processada: true, parcial: true,
+    nome: nome, origem: origem, bytes: 0, blocos_crus: 0, data: Date.now(), cru: modo, processada: true, parcial: true, gen: genEmCurso, lixo: lixoEmCurso,
     formato: 6, comp: comp, total: acc.cnt.slice(), series: 0, blocos_series: 0,
     blocos: [estr.filter(function (x) { return x[0] === 0; }).map(function (x) { return x[1]; }).sort(num),
              estr.filter(function (x) { return x[0] === 1; }).map(function (x) { return x[1]; }).sort(num), []],
@@ -736,19 +763,91 @@ async function processar(m) {
   return 'Processada em ' + seg(Date.now() - t0) + ': ' + resumo(meta, acc, N, comp, tF);
 }
 
-/* ================= 3) excluir lista ================= */
+/* ================= 3) excluir lista: NA HORA, com poucas operações grandes ================= */
+// Rápido porque não apaga item por item: a lista crua sai com UM clear() da tabela dela e os dados
+// organizados com UM delete por faixa [lista, ...] — tudo numa transação só (durability relaxed).
 async function excluir(lista) {
   if (!db) db = await open();
-  var tx = db.transaction(['conteudos', 'busca', 'series', 'listas'], 'readwrite', RW);
+  var T = Date.now(), t1, t2, t3;
+  var r = await req(db.transaction('listas').objectStore('listas').get(lista));
+  var tam = r && r.bytes ? ' (' + mb(r.bytes) + ')' : '';
+  post({ status: 'Excluindo ' + lista + '... apagando dados organizados e lista crua' + tam });
+  var nomes = ['conteudos', 'busca', 'series', 'listas'], temCru = db.objectStoreNames.contains(lista);
+  if (temCru) nomes.push(lista);
+  var tx = db.transaction(nomes, 'readwrite', RW);
   tx.objectStore('conteudos').delete(faixa(lista));
   tx.objectStore('busca').delete(faixa(lista));
   tx.objectStore('series').delete(faixa(lista));
   tx.objectStore('listas').delete(lista);
+  if (temCru) tx.objectStore(lista).clear();            // lista crua inteira (todas as gerações) de uma vez
   await txDone(tx);
-  await alterarSchema(null, lista);
+  t1 = Date.now() - T;
+  post({ status: 'Excluindo ' + lista + '... apagando arquivos' });
+  var T2 = Date.now(), root = await raizOPFS(), narq = 0;
+  if (root) {                                            // modo arquivo: 1 remoção por arquivo (1 por geração)
+    var ks = []; try { for await (var k of root.keys()) ks.push(k); } catch (e) {}
+    for (var i = 0; i < ks.length; i++) if (ks[i] === arqCru(lista) || ks[i].indexOf(lista + '.') === 0) { try { await root.removeEntry(ks[i]); narq++; } catch (e) {} }
+  }
+  t2 = Date.now() - T2;
+  post({ status: 'Excluindo ' + lista + '... removendo a tabela ' + lista });
+  var T3 = Date.now();
+  await alterarSchema(null, lista);                      // tabela já vazia: remover é rápido
+  t3 = Date.now() - T3;
+  return 'Lista ' + lista + tam + ' excluída em ' + (Date.now() - T) + ' ms — dados organizados + lista crua ' + t1 + ' ms' +
+    (narq ? ' · arquivos (' + narq + ') ' + t2 + ' ms' : '') + ' · tabela ' + t3 + ' ms.';
+}
+// importação que falhou antes de terminar: a geração nova (incompleta) vira lixo
+async function marcarLixo(nome, gen) {
+  try {
+    if (!db) db = await open();
+    var tx = db.transaction('listas', 'readwrite', RW), ls = tx.objectStore('listas');
+    var r = await req(ls.get(nome));
+    if (!r) ls.put({ nome: nome, excluida: true, gen: gen, lixo: [gen] });
+    else if (r.gen !== gen && (r.lixo || []).indexOf(gen) < 0) { r.lixo = (r.lixo || []).concat([gen]); ls.put(r); }
+    await txDone(tx);
+  } catch (e) {}
+}
+
+/* ================= 4) apagar versões antigas (no fim da importação, na frente do usuário) ================= */
+// apaga uma faixa inteira numa operação só (e, para o formato antigo, as chaves filtradas na mesma transação)
+async function apagaFaixa(store, range, filtro) {
+  var ks = filtro ? (await req(db.transaction(store).objectStore(store).getAllKeys(range))).filter(filtro) : null;
+  var tx = db.transaction(store, 'readwrite', RW), os = tx.objectStore(store);
+  if (ks) for (var i = 0; i < ks.length; i++) os.delete(ks[i]); else os.delete(range);
+  await txDone(tx);
+  return 1;
+}
+async function apagaGeracao(nome, g) {
+  var n = 0;
+  if (db.objectStoreNames.contains(nome)) {
+    n += await apagaFaixa(nome, IDBKeyRange.bound(g * GEN, g * GEN + GEN - 1));              // índice/blocos da geração
+    if (g) n += await apagaFaixa(nome, IDBKeyRange.bound('g' + g + '_', 'g' + g + '_\uffff')); // grupos da geração
+    else n += await apagaFaixa(nome, IDBKeyRange.bound('g', 'g\uffff'), function (k) { return /^g\d+$/.test(k); }); // formato antigo
+  }
   var root = await raizOPFS();
-  if (root) { try { await root.removeEntry(arqCru(lista)); } catch (e) {} }
-  return 'Lista ' + lista + ' excluída.';
+  if (root) { try { await root.removeEntry(arqCru(nome, g)); n++; } catch (e) {} }
+  return n;
+}
+async function limpar() {
+  if (!db) db = await open();
+  var T = Date.now(), total = 0;
+  var todas = await req(db.transaction('listas').objectStore('listas').getAll());
+  for (var i = 0; i < todas.length; i++) {
+    var r = todas[i], lixo = (r.lixo || []).slice();
+    for (var j = 0; j < lixo.length; j++) {
+      total += await apagaGeracao(r.nome, lixo[j]);
+      var tx = db.transaction('listas', 'readwrite', RW), ls = tx.objectStore('listas');   // tira do lixo (relendo: pode ter mudado)
+      var atual = await req(ls.get(r.nome));
+      if (atual && atual.lixo) { atual.lixo = atual.lixo.filter(function (x) { return x !== lixo[j]; }); ls.put(atual); }
+      await txDone(tx);
+    }
+    var fim = await req(db.transaction('listas').objectStore('listas').get(r.nome));
+    if (fim && fim.excluida && !(fim.lixo || []).length) {       // lista excluída e já vazia: some de vez (tabela incluída)
+      var tx2 = db.transaction('listas', 'readwrite', RW); tx2.objectStore('listas').delete(r.nome); await txDone(tx2);
+      await alterarSchema(null, r.nome);
+    }
+  }
+  return total ? 'Versão anterior apagada em ' + (Date.now() - T) + ' ms.' : '';
 }
 
 self.onmessage = async function (ev) {
@@ -759,10 +858,12 @@ self.onmessage = async function (ev) {
     if (m.cmd === 'importar') { txt = await importar(m); if (ultimaCalib) txt += '\n' + textoCalib(ultimaCalib); }
     else if (m.cmd === 'processar') txt = await processar(m);
     else if (m.cmd === 'excluir') txt = await excluir(m.nome);
+    else if (m.cmd === 'limpar') txt = await limpar();
     else if (m.cmd === 'calibrar') txt = textoCalib(await calibrar());
     if (db) db.close(); db = null;
     post({ fim: true, status: txt });
   } catch (e) {
+    if (m && m.cmd === 'importar' && genEmCurso) await marcarLixo(m.nome, genEmCurso);
     if (db) db.close(); db = null;
     post({ erro: String(e && e.message || e) });
   }
@@ -856,6 +957,7 @@ function setBusy(b) { ['btnUrl', 'btnProc', 'btnDel', 'btnCalib', 'file', 'nw', 
 /* ---------- listas ---------- */
 async function carregarListas() {
   var todas = await req((await getDB()).transaction('listas').objectStore('listas').getAll());
+  todas = todas.filter(function (l) { return !l.excluida; });        // excluídas (aguardando limpeza) não aparecem
   if (!todas.some(function (l) { return l.nome === lista; })) lista = todas.length ? todas[0].nome : '';
   var h = todas.length ? '' : '<option value="">(nenhuma lista)</option>';
   meta = null;
