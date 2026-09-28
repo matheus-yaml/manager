@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.6.7';
+<script>var APP_VERSION = '1.6.8';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -692,6 +692,7 @@ html.lite .modal-box{background:#141622 !important;}
 html.lite .modal-overlay.search-full{background:#0b0c14;padding:0;align-items:stretch;justify-content:stretch;}
 html.lite .modal-overlay.search-full .modal-box{max-width:none !important;width:100%;height:100%;max-height:none;border-radius:0;border:none;box-shadow:none !important;padding:16px 20px;}
 html.lite.search-open #app{visibility:hidden;}
+html.m3u-test-open #app{visibility:hidden;}
 .search-more{margin:6px 0 18px;}
 /* ---------- Sugira-me ---------- */
 .suggest-lead{color:var(--text-2);font-size:13.5px;margin:-8px 0 16px;}
@@ -3142,7 +3143,7 @@ const SysMon = {
   },
   _native(){ return !!(window.cordova && typeof window.cordova.exec === 'function'); },
   poll(){
-    if(document.visibilityState === 'hidden') return;
+    if(document.visibilityState === 'hidden' || window.__SM_PAUSED) return;
     if(!this._native()){ this.render(); return; } // navegador: só o que ele informa
     this.pollWifi();
     if(this._sysOk === false){ this.render(); return; }
@@ -3258,7 +3259,7 @@ const NetSpeed = {
     setInterval(() => this.tick(), 1000);
   },
   tick(){
-    if(this._ok === false) return;
+    if(this._ok === false || window.__SM_PAUSED) return;
     try{
       window.cordova.exec((o) => {
         this._ok = true;
@@ -3512,7 +3513,7 @@ const NativeVideo = {
     if(this._syncOn) return;
     this._syncOn = true;
     let raf = 0;
-    const kick = () => { if(!raf) raf = requestAnimationFrame(() => { raf = 0; this.miniSync(); this.engineSync(); }); };
+    const kick = () => { if(window.__SM_PAUSED) return; if(!raf) raf = requestAnimationFrame(() => { raf = 0; this.miniSync(); this.engineSync(); }); };
     const ca = document.getElementById('content-area');
     if(ca) ca.addEventListener('scroll', kick, { passive: true });
     window.addEventListener('resize', kick);
@@ -4055,7 +4056,7 @@ const NetStatus = {
   },
   _qBusy: false, _qFails: 0,
   async quick(){
-    if(this._qBusy || this._busy || document.visibilityState === 'hidden') return;
+    if(this._qBusy || this._busy || document.visibilityState === 'hidden' || window.__SM_PAUSED) return;
     // dados chegando agora (vídeo, download, capas): a internet está funcionando —
     // não precisa mandar o pedido de teste (economiza 1 pedido de rede por segundo)
     if(typeof NetSpeed !== 'undefined' && NetSpeed._ok && NetSpeed.mbps > 0.2 && !(this.state && this.state.kind === 'bad')){
@@ -6677,6 +6678,11 @@ const M3uTest = {
     ov.appendChild(x); ov.appendChild(fr);
     document.body.appendChild(ov);
     this._ov = ov;
+    // a página de testes roda na MESMA thread do app: pausa tudo do app por baixo
+    // (vídeo mini, medidores de CPU/rede/internet, desenho do app) pra não roubar processador
+    try{ PlayerModule.stopMini && PlayerModule.stopMini(); }catch(e){}
+    window.__SM_PAUSED = true;
+    document.documentElement.classList.add('m3u-test-open');
     window.__closeM3uTest = () => this.close();
     fr.addEventListener('load', () => { try{ fr.focus(); fr.contentWindow.focus(); }catch(e){} });
     pushDebugLog('🧪 Página de testes aberta.');
@@ -6687,6 +6693,8 @@ const M3uTest = {
     const fr = ov.querySelector('iframe');
     try{ fr.srcdoc = ''; fr.src = 'about:blank'; }catch(e){} // encerra os workers e conexões da página de testes
     ov.remove();
+    window.__SM_PAUSED = false;
+    document.documentElement.classList.remove('m3u-test-open');
     try{ TvNav.afterRender && TvNav.afterRender(); }catch(e){}
     pushDebugLog('🧪 Página de testes fechada.');
   }
