@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.6.8';
+<script>var APP_VERSION = '1.6.9';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -1992,6 +1992,14 @@ self.onmessage = async function(ev){
         if(queue.length > peakQ) peakQ = queue.length;
       },
       peakQueue(){ return peakQ; },
+      /** NÃO espera: worker livre ou vaga na fila → aceita (true); lotado → false (o bloco fica pra depois). */
+      tryPost(serverId, i, texto){
+        if(error) throw error;
+        const job = { serverId, i, texto };
+        if(free.length){ post(free.pop(), job); return true; }
+        if(queue.length < qmax()){ queue.push(job); if(queue.length > peakQ) peakQ = queue.length; return true; }
+        return false;
+      },
       async finish(){
         while(queue.length || active){
           if(!active && queue.length && free.length){ post(free.pop(), queue.shift()); continue; }
@@ -7099,7 +7107,12 @@ const ServerModule = {
           const tot = Math.round(performance.now() - tStart);
           pushDebugLog('⏱ "' + server.nome + '": até o 1º dado ' + tot + ' ms → ' + stg.marks.join(' • '), tot > 5000);
         },
-        sendBlock: (key, u8) => pool.send(serverId, key, u8),
+        // o download NUNCA espera o processamento (igual à página de testes): processador ocupado →
+        // o bloco é guardado cru no banco (em grupos de ~4 MB) e processado logo depois do download
+        sendBlock: (key, u8) => {
+          if(pool.tryPost(serverId, key, u8)) return;
+          return later.add(key, u8);
+        },
         progress: (b, t) => {
           bytes = b; if(t) totalBytes = t;
           progress(false);
@@ -7112,6 +7125,30 @@ const ServerModule = {
       };
       // modo: worker (tela livre) ou tela. Automático: tenta o worker; se o fetch lá dentro
       // for bloqueado (APK com página file://), volta pra tela na hora e lembra.
+      // blocos "para depois": grupos de ~4 MB gravados em rawBlocks [servidor, 'L', nº do grupo]
+      const later = {
+        keys: [], groups: [], cur: null, curLen: 0, gid: 0, writes: [], bytes: 0,
+        async add(key, u8){
+          if(!this.cur){ this.cur = []; this.curLen = 0; }
+          this.cur.push([key, u8]); this.curLen += u8.length; this.keys.push(key); this.bytes += u8.length;
+          if(this.curLen >= 4 * 1024 * 1024) await this.flush();
+        },
+        async flush(){
+          if(!this.cur || !this.cur.length) return;
+          const parts = this.cur, len = this.curLen, d = new Uint8Array(len), idx = [];
+          let o = 0; for(const [k, u] of parts){ d.set(u, o); idx.push([k, o, u.length]); o += u.length; }
+          this.cur = null; this.curLen = 0;
+          const gk = [serverId, 'L', this.gid++];
+          this.groups.push({ key: gk, idx });
+          this.writes.push(new Promise((res, rej) => {
+            const tx = IDB.tx([STORES.rawBlocks], 'readwrite', { durability: 'relaxed' });
+            tx.objectStore(STORES.rawBlocks).put(d, gk);
+            tx.oncomplete = () => res(); tx.onerror = tx.onabort = () => rej(tx.error);
+          }));
+          // disco lento: no máx. 2 gravações pendentes (igual à página de testes)
+          while(this.writes.length > 2) await this.writes.shift();
+        }
+      };
       let usedMode = ServerModule.dlMode();
       let r;
       const runMain = () => { usedMode = 'main'; return listDownloadCore(ctx); };
@@ -7134,6 +7171,26 @@ const ServerModule = {
       }
       bytes = r.bytes; n = r.n; totalBytes = r.totalBytes || totalBytes; tNet = r.tNet; tWaitPool = r.tWaitPool;
       progress(true);
+      // blocos que ficaram pra depois: lê do banco e processa (o download já terminou)
+      if(later.keys.length){
+        const tL = performance.now();
+        await later.flush(); await Promise.all(later.writes); later.writes = [];
+        const tot = later.keys.length; let done = 0;
+        pushDebugLog('⏱ "' + server.nome + '": download terminou; ' + tot + ' de ' + n + ' blocos ficaram pra processar agora (' + formatBytes(later.bytes) + ').');
+        for(const g of later.groups){
+          const d = await IDB.getByKey(STORES.rawBlocks, g.key);
+          for(const [k, o, l] of g.idx){
+            const u = d.slice(o, o + l); // buffer próprio → vai pro worker sem cópia
+            await pool.send(serverId, k, u);
+            done++;
+            report({ phase:'download', status:'processing', finishing: true, blocksDone: acc.done, blocksTotal: n, downloaded: bytes,
+              counts: { live: acc.cnt[0], movie: acc.cnt[1], series: acc.cnt[2] }, seriesCount: acc.series.size });
+          }
+        }
+        // apaga os grupos crus (não servem mais)
+        try{ await IDB.deleteRange(STORES.rawBlocks, IDBKeyRange.bound([serverId, 'L'], [serverId, 'L', []])); }catch(e){}
+        pushDebugLog('⏱ "' + server.nome + '": ' + tot + ' blocos "para depois" enviados ao processamento em ' + Math.round(performance.now() - tL) + ' ms.');
+      }
       const tDownloaded = performance.now();
       pushDebugLog('⏱ "' + server.nome + '": download ' + Math.round(tDownloaded - tStart) + ' ms (' + formatBytes(bytes) + ', ' + n + ' blocos, processados junto) — esperando a rede ' +
         Math.round(tNet) + ' ms, esperando o processamento ' + Math.round(tWaitPool) + ' ms' +
