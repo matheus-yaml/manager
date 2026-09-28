@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.5.5';
+<script>var APP_VERSION = '1.5.8';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -5269,6 +5269,12 @@ function searchWorkerMain(){
     return NONA.test(x) ? normalizeText(x) : x;
   }
   function open(){ return new Promise(function(ok, ko){ var r = indexedDB.open(DB_NAME); r.onsuccess = function(){ ok(r.result); }; r.onerror = function(){ ko(r.error); }; }); }
+  function getOne(store, key){
+    return new Promise(function(ok, ko){ var r = db.transaction(store).objectStore(store).get(key); r.onsuccess = function(){ ok(r.result); }; r.onerror = function(){ ko(r.error); }; });
+  }
+  function putOne(store, key, val){
+    return new Promise(function(ok, ko){ var tx = db.transaction(store, 'readwrite', { durability: 'relaxed' }); tx.objectStore(store).put(val, key); tx.oncomplete = function(){ ok(); }; tx.onerror = tx.onabort = function(){ ko(tx.error); }; });
+  }
   function getAll(store, range){
     return new Promise(function(ok, ko){
       var st = db.transaction(store).objectStore(store);
@@ -5320,24 +5326,66 @@ function searchWorkerMain(){
     }
     return n;
   }
+  /* Blocos pesados (contentBlocks: até 2000 tuplas com URL/capa) lidos AQUI,
+     fora da tela: a tela recebe só as poucas tuplas encontradas. Antes a
+     tela desserializava dezenas de blocos inteiros a cada busca — no projetor
+     era isso que travava (a listagem lê 1 bloco, a busca lia vários).
+     Cache pequeno (LRU) de blocos: digitar "mat" → "matr" → "matri" acerta
+     os mesmos blocos e não relê do banco. */
+  var bcache = new Map(), BMAX = 8;
+  var qcache = new Map(), QMAX = 24; // termo → resultado pronto (apagar letra = instantâneo)
+  var lastSeq = 0;
+  function getBlocks(need){ // need: Map chave → [store, key]
+    var out = new Map(), miss = [];
+    need.forEach(function(sk, k){
+      if(bcache.has(k)){ var v = bcache.get(k); bcache.delete(k); bcache.set(k, v); out.set(k, v); }
+      else miss.push([k, sk]);
+    });
+    if(!miss.length) return Promise.resolve(out);
+    var stores = Array.from(new Set(miss.map(function(x){ return x[1][0]; })));
+    return new Promise(function(ok, ko){
+      var tx = db.transaction(stores);
+      miss.forEach(function(x){
+        var r = tx.objectStore(x[1][0]).get(x[1][1]);
+        r.onsuccess = function(){ out.set(x[0], r.result || null); };
+      });
+      tx.oncomplete = function(){
+        miss.forEach(function(x){ var v = out.get(x[0]); if(v){ bcache.set(x[0], v); } });
+        while(bcache.size > BMAX) bcache.delete(bcache.keys().next().value);
+        ok(out);
+      };
+      tx.onerror = tx.onabort = function(){ ko(tx.error); };
+    });
+  }
   self.onmessage = async function(ev){
     var m = ev.data;
     try{
       if(!db) db = await open();
       if(m.cmd === 'load'){
-        var keep = new Set();
+        bcache.clear(); qcache.clear(); // servidor mudou: blocos/resultados antigos não valem mais
+        var keep = new Set(), built = 0, fromDisk = 0;
         for(var k = 0; k < m.servers.length; k++){
           var s = m.servers[k]; keep.add(s.id);
           var cur = idx.get(s.id);
           if(cur && cur.sig === s.sig) continue;
           idx.delete(s.id);
-          idx.set(s.id, await loadServer(s));
+          // índice já pronto no banco (gravado depois da importação): 1 leitura só
+          var saved = null;
+          try{ saved = await getOne(STORES.rawBlocks, [s.id, 'sidx']); }catch(e){}
+          if(saved && saved.sig === s.sig && saved.t && saved.sn){ idx.set(s.id, saved); fromDisk++; continue; }
+          var fresh = await loadServer(s); built++;
+          idx.set(s.id, fresh);
+          try{ await putOne(STORES.rawBlocks, [s.id, 'sidx'], fresh); }catch(e){}
         }
         idx.forEach(function(v, key){ if(!keep.has(key)) idx.delete(key); });
-        self.postMessage({ id: m.id, ok: true });
+        self.postMessage({ id: m.id, ok: true, built: built, fromDisk: fromDisk });
         return;
       }
       if(m.cmd === 'search'){
+        if(m.seq) lastSeq = Math.max(lastSeq, m.seq);
+        if(m.lite) BMAX = 5;
+        var ck = m.q + '|' + m.max + '|' + m.order.join(',');
+        if(qcache.has(ck)){ self.postMessage({ id: m.id, ok: true, res: qcache.get(ck) }); return; }
         var q = m.q, max = m.max, res = { movie: [], live: [], series: [], capped: { movie: [], live: [], series: [] } };
         var TN = ['live', 'movie'];
         for(var a = 0; a < m.order.length; a++){
@@ -5354,6 +5402,23 @@ function searchWorkerMain(){
           sg = findLines(e.sn.txt, q, max + 1, function(line){ res.series.push([sid, e.sn.pos[2 * line], e.sn.pos[2 * line + 1]]); });
           if(sg > max){ res.series.pop(); res.capped.series.push(sid); }
         }
+        // resolve as tuplas aqui mesmo (ver getBlocks): cada hit ganha a tupla no fim
+        var need = new Map();
+        var add = function(store, key){ var k = store + '|' + key.join('|'); if(!need.has(k)) need.set(k, [store, key]); return k; };
+        var hk = { movie: [], live: [], series: [] };
+        res.movie.forEach(function(h){ hk.movie.push(add(STORES.contentBlocks, [h[0], h[1], h[2]])); });
+        res.live.forEach(function(h){ hk.live.push(add(STORES.contentBlocks, [h[0], h[1], h[2]])); });
+        res.series.forEach(function(h){ hk.series.push(add(STORES.seriesBlocks, [h[0], h[1]])); });
+        var got = await getBlocks(need);
+        // enquanto lia do banco a pessoa digitou de novo: não perde tempo mandando
+        if(m.seq && m.seq < lastSeq){ self.postMessage({ id: m.id, ok: true, res: { stale: true } }); return; }
+        ['movie', 'live'].forEach(function(T){
+          res[T].forEach(function(h, i){ var bl = got.get(hk[T][i]); h.push(bl && bl[h[3]] || null); });
+        });
+        res.series.forEach(function(h, i){ var bl = got.get(hk.series[i]); h.push(bl && bl[h[2]] || null); });
+        got = need = null;
+        qcache.set(ck, res);
+        while(qcache.size > QMAX) qcache.delete(qcache.keys().next().value);
         self.postMessage({ id: m.id, ok: true, res: res });
       }
     }catch(err){
@@ -5394,14 +5459,14 @@ const SearchIndex = {
     if(this._loadP && this._loadedSig === sig) return this._loadP;
     this._loadedSig = sig;
     const t0 = performance.now();
-    this._loadP = this._call({ cmd: 'load', servers }).then(() => {
-      pushDebugLog('🔎 Índice de pesquisa pronto em ' + Math.round(performance.now() - t0) + ' ms (' + servers.length + ' servidor(es)).');
+    this._loadP = this._call({ cmd: 'load', servers }).then((r) => {
+      pushDebugLog('🔎 Índice de pesquisa pronto em ' + Math.round(performance.now() - t0) + ' ms (' + servers.length + ' servidor(es): ' + (r.fromDisk || 0) + ' já prontos, ' + (r.built || 0) + ' montados agora).');
     }).catch((e) => { this._loadP = null; this._loadedSig = ''; throw e; });
     return this._loadP;
   },
-  async search(q, max, order){
+  async search(q, max, order, seq){
     await this.ensure();
-    const r = await this._call({ cmd: 'search', q, max, order });
+    const r = await this._call({ cmd: 'search', q, max, order, seq, lite: PerfMode.isLite() });
     // projetor/TV: sem pesquisar por 3 min, solta a memória do índice
     if(PerfMode.isLite()){ clearTimeout(this._idleT); this._idleT = setTimeout(() => { if(!activeSearchOverlay) this.release(); }, 180000); }
     return r.res;
@@ -5455,36 +5520,32 @@ const GlobalSearchModule = {
     const servers = Array.from(State.servers.values()).filter(serverHasBlocks);
     maxPerType = maxPerType || Math.max(10, Math.min(40, Math.floor(120 / Math.max(1, servers.length))));
     const t0 = performance.now();
-    const hits = await SearchIndex.search(norm, maxPerType, servers.map(s => s.id));
-    if(my !== this._seq) throw new Error('busca antiga');
+    // o worker já devolve cada hit COM a tupla (último item): a tela não lê
+    // nem desserializa blocos de 2000 itens — só monta os objetos encontrados
+    const hits = await SearchIndex.search(norm, maxPerType, servers.map(s => s.id), my);
+    if(my !== this._seq || hits.stale) throw new Error('busca antiga');
     const t1 = performance.now();
     const result = { movie:[], live:[], series:[], capped: { movie:new Set(hits.capped.movie), live:new Set(hits.capped.live), series:new Set(hits.capped.series) } };
-    const [favMovie, favLive, favSeries] = await Promise.all([QueryModule._favoriteIdSet('movie'), QueryModule._favoriteIdSet('live'), QueryModule._favoriteIdSet('series')]);
-    // lê cada bloco com resultado UMA vez (todos em paralelo)
-    const blocks = new Map();
-    const need = (store, key) => { const k = store + '|' + key.join('|'); if(!blocks.has(k)) blocks.set(k, IDB.getByKey(store, key).catch(() => null)); return k; };
-    const plan = { movie: [], live: [], series: [] };
-    for(const type of ['movie', 'live']) for(const h of hits[type]) plan[type].push([need(STORES.contentBlocks, [h[0], h[1], h[2]]), h]);
-    for(const h of hits.series) plan.series.push([need(STORES.seriesBlocks, [h[0], h[1]]), h]);
-    const keys = Array.from(blocks.keys()), vals = await Promise.all(keys.map(k => blocks.get(k)));
+    // favoritos: 1 leitura só (antes eram 3 leituras da store inteira)
+    const favs = { movie: new Set(), live: new Set(), series: new Set() };
+    try{ for(const f of await IDB.getAll(STORES.favorites)) if(favs[f.type]) favs[f.type].add(f.id); }catch(e){}
     if(my !== this._seq) throw new Error('busca antiga');
-    const got = new Map(); keys.forEach((k, i) => got.set(k, vals[i]));
     for(const type of ['movie', 'live']){
-      const fav = type === 'movie' ? favMovie : favLive;
-      for(const [k, h] of plan[type]){
-        const bloco = got.get(k); if(!bloco || !bloco[h[3]]) continue;
-        const c = QueryModule.tupleToContent(bloco[h[3]], h[1], h[0], h[2], h[3]);
+      const fav = favs[type];
+      for(const h of hits[type]){
+        const tup = h[4]; if(!tup) continue;
+        const c = QueryModule.tupleToContent(tup, h[1], h[0], h[2], h[3]);
         c.favorito = fav.has(c.id);
         result[type].push(c);
       }
     }
-    for(const [k, h] of plan.series){
-      const bloco = got.get(k); if(!bloco || !bloco[h[2]]) continue;
-      const s = QueryModule.seriesTupleToSummary(bloco[h[2]], h[0]);
-      s.favorito = favSeries.has(s.key);
+    for(const h of hits.series){
+      const tup = h[3]; if(!tup) continue;
+      const s = QueryModule.seriesTupleToSummary(tup, h[0]);
+      s.favorito = favs.series.has(s.key);
       result.series.push(s);
     }
-    pushDebugLog('🔎 Pesquisa "' + norm + '": ' + Math.round(t1 - t0) + ' ms no índice + ' + Math.round(performance.now() - t1) + ' ms lendo ' + keys.length + ' bloco(s).');
+    pushDebugLog('🔎 Pesquisa "' + norm + '": ' + Math.round(t1 - t0) + ' ms no worker (índice + blocos) + ' + Math.round(performance.now() - t1) + ' ms na tela.');
     return result;
   },
   async _searchLegacy(term, maxPerType){
@@ -6275,7 +6336,7 @@ const ServerModule = {
     try{
       // cru e séries: chave [id, b] → tudo de b em diante sobrou
       for(const [st, from] of [[STORES.rawBlocks, nRaw], [STORES.seriesBlocks, nSeries]]){
-        const range = IDBKeyRange.bound([serverId, from], [serverId, []]);
+        const range = IDBKeyRange.bound([serverId, from], [serverId, Infinity]); // só números (o índice de pesquisa [id,'sidx'] fica)
         for(;;){
           if(!live()) return;
           const keys = await IDB.getKeysInRange(st, range, 25);
@@ -11250,6 +11311,11 @@ async function runImportWithProgressModal(servers){
   State.pageCache.clear(); State.dashboardCache = null; State.favoritesCache = null; State.continueCache = null;
   updateSidebarCounts();
   importFullyDone = true;
+  // prepara (e grava) o índice de pesquisa dos servidores novos — a 1ª pesquisa já sai rápida
+  setTimeout(() => {
+    if(State.ui.isImporting) return;
+    SearchIndex.ensure().then(() => { if(PerfMode.isLite() && !activeSearchOverlay) SearchIndex.release(); }).catch(() => {});
+  }, 1000);
 
   // Roda o pré-carregamento de novo, com os dados frescos que acabaram de
   // ser importados — sem isso, a PRIMEIRA vez que você clicasse em
@@ -12844,6 +12910,7 @@ function setupEventListeners(){
 
   qs('#global-search').addEventListener('focus', function(e){
     if(TvNav.isLocked(e.target)) return; // passou pelo campo com o controle: não abre nada
+    GlobalSearchModule.warm(); // já carrega o índice enquanto a pessoa começa a digitar
     const val = e.target.value.trim();
     if(val && !activeSearchOverlay) openSearchPopup(val);
   });
