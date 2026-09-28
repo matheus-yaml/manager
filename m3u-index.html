@@ -43,6 +43,7 @@ button:disabled,input:disabled{opacity:.5}
   <label>conexões <select id="conx"><option value="0">auto</option><option>1</option><option>2</option><option>3</option><option>4</option></select></label>
   <label>lista crua em <select id="cru"><option value="auto">auto (mede o disco)</option><option value="opfs">arquivo</option><option value="idb">banco</option></select></label>
   <button id="btnCalib">Testar disco</button>
+  <button id="btnTesteDel">Testar exclusão</button>
   <label><input type="checkbox" id="comp"> compactar</label>
   <label><input type="checkbox" id="logos"> logos</label>
 </div>
@@ -518,7 +519,7 @@ async function importar(m) {
   await alterarSchema(nome, null);
   // APAGA A LISTA ANTERIOR ANTES DO DOWNLOAD (cenário real), com poucas operações grandes:
   // 1 clear() da tabela crua + 1 delete por faixa nos dados organizados, numa transação só.
-  var tApaga = 0;
+  var tApaga = 0, tApagaDet = '';
   if (antigo) {
     post({ status: 'Apagando a lista anterior' + (antigo.bytes ? ' (' + mb(antigo.bytes) + ')' : '') + '...' });
     var TA = Date.now();
@@ -529,13 +530,14 @@ async function importar(m) {
     txa.objectStore('series').delete(faixa(nome));
     txa.objectStore('listas').delete(nome);
     await txDone(txa);
+    var tTx = Date.now() - TA, TB = Date.now();
     var rootA = await raizOPFS();
     if (rootA) {
       var ksA = []; try { for await (var kA of rootA.keys()) ksA.push(kA); } catch (e) {}
       for (var ia = 0; ia < ksA.length; ia++) if (ksA[ia] === arqCru(nome) || ksA[ia].indexOf(nome + '.') === 0) { try { await rootA.removeEntry(ksA[ia]); } catch (e) {} }
     }
-    tApaga = Date.now() - TA;
-    post({ status: 'Lista anterior apagada em ' + tApaga + ' ms. Conectando...' });
+    tApaga = Date.now() - TA; tApagaDet = 'banco ' + tTx + ' ms · arquivos ' + (Date.now() - TB) + ' ms';
+    post({ status: 'Lista anterior apagada em ' + tApaga + ' ms (' + tApagaDet + '). Conectando...' });
   }
   var gen = ((antigo && antigo.gen) || 0) + 1, OFF = gen * GEN;
   var lixo = [];                                    // tudo da lista anterior já foi apagado acima
@@ -716,7 +718,7 @@ async function importar(m) {
   var meta = { nome: nome, origem: origem, bytes: bytes, blocos_crus: chaves.length, chaves: chaves, data: Date.now(), cru: modo, gen: gen, lixo: lixo };
   var tF = await finalizar(meta, acc, comp);
   var txtLimpa = await limpar();                     // só sobras de importações que falharam (normalmente nada)
-  return (antigo ? 'Lista anterior apagada em ' + tApaga + ' ms (antes do download)\n' : '') +
+  return (antigo ? 'Lista anterior apagada em ' + tApaga + ' ms (antes do download: ' + tApagaDet + ')\n' : '') +
     (txtLimpa ? txtLimpa + '\n' : '') + 'Lista ' + nome + ': ' + mb(bytes) + ' em ' + chaves.length + ' blocos — total ' + seg(Date.now() - t0) +
     ' (download+gravação crua ' + seg(tD) + '; ' + (chaves.length - nd) + ' blocos processados durante o download, ' + nd + ' depois)' +
     (acc.previaEm ? ' — canais disponíveis em ' + seg(acc.previaEm - t0) : '') + '\n' +
@@ -808,6 +810,46 @@ async function marcarLixo(nome, gen) {
   } catch (e) {}
 }
 
+/* ================= 5) TESTE DE EXCLUSÃO: mede, neste aparelho, cada forma de apagar ~90 MB ================= */
+var TESTE_MB = 90;                                  // tamanho do teste (parecido com a lista real)
+async function testeExclusao() {
+  var r = [], blk = new Uint8Array(4 * CH), i, t, n4 = Math.ceil(TESTE_MB / 4), n1 = TESTE_MB;
+  for (i = 0; i < blk.length; i++) blk[i] = 65 + (i % 26);
+  async function enche(dbx, store, tam, n) {
+    var t0 = Date.now();
+    for (var j = 0; j < n; j++) { var tx = dbx.transaction(store, 'readwrite', RW); tx.objectStore(store).put(blk.slice(0, tam), j); await txDone(tx); }
+    return Date.now() - t0;
+  }
+  function med(nome, ms, grav) { r.push(nome + ': ' + ms + ' ms' + (grav ? ' (gravar levou ' + grav + ' ms)' : '')); post({ status: 'Testando exclusão (' + TESTE_MB + ' MB)... ' + r.join(' | ') }); }
+  post({ status: 'Testando exclusão (' + TESTE_MB + ' MB)... gravando dados de teste' });
+  // A) clear() da tabela — valores de 4 MB
+  await alterarSchema('__tx1', null);
+  var g = await enche(db, '__tx1', 4 * CH, n4);
+  t = Date.now(); var tx = db.transaction('__tx1', 'readwrite', RW); tx.objectStore('__tx1').clear(); await txDone(tx); med('clear ' + n4 + '×4 MB', Date.now() - t, g);
+  // B) remover a tabela com os dados dentro (muda a versão do banco)
+  g = await enche(db, '__tx1', 4 * CH, n4);
+  t = Date.now(); await alterarSchema(null, '__tx1'); med('remover tabela ' + n4 + '×4 MB', Date.now() - t, g);
+  // C) clear() da tabela — valores de 1 MB
+  await alterarSchema('__tx2', null);
+  g = await enche(db, '__tx2', CH, n1);
+  t = Date.now(); tx = db.transaction('__tx2', 'readwrite', RW); tx.objectStore('__tx2').clear(); await txDone(tx); med('clear ' + n1 + '×1 MB', Date.now() - t, g);
+  await alterarSchema(null, '__tx2');
+  // D) banco de dados SEPARADO apagado inteiro (deleteDatabase)
+  var aux = await new Promise(function (ok, ko) { var q = indexedDB.open('__tx_db', 1); q.onupgradeneeded = function () { q.result.createObjectStore('cru'); }; q.onsuccess = function () { ok(q.result); }; q.onerror = function () { ko(q.error); }; });
+  g = await enche(aux, 'cru', 4 * CH, n4); aux.close();
+  t = Date.now(); await req(indexedDB.deleteDatabase('__tx_db')); med('apagar banco separado ' + n4 + '×4 MB', Date.now() - t, g);
+  // E) arquivo OPFS
+  var root = await raizOPFS();
+  if (root) {
+    try {
+      var h = await (await root.getFileHandle('__tx.bin', { create: true })).createSyncAccessHandle(), t0 = Date.now();
+      for (i = 0; i < n4; i++) h.write(blk, { at: i * blk.length }); h.flush(); h.close(); g = Date.now() - t0;
+      t = Date.now(); await root.removeEntry('__tx.bin'); med('apagar arquivo ' + (n4 * 4) + ' MB', Date.now() - t, g);
+    } catch (e) { r.push('arquivo: indisponível'); }
+  } else r.push('arquivo: indisponível neste navegador');
+  return 'Teste de exclusão (~' + TESTE_MB + ' MB em cada): ' + r.join(' | ');
+}
+
 /* ================= 4) apagar versões antigas (no fim da importação, na frente do usuário) ================= */
 // apaga uma faixa inteira numa operação só (e, para o formato antigo, as chaves filtradas na mesma transação)
 async function apagaFaixa(store, range, filtro) {
@@ -859,6 +901,7 @@ self.onmessage = async function (ev) {
     else if (m.cmd === 'processar') txt = await processar(m);
     else if (m.cmd === 'excluir') txt = await excluir(m.nome);
     else if (m.cmd === 'limpar') txt = await limpar();
+    else if (m.cmd === 'testeExclusao') { if (!db) db = await open(); txt = await testeExclusao(); }
     else if (m.cmd === 'calibrar') txt = textoCalib(await calibrar());
     if (db) db.close(); db = null;
     post({ fim: true, status: txt });
@@ -952,7 +995,7 @@ function rodarWorker(msg) {
 // resultado da calibração do disco (guardado neste aparelho; se o armazenamento local falhar, mede de novo)
 function lerCalib() { try { var c = JSON.parse(localStorage.getItem('iptv_calib') || 'null'); return c && c.v === 2 && c.melhor ? c : null; } catch (e) { return null; } }
 function salvarCalib(c) { try { localStorage.setItem('iptv_calib', JSON.stringify(c)); } catch (e) {} }
-function setBusy(b) { ['btnUrl', 'btnProc', 'btnDel', 'btnCalib', 'file', 'nw', 'comp', 'cru', 'conx'].forEach(function (id) { $(id).disabled = b; }); }
+function setBusy(b) { ['btnUrl', 'btnProc', 'btnDel', 'btnCalib', 'btnTesteDel', 'file', 'nw', 'comp', 'cru', 'conx'].forEach(function (id) { $(id).disabled = b; }); }
 
 /* ---------- listas ---------- */
 async function carregarListas() {
@@ -1108,6 +1151,7 @@ $('file').onchange = function () {
   rodarWorker({ cmd: 'importar', src: { file: f }, nome: lista });
 };
 $('btnCalib').onclick = function () { rodarWorker({ cmd: 'calibrar' }); };
+$('btnTesteDel').onclick = function () { rodarWorker({ cmd: 'testeExclusao' }); };
 $('btnProc').onclick = function () { if (lista) rodarWorker({ cmd: 'processar', nome: lista }); };
 $('btnDel').onclick = function () {
   if (lista && confirm('Excluir ' + lista + ' (tabela crua e conteúdos)?')) rodarWorker({ cmd: 'excluir', nome: lista });
