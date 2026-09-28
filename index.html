@@ -1829,15 +1829,25 @@ async function blocoPool(db, serverId, bi, texto, keepRaw){
     tx.objectStore(STORES.contentBlocks).put(rows[k], [serverId, k, bi]);
     tx.objectStore(STORES.searchBlocks).put(busca[k].join('\\n'), [serverId, k, bi]);
   }
-  // episódios: um texto só (mesma chave de antes [servidor, 2, bloco]); busca de episódio não existe
-  if(eps.length) tx.objectStore(STORES.contentBlocks).put(eps.join('\\n'), [serverId, 2, bi]);
+  // EPISÓDIOS: em BYTES (UTF-8) e AGRUPADOS — vários blocos numa gravação só de ~4 MB.
+  // O navegador grava valor grande como arquivo separado no disco (com confirmação a cada um):
+  // antes eram ~80 arquivos de 1 MB por lista, e em texto com acento/emoji o navegador ainda
+  // usava 2 bytes por letra. Chave do grupo: [servidor, 3, nº do 1º bloco do grupo].
+  var epG = null;
+  if(eps.length){
+    var u8 = TENC.encode(eps.join('\\n'));
+    if(!EPG || EPG.sid !== serverId) EPG = { sid: serverId, gid: bi, parts: [], idx: [], len: 0 };
+    EPG.idx.push([bi, EPG.len, u8.length]); EPG.parts.push(u8); EPG.len += u8.length;
+    epG = EPG.gid;
+    if(EPG.len >= EPG_MAX){ putGroup(tx, EPG); EPG = null; }
+  }
   var t2 = performance.now();
   rows = busca = eps = null;
   await txDone(tx);
   var t3 = performance.now();
   // O resumo vai por postMessage (cópia) — nada daqui fica preso no worker.
   return {
-    i: bi, cnt: cnt,
+    i: bi, cnt: cnt, epG: epG,
     ms: [t1 - t0, t2 - t1, t3 - t2], // interpretar • preparar gravação (cópia dos dados) • esperar o banco gravar
     grupos: grupos.map(function(g){ return Array.from(g.entries()); }),
     series: Array.from(series.values())
@@ -1845,8 +1855,27 @@ async function blocoPool(db, serverId, bi, texto, keepRaw){
 }
 
 var poolDb = null;
+var TENC = new TextEncoder(), EPG = null, EPG_MAX = 4 * 1024 * 1024;
+function putGroup(tx, g){
+  var d = new Uint8Array(g.len), o = 0;
+  for(var i = 0; i < g.parts.length; i++){ d.set(g.parts[i], o); o += g.parts[i].length; }
+  tx.objectStore(STORES.contentBlocks).put({ i: g.idx, d: d }, [g.sid, 3, g.gid]);
+  g.parts = null;
+}
 self.onmessage = async function(ev){
   var m = ev.data;
+  if(m.cmd === 'flush'){ // fim da importação: grava o grupo de episódios que ficou aberto
+    try{
+      if(EPG){
+        if(!poolDb) poolDb = await openDB();
+        var ftx = poolDb.transaction([STORES.contentBlocks], 'readwrite', RW);
+        putGroup(ftx, EPG); EPG = null;
+        await txDone(ftx);
+      }
+      self.postMessage({ pool: true, flushed: true });
+    }catch(err){ self.postMessage({ pool: true, flushed: true, error: String(err && err.message || err) }); }
+    return;
+  }
   if(m.cmd === 'bloco'){
     try{
       if(!poolDb) poolDb = await openDB();
@@ -1907,6 +1936,7 @@ self.onmessage = async function(ev){
       w.onmessage = (e) => {
         const d = e.data;
         if(!d || !d.pool) return;
+        if(d.flushed){ if(d.error) error = error || new Error(d.error); if(w._onFlushed){ const f = w._onFlushed; w._onFlushed = null; f(); } return; }
         active--;
         if(d.ok){ try{ onResult(d.r); }catch(err){ error = error || err; } }
         else error = error || new Error(d.error || 'Erro no worker de processamento.');
@@ -1939,6 +1969,8 @@ self.onmessage = async function(ev){
           await new Promise(r => { onIdle = r; });
           onIdle = null;
         }
+        // grava o último grupo de episódios de cada worker antes de encerrar
+        await Promise.all(workers.map(w => new Promise(res => { w._onFlushed = res; w.postMessage({ cmd: 'flush' }); })));
         workers.forEach(w => w.terminate()); // devolve a memória dos workers pro sistema
         workers = free = null; queue = [];
         URL.revokeObjectURL(blobUrl);
@@ -4814,7 +4846,7 @@ function blockKeys(srv, t){
 const QueryModule = {
   // seriesKey -> resumo da série (cache só de leitura; limpo a cada import/exclusão)
   _seriesCache: new Map(),
-  invalidateCaches(){ this._seriesCache.clear(); this._seriesCountCache.clear(); this._epCache.clear(); try{ GlobalSearchModule.invalidate(); }catch(e){} },
+  invalidateCaches(){ this._seriesCache.clear(); this._seriesCountCache.clear(); this._epCache.clear(); this._epGroup = null; try{ GlobalSearchModule.invalidate(); }catch(e){} },
 
   /** Bloco de EPISÓDIOS [servidor, 2, b] como lista de tuplas (mesmo formato de sempre:
    * id, nome, categoria, url, capa, série, temporada, episódio). Importação nova grava
@@ -4826,8 +4858,20 @@ const QueryModule = {
     const ck = serverId + '|' + b;
     const hit = this._epCache.get(ck);
     if(hit){ this._epCache.delete(ck); this._epCache.set(ck, hit); return hit; }
-    const v = await IDB.getByKey(STORES.contentBlocks, [serverId, 2, b]);
-    if(typeof v !== 'string') return v || null;
+    let v;
+    const srv = State.servers.get(serverId), gid = srv && srv.epMap ? srv.epMap[b] : undefined;
+    if(gid !== undefined){
+      // formato novo: episódios em bytes dentro de um grupo [id, 3, g] (guarda o último grupo lido)
+      const gk = serverId + '|' + gid;
+      let g = this._epGroup && this._epGroup.k === gk ? this._epGroup.v : null;
+      if(!g){ g = await IDB.getByKey(STORES.contentBlocks, [serverId, 3, gid]); this._epGroup = { k: gk, v: g }; }
+      const ent = g && g.i ? g.i.find(e => e[0] === b) : null;
+      if(!ent) return null;
+      v = (this._td || (this._td = new TextDecoder('utf-8'))).decode(g.d.subarray(ent[1], ent[1] + ent[2]));
+    } else {
+      v = await IDB.getByKey(STORES.contentBlocks, [serverId, 2, b]);
+      if(typeof v !== 'string') return v || null;
+    }
     const pre = serverId + '::', out = [];
     const linhas = v.split('\n');
     for(let i = 0; i < linhas.length; i++){
@@ -6139,449 +6183,6 @@ function resolveContentName(content, seriesName){
 /* ======================================================================
    SERVER MODULE
    ====================================================================== */
-/* ======================================================================
-   DOWNLOAD DA LISTA (núcleo) — roda na tela OU dentro de um worker
-   ------------------------------------------------------------------
-   Mesmo código nos dois lugares (o worker recebe listDownloadCore.toString()).
-   Não usa nada do app: tudo que precisa vem em `ctx` (url, limites e funções
-   de volta: stage, headers, firstData, sendBlock, progress, log, retryUI,
-   cleanBeforeRetry, netBackAt, whenUp).
-   - 1ª conexão (ou a pré-conexão já aberta em ctx.pre) → cabeçalho em até 7 s.
-   - Tamanho conhecido/estimado → divide em K faixas ("Range"), cada uma numa
-     conexão; servidor que não aceita → segue com 1.
-   - Cada faixa guarda os pedaços recebidos numa LISTA (sem copiar) e corta
-     blocos de ~1 MB antes de "\n#EXTINF" procurando com indexOf nativo; cada
-     bloco é montado com UMA cópia (buffer próprio → vai pro worker sem cópia).
-   - Chave do bloco: k*100000 + j; costura entre faixas: k*100000 + 99999.
-   ====================================================================== */
-async function listDownloadCore(ctx){
-  var CH = ctx.CH, url = ctx.url;
-  function isRetryable(err){
-    if(!err) return false;
-    if(err.status) return err.status >= 500 || err.status === 408 || err.status === 429;
-    if(err instanceof TypeError) return true;
-    return /network|failed to fetch|load failed|net::|err_|timeout|timed out|conex|socket|reset/i.test(String(err.message || err));
-  }
-  function fmtMB(b){ return (b / 1048576).toFixed(2) + ' MB'; }
-  var now = function(){ return (typeof performance !== 'undefined' ? performance.now() : Date.now()); };
-
-  // ---------- 1ª conexão ----------
-  var response = null, tReq = now(), fromPre = false;
-  ctx.stage('Conectando ao servidor...');
-  if(ctx.pre){
-    try{ response = await ctx.pre; }catch(e){ response = null; }
-    if(response && (!response.ok || !response.body)){ try{ response.body && response.body.cancel(); }catch(e){} response = null; }
-    if(response) fromPre = true;
-  }
-  if(!response){
-    var hctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
-    var htimer = hctl ? setTimeout(function(){ try{ hctl.abort(); }catch(e){} }, 7000) : null;
-    try{ response = await fetch(url, { cache: 'no-store', signal: hctl ? hctl.signal : undefined }); }
-    catch(fe){ clearTimeout(htimer); if(fe && fe.name === 'AbortError') throw new TypeError('network: o servidor não respondeu em 7s'); throw fe; }
-    clearTimeout(htimer);
-  }
-  ctx.headers({ ms: Math.round(now() - tReq), ok: response.ok, status: response.status, fromPre: fromPre });
-  if(!response.ok){ var herr = new Error('HTTP ' + response.status); herr.status = response.status; throw herr; }
-  ctx.stage('Servidor montando a lista...');
-
-  var totalBytes = parseInt(response.headers.get('Content-Length'), 10) || null;
-  var estBytes = ctx.estBytes || null;
-  var tNet = 0, tWaitPool = 0, n = 0, bytes = 0, firstData = false;
-
-  // ---------- busca de "\n#EXTINF" numa lista de pedaços ----------
-  var PAT = [10, 35, 69, 88, 84, 73, 78, 70];
-  // seg.parts: Uint8Array[]; seg.len: total. Posição global g → (parte, deslocamento)
-  function locate(seg, g){
-    var parts = seg.parts, off = 0;
-    for(var i = 0; i < parts.length; i++){ var L = parts[i].length; if(g < off + L) return [i, g - off]; off += L; }
-    return null;
-  }
-  function byteAt(seg, g){ var p = locate(seg, g); return p ? seg.parts[p[0]][p[1]] : -1; }
-  function matchAt(seg, g){ // g = posição do '\n'
-    if(g < 0 || g + 8 > seg.len) return false;
-    var p = locate(seg, g); if(!p) return false;
-    var pi = p[0], o = p[1];
-    for(var q = 0; q < 8; q++){
-      var part = seg.parts[pi];
-      if(o >= part.length){ pi++; o = 0; part = seg.parts[pi]; if(!part) return false; }
-      if(part[o] !== PAT[q]) return false;
-      o++;
-    }
-    return true;
-  }
-  // último corte em [1, min(lim, len-8)]; senão o 1º em [lim+1, len-8]; -1 = nenhum
-  function findCut(seg, lim){
-    var hi = Math.min(lim, seg.len - 8);
-    // para trás: procura '#' (35) com indexOf nativo em cada parte; o '\n' fica em g-1
-    if(hi >= 1){
-      var starts = [], off = 0;
-      for(var i = 0; i < seg.parts.length; i++){ starts.push(off); off += seg.parts[i].length; }
-      for(var pi = seg.parts.length - 1; pi >= 0; pi--){
-        var st = starts[pi], part = seg.parts[pi];
-        if(st > hi + 1) continue;
-        var j = Math.min(part.length - 1, hi + 1 - st);
-        while(j >= 0){
-          j = part.lastIndexOf(35, j); if(j < 0) break;
-          var c = st + j - 1;
-          if(c >= 1 && c <= hi && matchAt(seg, c)) return c;
-          j--;
-        }
-      }
-    }
-    return findFrom(seg, lim + 1, seg.len - 8);
-  }
-  function findFrom(seg, from, hi){ // 1º corte em [from, hi]
-    if(from > hi) return -1;
-    var off = 0;
-    for(var pi = 0; pi < seg.parts.length; pi++){
-      var part = seg.parts[pi], st = off; off += part.length;
-      if(off <= from) continue;
-      var j = Math.max(0, from + 1 - st);
-      while(j < part.length){
-        j = part.indexOf(35, j); if(j < 0) break;
-        var c = st + j - 1;
-        if(c > hi) return -1;
-        if(c >= from && matchAt(seg, c)) return c;
-        j++;
-      }
-    }
-    return -1;
-  }
-  // tira os primeiros `cnt` bytes da lista num Uint8Array próprio (1 cópia)
-  function take(seg, cnt){
-    var out = new Uint8Array(cnt), w = 0;
-    while(w < cnt){
-      var part = seg.parts[0], need = cnt - w;
-      if(part.length <= need){ out.set(part, w); w += part.length; seg.parts.shift(); }
-      else { out.set(part.subarray(0, need), w); seg.parts[0] = part.subarray(need); w += need; }
-    }
-    seg.len -= cnt;
-    return out;
-  }
-  function concat(a, b){ if(!a || !a.length) return b; if(!b || !b.length) return a; var r = new Uint8Array(a.length + b.length); r.set(a, 0); r.set(b, a.length); return r; }
-  async function sendBlock(key, u8){
-    n++;
-    var tw = now();
-    await ctx.sendBlock(key, u8);
-    tWaitPool += now() - tw;
-  }
-
-  // ---------- plano das faixas ----------
-  var conns = Math.max(1, Math.min(6, ctx.conns || 1));
-  var sizeKnown = totalBytes || estBytes || 0;
-  // 1ª vez (tamanho desconhecido): pergunta o tamanho com 1 byte ("Range: bytes=0-0")
-  if(!sizeKnown && conns > 1 && response.body && response.body.getReader){
-    var pc = typeof AbortController !== 'undefined' ? new AbortController() : null;
-    var pt = pc ? setTimeout(function(){ try{ pc.abort(); }catch(e){} }, 7000) : null;
-    try{
-      var pr = await fetch(url, { cache: 'no-store', signal: pc ? pc.signal : undefined, headers: { 'Range': 'bytes=0-0' } });
-      var pm = /^bytes\s+0-0\/(\d+)/i.exec(pr.headers.get('Content-Range') || '');
-      try{ pr.body && pr.body.cancel && pr.body.cancel(); }catch(e){}
-      if(pr.status === 206 && pm && +pm[1] > 0){ totalBytes = +pm[1]; sizeKnown = totalBytes; }
-    }catch(e){}
-    clearTimeout(pt);
-  }
-  var K = (conns > 1 && sizeKnown >= 8 * CH && response.body && response.body.getReader) ? Math.min(conns, Math.floor(sizeKnown / (4 * CH))) : 1;
-  var bounds = []; for(var bk = 0; bk < K; bk++) bounds.push(Math.floor(sizeKnown * bk / K));
-  var effK = K;
-  function mkSeg(k){
-    return { k: k, start: K > 1 ? bounds[k] : 0, end: (K > 1 && k < K - 1) ? bounds[k + 1] : null,
-      got: 0, parts: [], len: 0, j: 0, head: k === 0 ? new Uint8Array(0) : null, done: false,
-      reader: null, reading: false, readStart: 0, stallWhy: null, overflow: [] };
-  }
-  var segs = [], seams = new Map();
-  async function trySeam(k){
-    var s = seams.get(k);
-    if(!s || s.tail == null || s.head == null || s.sent) return;
-    s.sent = true;
-    var u = concat(s.tail, s.head);
-    if(u.length) await sendBlock(k * 100000 + 99999, u);
-  }
-  async function feed(seg, v){
-    if(v.length){ seg.parts.push(v); seg.len += v.length; }
-    if(seg.head === null){ // faixa k>0: o começo (até o 1º "\n#EXTINF") vai pra costura
-      var p = findFrom(seg, 0, seg.len - 8);
-      if(p < 0){ if(seg.len > 4 * CH) throw new Error('faixa ' + seg.k + ' sem entrada M3U'); return; }
-      seg.head = take(seg, p + 1);
-      var sm = seams.get(seg.k - 1) || {}; sm.head = seg.head; seams.set(seg.k - 1, sm);
-      await trySeam(seg.k - 1);
-    }
-    while(seg.len >= CH){
-      var cut = findCut(seg, CH);
-      if(cut < 0) break;
-      var bl = take(seg, cut + 1);
-      await sendBlock(seg.k * 100000 + seg.j++, bl);
-    }
-  }
-  async function finishSeg(seg){
-    if(seg.done) return; seg.done = true;
-    var rest = seg.len ? take(seg, seg.len) : new Uint8Array(0);
-    seg.parts = [];
-    if(seg.head === null){
-      seg.head = rest; var sm0 = seams.get(seg.k - 1) || {}; sm0.head = rest; seams.set(seg.k - 1, sm0); await trySeam(seg.k - 1);
-      if(seg.k < effK - 1){ var s2 = seams.get(seg.k) || {}; s2.tail = new Uint8Array(0); seams.set(seg.k, s2); await trySeam(seg.k); }
-      return;
-    }
-    if(seg.k < effK - 1){ var sm = seams.get(seg.k) || {}; sm.tail = rest; seams.set(seg.k, sm); await trySeam(seg.k); }
-    else if(rest.length || n === 0) await sendBlock(seg.k * 100000 + seg.j++, rest);
-  }
-
-  // ---------- conexão caiu no meio: continua a faixa de onde parou ----------
-  var etag0 = response.headers.get('ETag'), lastMod0 = response.headers.get('Last-Modified');
-  var RESUMES = ctx.RESUMES, RESUME_WAIT_S = ctx.RESUME_WAIT_S, resumes = 0;
-  async function tryResume(seg, origErr){
-    if(!isRetryable(origErr) || resumes >= RESUMES || (K === 1 && bytes === 0)) return null;
-    resumes++;
-    var pos = seg.start + seg.got;
-    var why = origErr && (origErr.message || String(origErr));
-    ctx.log('Rede: "' + ctx.name + '" caiu em ' + fmtMB(bytes) + (K > 1 ? ' (parte ' + (seg.k + 1) + '/' + K + ')' : '') + ' (' + why + ') — tentando continuar de onde parou (' + resumes + '/' + RESUMES + ') em ' + RESUME_WAIT_S + 's.', true);
-    ctx.cleanBeforeRetry();
-    await ctx.whenUp(60000);
-    var t0r = Date.now() - 8000;
-    for(var sLeft = RESUME_WAIT_S; sLeft > 0; sLeft--){
-      if(ctx.netBackAt() > t0r) break;
-      ctx.retryUI({ downloaded: bytes, total: totalBytes, retryIn: sLeft, retryAttempt: resumes, retryMax: RESUMES, retryWhy: String(why) });
-      await new Promise(function(res){ setTimeout(res, 1000); });
-    }
-    var r2;
-    try{ r2 = await fetch(url, { cache: 'no-store', headers: { 'Range': 'bytes=' + pos + '-' + (seg.end != null ? seg.end - 1 : '') } }); }
-    catch(e){ return tryResume(seg, e); }
-    var cr = r2.headers.get('Content-Range') || '';
-    var m = /^bytes\s+(\d+)-\d+\/(\d+|\*)/i.exec(cr);
-    var sameFile = (!etag0 || !r2.headers.get('ETag') || r2.headers.get('ETag') === etag0) &&
-                   (!lastMod0 || !r2.headers.get('Last-Modified') || r2.headers.get('Last-Modified') === lastMod0) &&
-                   (!totalBytes || !m || m[2] === '*' || +m[2] === totalBytes);
-    if(r2.status === 206 && m && +m[1] === pos && sameFile && r2.body && r2.body.getReader){
-      ctx.log('Rede: "' + ctx.name + '" continuou do byte ' + pos + ' (' + fmtMB(bytes) + ' aproveitados).');
-      return r2.body.getReader();
-    }
-    try{ r2.body && r2.body.cancel && r2.body.cancel(); }catch(e){}
-    ctx.log('Rede: o servidor de "' + ctx.name + '" não permite continuar (' + (r2.status === 200 ? 'mandou a lista inteira de novo' : 'HTTP ' + r2.status) + ') — recomeçando do zero.', true);
-    return null;
-  }
-  var STALL_MS = ctx.STALL_MS;
-  var watch = setInterval(function(){ // 1 cronômetro só: confere 1x/s se alguma faixa parou
-    for(var i = 0; i < segs.length; i++){
-      var seg = segs[i];
-      if(!seg.reading || seg.stallWhy) continue;
-      var idle = Date.now() - seg.readStart;
-      if(idle > STALL_MS) seg.stallWhy = 'download parado há ' + Math.round(STALL_MS / 1000) + 's (conexão morta)';
-      else if(ctx.netBackAt() > seg.readStart && idle > 3000) seg.stallWhy = 'a rede caiu e voltou — reconectando';
-      if(seg.stallWhy){ try{ seg.reader.cancel(); }catch(e){} }
-    }
-  }, 1000);
-  var decided = K === 1;
-  async function takeOverflow(seg){ var ov = seg.overflow; seg.overflow = []; for(var i = 0; i < ov.length; i++){ seg.got += ov[i].length; bytes += ov[i].length; await feed(seg, ov[i]); } }
-  async function runSeg(seg){
-    for(;;){
-      if(seg.overflow.length && seg.end == null) await takeOverflow(seg);
-      var tr = now(), chunk;
-      try{
-        seg.reading = true; seg.readStart = Date.now();
-        chunk = await seg.reader.read();
-        seg.reading = false;
-        if(seg.stallWhy){ var w = seg.stallWhy; seg.stallWhy = null; throw new TypeError('network: ' + w); }
-      }catch(readErr){
-        seg.reading = false; seg.stallWhy = null;
-        if(seg.cancelled) return;
-        var r2 = await tryResume(seg, readErr);
-        if(!r2) throw readErr;
-        seg.reader = r2;
-        continue;
-      }
-      var done = chunk.done, value = chunk.value;
-      if(K === 1) tNet += now() - tr;
-      if(!firstData && value){ firstData = true; ctx.firstData(); }
-      if(done) break;
-      if(seg.end != null){
-        var room = seg.end - (seg.start + seg.got);
-        if(value.length > room){
-          if(seg.k === 0 && !decided){ seg.overflow.push(value.slice(Math.max(0, room))); value = value.subarray(0, Math.max(0, room)); }
-          else value = value.subarray(0, Math.max(0, room));
-        }
-      }
-      seg.got += value.length; bytes += value.length;
-      if(value.length) await feed(seg, value);
-      ctx.progress(bytes, totalBytes);
-      if(seg.end != null && seg.start + seg.got >= seg.end){
-        if(seg.k === 0 && !decided){
-          await seg.decision;
-          if(seg.end == null){ await takeOverflow(seg); continue; }
-        }
-        try{ seg.reader.cancel(); }catch(e){}
-        break;
-      }
-    }
-    if(seg.k === 0 && !decided){ await seg.decision; if(seg.end == null) await takeOverflow(seg); }
-    await finishSeg(seg);
-  }
-
-  var tDl0 = now();
-  try{
-    if(response.body && response.body.getReader){
-      var s0 = mkSeg(0); s0.reader = response.body.getReader(); segs.push(s0);
-      if(K > 1){
-        var resolveDecision; s0.decision = new Promise(function(r){ resolveDecision = r; });
-        var extras = [], opens = [];
-        for(var k = 1; k < K; k++){
-          (function(seg){
-            extras.push(seg);
-            var ctl = typeof AbortController !== 'undefined' ? new AbortController() : null; seg.ctl = ctl;
-            var to = ctl ? setTimeout(function(){ try{ ctl.abort(); }catch(e){} }, 7000) : null;
-            opens.push(fetch(url, { cache: 'no-store', signal: ctl ? ctl.signal : undefined,
-              headers: { 'Range': 'bytes=' + seg.start + '-' + (seg.end != null ? seg.end - 1 : '') } })
-              .then(function(r){ clearTimeout(to); seg.resp = r; })
-              .catch(function(e){ clearTimeout(to); seg.openErr = e; }));
-          })(mkSeg(k));
-        }
-        var run0 = runSeg(s0);
-        await Promise.all(opens);
-        var totals = new Set(), bad = null;
-        for(var x = 0; x < extras.length; x++){
-          var sg = extras[x];
-          if(sg.openErr){ bad = 'erro ao abrir (' + (sg.openErr.message || sg.openErr) + ')'; break; }
-          var crh = sg.resp.headers.get('Content-Range') || '';
-          var mm = /^bytes\s+(\d+)-\d+\/(\d+|\*)/i.exec(crh);
-          if(sg.resp.status !== 206 || !mm || +mm[1] !== sg.start || !sg.resp.body){ bad = 'HTTP ' + sg.resp.status + (crh ? ' ' + crh : ''); break; }
-          if(mm[2] !== '*') totals.add(+mm[2]);
-        }
-        if(!bad && totalBytes && totals.size && !totals.has(totalBytes)) bad = 'tamanho diferente entre as conexões';
-        if(!bad && totals.size > 1) bad = 'tamanho diferente entre as conexões';
-        if(bad){
-          for(var y = 0; y < extras.length; y++){ try{ extras[y].resp && extras[y].resp.body && extras[y].resp.body.cancel(); }catch(e){} }
-          ctx.log('⚡ "' + ctx.name + '": download em ' + K + ' partes não aceito pelo servidor (' + bad + ') — seguindo com 1 conexão.');
-          s0.end = null; effK = 1; decided = true;
-          resolveDecision();
-          await run0;
-        } else {
-          if(!totalBytes && totals.size === 1) totalBytes = Array.from(totals)[0];
-          ctx.log('⚡ "' + ctx.name + '": baixando em ' + K + ' partes ao mesmo tempo (' + fmtMB(totalBytes || sizeKnown) + (totalBytes ? '' : ' estimado') + ').');
-          decided = true; s0.overflow = []; resolveDecision();
-          for(var z = 0; z < extras.length; z++){ extras[z].reader = extras[z].resp.body.getReader(); extras[z].resp = null; segs.push(extras[z]); }
-          var all = [run0].concat(extras.map(function(s){ return runSeg(s); }));
-          try{ await Promise.all(all); }
-          catch(e){
-            for(var q = 0; q < segs.length; q++){ segs[q].cancelled = true; try{ segs[q].reader.cancel(); }catch(_){} }
-            await Promise.all(all.map(function(p){ return p.catch(function(){}); }));
-            throw e;
-          }
-        }
-      } else {
-        await runSeg(s0);
-      }
-    } else {
-      var u = new TextEncoder().encode(await response.text());
-      var s1 = mkSeg(0); segs.push(s1);
-      s1.got = u.length; bytes = u.length;
-      if(!firstData){ firstData = true; ctx.firstData(); }
-      await feed(s1, u); await finishSeg(s1);
-    }
-  } finally { clearInterval(watch); }
-  if(K > 1) tNet = Math.max(0, now() - tDl0 - tWaitPool);
-  return { bytes: bytes, n: n, totalBytes: totalBytes, tNet: tNet, tWaitPool: tWaitPool, K: K, effK: effK };
-}
-
-/* Casca do worker de download: recebe a config, roda listDownloadCore e conversa
-   com a tela por mensagens (blocos transferidos sem cópia, com "créditos" pra não
-   passar da capacidade do processamento — sem crédito, para de ler a rede). */
-function dlWorkerMain(){
-  var st = { lostAt: 0, backAt: 0 }, credits = 0, waiters = [], opened = null, lastProg = 0;
-  function post(m, tr){ self.postMessage(m, tr || []); }
-  self.onmessage = async function(ev){
-    var m = ev.data;
-    if(m.cmd === 'net'){ st.lostAt = m.lostAt; st.backAt = m.backAt; return; }
-    if(m.cmd === 'ack'){ credits++; var w = waiters.shift(); if(w) w(); return; }
-    if(m.cmd === 'open'){ // pré-conexão: abre e segura (não lê o corpo)
-      var ctl = new AbortController(), t0 = Date.now();
-      var to = setTimeout(function(){ try{ ctl.abort(); }catch(e){} }, 30000);
-      opened = fetch(m.url, { cache: 'no-store', signal: ctl.signal })
-        .then(function(r){ clearTimeout(to); post({ type: 'preopen', ok: r.ok, status: r.status, ms: Date.now() - t0 }); return r; })
-        .catch(function(e){ clearTimeout(to); post({ type: 'preopen', ok: false, error: String(e && e.message || e), ms: Date.now() - t0 }); return null; });
-      return;
-    }
-    if(m.cmd !== 'start') return;
-    credits = m.credits;
-    var c = m.cfg, gotHeaders = false;
-    var ctx = {
-      url: c.url, name: c.name, CH: c.CH, conns: c.conns, estBytes: c.estBytes,
-      RESUMES: c.RESUMES, RESUME_WAIT_S: c.RESUME_WAIT_S, STALL_MS: c.STALL_MS, pre: opened,
-      stage: function(t){ post({ type: 'stage', t: t }); },
-      headers: function(h){ gotHeaders = true; post({ type: 'headers', h: h }); },
-      firstData: function(){ post({ type: 'first' }); },
-      sendBlock: async function(key, u8){
-        while(credits <= 0) await new Promise(function(r){ waiters.push(r); });
-        credits--;
-        post({ type: 'block', key: key, u8: u8 }, u8.byteLength ? [u8.buffer] : []);
-      },
-      progress: function(b, t){ var n = Date.now(); if(n - lastProg < 200) return; lastProg = n; post({ type: 'progress', b: b, t: t }); },
-      log: function(t, w){ post({ type: 'log', t: t, w: !!w }); },
-      retryUI: function(p){ post({ type: 'retry', p: p }); },
-      cleanBeforeRetry: function(){ post({ type: 'clean' }); },
-      netBackAt: function(){ return st.backAt; },
-      whenUp: async function(max){ var t0 = Date.now(); while(st.lostAt > st.backAt && Date.now() - t0 < max) await new Promise(function(r){ setTimeout(r, 500); }); }
-    };
-    try{
-      var r = await listDownloadCore(ctx);
-      post({ type: 'done', r: r });
-    }catch(e){
-      post({ type: 'error', message: String(e && e.message || e), status: (e && e.status) || 0, isType: e instanceof TypeError, beforeHeaders: !gotHeaders });
-    }
-  };
-}
-
-const DLWorker = {
-  _src: null,
-  available(){ return typeof Worker !== 'undefined' && typeof Blob !== 'undefined'; },
-  create(){
-    if(!this._src) this._src = listDownloadCore.toString() + '\n(' + dlWorkerMain.toString() + ')();';
-    const url = URL.createObjectURL(new Blob([this._src], { type: 'application/javascript' }));
-    const w = new Worker(url);
-    w._blobUrl = url;
-    return w;
-  },
-  kill(w){ try{ w.terminate(); }catch(e){} try{ URL.revokeObjectURL(w._blobUrl); }catch(e){} },
-  /** Roda o download no worker `w` (novo ou o da pré-conexão). ctx = mesmas funções do modo tela. */
-  run(w, ctx, credits){
-    return new Promise((resolve, reject) => {
-      const sendNet = () => { try{ w.postMessage({ cmd: 'net', lostAt: NetEvents.lostAt, backAt: NetEvents.backAt }); }catch(e){} };
-      const netIv = setInterval(sendNet, 1000); sendNet();
-      let finished = false;
-      const end = () => { finished = true; clearInterval(netIv); DLWorker.kill(w); };
-      w.onmessage = (ev) => {
-        const m = ev.data;
-        if(finished) return;
-        switch(m.type){
-          case 'stage': ctx.stage(m.t); break;
-          case 'headers': ctx.headers(m.h); break;
-          case 'first': ctx.firstData(); break;
-          case 'block':
-            Promise.resolve(ctx.sendBlock(m.key, m.u8)).then(() => { if(!finished) w.postMessage({ cmd: 'ack' }); }, (e) => { end(); reject(e); });
-            break;
-          case 'progress': ctx.progress(m.b, m.t); break;
-          case 'log': ctx.log(m.t, m.w); break;
-          case 'retry': ctx.retryUI(m.p); break;
-          case 'clean': ctx.cleanBeforeRetry(); break;
-          case 'preopen': break;
-          case 'done': end(); resolve(m.r); break;
-          case 'error': {
-            end();
-            const err = m.isType ? new TypeError(m.message) : new Error(m.message);
-            if(m.status) err.status = m.status;
-            err.beforeHeaders = m.beforeHeaders;
-            reject(err);
-            break;
-          }
-        }
-      };
-      w.onerror = (e) => { if(finished) return; end(); const err = new TypeError('worker de download: ' + (e && e.message || 'falhou')); err.beforeHeaders = true; err.workerCrash = true; reject(err); };
-      w.postMessage({ cmd: 'start', credits, cfg: {
-        url: ctx.url, name: ctx.name, CH: ctx.CH, conns: ctx.conns, estBytes: ctx.estBytes,
-        RESUMES: ctx.RESUMES, RESUME_WAIT_S: ctx.RESUME_WAIT_S, STALL_MS: ctx.STALL_MS
-      } });
-    });
-  }
-};
-
 const ServerModule = {
 
   async loadAllFromDB(){
@@ -6821,66 +6422,10 @@ const ServerModule = {
   },
 
   _importGen: {},
-  /* ---- download em segundo plano (worker) ---- */
-  _dlSetting(){ return ((State.settings && State.settings.performance) || {}).dlWorker || 'auto'; },
-  _dlAuto(){ return this._dlSetting() === 'auto'; },
-  _dlFlag(v){ try{ if(v === undefined) return localStorage.getItem('sm_dl_worker'); localStorage.setItem('sm_dl_worker', v); }catch(e){ return null; } },
-  dlMode(){
-    const s = this._dlSetting();
-    if(s === 'off' || !DLWorker.available()) return 'main';
-    if(s === 'on') return 'worker';
-    return this._dlFlag() === 'no' ? 'main' : 'worker';
-  },
-  /* ---- pré-conexão do PRÓXIMO servidor da fila ----
-     O servidor IPTV demora de 3 a 15 s pra começar a mandar a lista ("montando a lista").
-     Com 1 servidor por vez isso somava pra cada um. Perto do fim do atual, já abre a
-     conexão do próximo (sem ler o corpo); quando chega a vez dele, usa essa conexão. */
-  _prefetch: new Map(),
-  prefetchOn(){ return ((State.settings && State.settings.performance) || {}).prefetchNext !== false; },
-  prefetchStart(server){
-    if(!server || !this.prefetchOn() || this._prefetch.has(server.id)) return;
-    const mode = this.dlMode(), e = { id: server.id, url: server.url, mode, t0: Date.now() };
-    if(mode === 'worker'){
-      try{ e.w = DLWorker.create(); e.w.onmessage = (ev) => { const m = ev.data; if(m && m.type === 'preopen') pushDebugLog('⚡ Pré-conexão de "' + server.nome + '" ' + (m.ok ? 'respondeu em ' + m.ms + ' ms' : 'falhou (' + (m.error || ('HTTP ' + m.status)) + ') — vai conectar normalmente') + '.', !m.ok); }; e.w.postMessage({ cmd: 'open', url: server.url }); }
-      catch(err){ return; }
-    } else {
-      const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
-      const to = ctl ? setTimeout(() => { try{ ctl.abort(); }catch(x){} }, 30000) : null;
-      e.ctl = ctl;
-      e.p = fetch(server.url, { cache: 'no-store', signal: ctl ? ctl.signal : undefined })
-        .then((r) => { clearTimeout(to); pushDebugLog('⚡ Pré-conexão de "' + server.nome + '" respondeu em ' + (Date.now() - e.t0) + ' ms.'); return r; })
-        .catch((err) => { clearTimeout(to); pushDebugLog('⚡ Pré-conexão de "' + server.nome + '" falhou (' + (err && err.message || err) + ') — vai conectar normalmente.', true); return null; });
-    }
-    this._prefetch.set(server.id, e);
-    pushDebugLog('⚡ Pré-conexão de "' + server.nome + '" aberta (próximo da fila).');
-  },
-  prefetchTake(server){
-    const e = this._prefetch.get(server.id);
-    if(!e) return null;
-    this._prefetch.delete(server.id);
-    if(e.url !== server.url || Date.now() - e.t0 > 90000){ this._prefetchKill(e); return null; }
-    pushDebugLog('⚡ "' + server.nome + '": usando a pré-conexão (aberta há ' + Math.round((Date.now() - e.t0) / 1000) + 's).');
-    return e;
-  },
-  _prefetchKill(e){
-    if(!e) return;
-    if(e.w) DLWorker.kill(e.w);
-    if(e.ctl){ try{ e.ctl.abort(); }catch(x){} }
-    if(e.p) e.p.then((r) => { try{ r && r.body && r.body.cancel(); }catch(x){} });
-  },
-  prefetchCancel(exceptId){
-    for(const [id, e] of Array.from(this._prefetch)){ if(id === exceptId) continue; this._prefetch.delete(id); this._prefetchKill(e); }
-  },
-  _sameAccount(a, b){
-    try{
-      const ua = new URL(a.url), ub = new URL(b.url);
-      return ua.host === ub.host && (ua.searchParams.get('username') || '') === (ub.searchParams.get('username') || '');
-    }catch(e){ return false; }
-  },
   /** Apaga, aos poucos e em segundo plano, os blocos do import anterior que o novo
    * não sobrescreveu (lista ficou menor ou um bloco não tem mais aquele tipo).
    * Para se o servidor for importado de novo no meio (gen mudou). */
-  async _trimStale(serverId, gen, nRaw, nSeries, blocosIdx){
+  async _trimStale(serverId, gen, nRaw, nSeries, blocosIdx, epGroups){
     const live = () => this._importGen[serverId] === gen;
     const t0 = performance.now(); let del = 0;
     const pause = () => new Promise(r => setTimeout(r, (typeof PlayerModule !== 'undefined' && PlayerModule.currentContent) ? 120 : 15));
@@ -6897,10 +6442,11 @@ const ServerModule = {
         }
       }
       // prontos e busca: chave [id, tipo, b] → sobra = b que não está na lista nova daquele tipo
-      for(let t = 0; t < 3; t++){
+      for(let t = 0; t < 4; t++){
         for(const st of [STORES.contentBlocks, STORES.searchBlocks]){
-          // episódio não tem mais bloco de busca: qualquer um que exista é sobra
-          const keep = (t === 2 && st === STORES.searchBlocks) ? new Set() : new Set(blocosIdx[t]);
+          // episódios: agora só em grupos [id, 3, g] — blocos [id, 2, b] (formato antigo) e busca de episódio são sobra
+          const keep = t === 3 ? (st === STORES.contentBlocks ? (epGroups || new Set()) : new Set())
+                     : t === 2 ? new Set() : new Set(blocosIdx[t]);
           if(!live()) return;
           const keys = await IDB.getKeysInRange(st, IDBKeyRange.bound([serverId, t], [serverId, t, []]));
           const stale = keys.filter(k => !keep.has(k[2]));
@@ -6920,7 +6466,7 @@ const ServerModule = {
     }catch(err){ pushDebugLog('🧹 Limpeza das sobras parou (' + (err && err.message || err) + ') — sem problema, não são lidas.', true); }
   },
 
-  async _importOnce(server, statusCallback, quietNetworkErrors, opts){
+  async _importOnce(server, statusCallback, quietNetworkErrors){
     const report = (patch) => { if(statusCallback) statusCallback(patch); };
     const tStart = performance.now();
     const serverId = server.id;
@@ -6941,13 +6487,14 @@ const ServerModule = {
       const gen = this._importGen[serverId] = (this._importGen[serverId] || 0) + 1; // cancela limpeza antiga desse servidor
 
       // 2) resumo acumulado (o que cada worker devolve)
-      const acc = { cnt:[0,0,0], blocks:[[],[],[]], grupos:[new Map(),new Map(),new Map()], series:new Map(), done:0, ms:[0,0,0] };
+      const acc = { cnt:[0,0,0], blocks:[[],[],[]], grupos:[new Map(),new Map(),new Map()], series:new Map(), done:0, ms:[0,0,0], epMap:{} };
       const N = this._workersPerImport || this.workersTotal();
       stage('Preparando processamento...');
       // fila de blocos maior: o download continua puxando enquanto os workers
       // processam (antes, com 2 na fila, a rede parava a cada pouco = velocidade oscilando)
       pool = BlockSyncWorker.createPool(N, (d) => {
         acc.done++;
+        if(d.epG != null) acc.epMap[d.i] = d.epG; // bloco de episódios → grupo onde foi gravado
         if(d.ms){ acc.ms[0] += d.ms[0]; acc.ms[1] += d.ms[1]; acc.ms[2] += d.ms[2]; }
         for(let t = 0; t < 3; t++){
           if(!d.cnt[t]) continue;
@@ -6975,19 +6522,35 @@ const ServerModule = {
 
       // 3) download em streaming → blocos de ~1 MB → pool
       const CH = 1 << 20;
-      // no-store: sem isso o navegador ainda gravava a lista inteira (~80 MB) no cache HTTP em disco.
-      // O download em si (conexões, faixas, cortes, retomada) fica em listDownloadCore — o mesmo
-      // código roda num WORKER (tela livre) ou aqui na tela (reserva / Configurações).
+      // no-store: sem isso o navegador ainda gravava a lista inteira (~80 MB)
+      // no cache HTTP em disco — escrita à toa, pesada em TV/projetor.
+      // resposta do servidor (cabeçalho) não chega em 7s = conexão morta → erro de rede (tenta de novo)
+      const hctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      const htimer = hctl ? setTimeout(() => { try{ hctl.abort(); }catch(e){} }, 7000) : null;
+      let response;
+      stage('Conectando ao servidor...');
+      const tReq = performance.now();
+      try{ response = await fetch(server.url, { cache: 'no-store', signal: hctl ? hctl.signal : undefined }); }
+      catch(fe){ clearTimeout(htimer); if(fe && fe.name === 'AbortError') throw new TypeError('network: o servidor não respondeu em 7s'); throw fe; }
+      clearTimeout(htimer);
+      const tResp = performance.now();
+      pushDebugLog('⏱ "' + server.nome + '": o servidor respondeu em ' + Math.round(tResp - tReq) + ' ms (desde o clique na importação: ' + Math.round(tResp - tStart) + ' ms) • ' + (/^https:/i.test(server.url) ? 'https' : 'http') + ' • Wi-Fi: ' + ((typeof SysMon !== 'undefined' && SysMon._band) || '?') + '.', (tResp - tReq) > 5000);
       let firstDataLogged = false;
-      let totalBytes = null;
+      if(!response.ok){ const err = new Error('HTTP ' + response.status); err.status = response.status; throw err; }
+      // respondeu, mas a lista ainda não começou a chegar (servidor IPTV montando): conta os segundos
+      stage('Servidor montando a lista...');
+      const tGen = Date.now();
+      genTick = setInterval(() => {
+        if(firstDataLogged){ clearInterval(genTick); return; }
+        report({ phase:'download', status:'processing', downloaded:0, total:null, speed:0, stage: 'Servidor montando a lista... ' + Math.round((Date.now() - tGen) / 1000) + 's' });
+      }, 1000);
+      let totalBytes = parseInt(response.headers.get('Content-Length'), 10) || null;
       // servidor IPTV quase nunca informa o tamanho: estima pelo tamanho da última vez
       // (guardado no servidor e também por URL, pra valer mesmo se o servidor for apagado e cadastrado de novo)
       let estBytes = server.lastBytes || null;
       if(!estBytes){ try{ estBytes = (JSON.parse(localStorage.getItem('sm_list_sizes') || '{}'))[server.url] || null; }catch(e){} }
       let tNet = 0, tWaitPool = 0; // onde o tempo foi: esperando a REDE x esperando o PROCESSAMENTO
       let n = 0, bytes = 0, lastReport = 0, lastBytes = 0, lastTime = Date.now(), speed = 0;
-      let nearFired = false;
-      const fireNear = () => { if(nearFired) return; nearFired = true; try{ opts && opts.onNearEnd && opts.onNearEnd(); }catch(e){} };
       const progress = (force) => {
         const now = Date.now();
         if(!force && now - lastReport < 250) return;
@@ -6998,75 +6561,253 @@ const ServerModule = {
           counts: { live: acc.cnt[0], movie: acc.cnt[1], series: acc.cnt[2] }, seriesCount: acc.series.size, blocksDone: acc.done });
         MemGuard.logDuring('"' + server.nome + '" baixando+processando ' + formatBytes(bytes) + ' (' + acc.done + ' blocos prontos)');
       };
-      let tReq = performance.now();
-      const ctx = {
-        url: server.url, name: server.nome, CH,
-        conns: Math.max(1, Math.min(6, parseInt((State.settings.performance || {}).downloadConnections, 10) || DEFAULT_SETTINGS.performance.downloadConnections)),
-        estBytes, RESUMES: PerfMode.isTvDevice() ? 6 : 3, RESUME_WAIT_S: 5, STALL_MS: PerfMode.isTvDevice() ? 15000 : 25000,
-        pre: null,
-        stage: (t) => {
-          if(t === 'Conectando ao servidor...') tReq = performance.now();
-          stage(t);
-          if(t === 'Servidor montando a lista...' && !firstDataLogged && !genTick){
-            // respondeu, mas a lista ainda não começou a chegar (servidor IPTV montando): conta os segundos
-            const tGen = Date.now();
-            genTick = setInterval(() => {
-              if(firstDataLogged){ clearInterval(genTick); return; }
-              report({ phase:'download', status:'processing', downloaded:0, total:null, speed:0, stage: 'Servidor montando a lista... ' + Math.round((Date.now() - tGen) / 1000) + 's' });
-            }, 1000);
-          }
-        },
-        headers: (h) => {
-          const tResp = performance.now();
-          pushDebugLog('⏱ "' + server.nome + '": o servidor respondeu em ' + h.ms + ' ms' + (h.fromPre ? ' (pré-conexão já aberta)' : '') + ' (desde o clique na importação: ' + Math.round(tResp - tStart) + ' ms) • ' + (/^https:/i.test(server.url) ? 'https' : 'http') + ' • Wi-Fi: ' + ((typeof SysMon !== 'undefined' && SysMon._band) || '?') + ' • download ' + (usedMode === 'worker' ? 'em segundo plano' : 'na tela') + '.', h.ms > 5000);
-        },
-        firstData: () => {
-          if(firstDataLogged) return;
-          firstDataLogged = true; if(genTick){ clearInterval(genTick); }
-          stg.marks.push(stg.name + ' ' + Math.round(performance.now() - stg.t) + ' ms');
-          const tot = Math.round(performance.now() - tStart);
-          pushDebugLog('⏱ "' + server.nome + '": até o 1º dado ' + tot + ' ms → ' + stg.marks.join(' • '), tot > 5000);
-        },
-        sendBlock: (key, u8) => pool.send(serverId, key, u8),
-        progress: (b, t) => {
-          bytes = b; if(t) totalBytes = t;
-          const size = totalBytes || estBytes;
-          if(size && bytes >= 0.5 * size) fireNear(); // metade: dá tempo do próximo servidor "montar a lista"
-          progress(false);
-        },
-        log: (t, w) => pushDebugLog(t, w),
-        retryUI: (p) => report(Object.assign({ phase:'download', status:'processing', speed: 0, retryResume: true }, p)),
-        cleanBeforeRetry: () => { try{ MemGuard.cleanBeforeRetry('"' + server.nome + '" vai continuar o download'); }catch(e){} },
-        netBackAt: () => NetEvents.backAt,
-        whenUp: (ms) => NetEvents.whenUp(ms)
+      /* ---------------------------------------------------------------
+         DOWNLOAD EM PARTES PARALELAS (bytes, sem decodificar aqui)
+         A lista é dividida em K faixas; cada faixa vem por uma conexão
+         própria ("Range: bytes=início-fim") e é cortada em blocos de ~1 MB
+         antes de "\n#EXTINF". O pedaço entre duas faixas (fim da k + começo
+         da k+1) vira um bloco de "costura". Chave do bloco: k*100000 + j
+         (costura: k*100000 + 99999) → em ordem = o arquivo original.
+         Os bytes vão pro worker sem cópia (ele decodifica).
+         Servidor sem Range (não responde 206) → segue com 1 conexão.
+         --------------------------------------------------------------- */
+      const P_EXT = [10, 35, 69, 88, 84, 73, 78, 70]; // "\n#EXTINF"
+      const isCut = (u, i) => { for(let q = 0; q < 8; q++) if(u[i + q] !== P_EXT[q]) return false; return true; };
+      const findCut = (u, len, lim) => { // último "\n#EXTINF" até lim; senão o 1º depois
+        let i;
+        for(i = Math.min(lim, len - 8); i > 0; i--) if(isCut(u, i)) return i;
+        for(i = lim + 1; i <= len - 8; i++) if(isCut(u, i)) return i;
+        return -1;
       };
-      // modo: worker (tela livre) ou tela. Automático: tenta o worker; se o fetch lá dentro
-      // for bloqueado (APK com página file://), volta pra tela na hora e lembra.
-      let usedMode = ServerModule.dlMode();
-      const pre = ServerModule.prefetchTake(server);
-      if(pre && pre.mode !== usedMode){ ServerModule._prefetchKill(pre); }
-      let r;
-      const runMain = () => { usedMode = 'main'; if(pre && pre.mode === 'main') ctx.pre = pre.p; return listDownloadCore(ctx); };
-      if(usedMode === 'worker'){
-        const w = (pre && pre.mode === 'worker') ? pre.w : DLWorker.create();
+      const findFirst = (u, len) => { for(let i = 0; i <= len - 8; i++) if(isCut(u, i)) return i; return -1; };
+      const sendBlock = async (key, u8) => {
+        n++;
+        const tw = performance.now();
+        await pool.send(serverId, key, u8); // fila cheia = download espera
+        tWaitPool += performance.now() - tw;
+      };
+      const concat = (a, b) => { if(!a || !a.length) return b; if(!b || !b.length) return a; const r = new Uint8Array(a.length + b.length); r.set(a, 0); r.set(b, a.length); return r; };
+      const conns = Math.max(1, Math.min(6, parseInt((State.settings.performance || {}).downloadConnections, 10) || DEFAULT_SETTINGS.performance.downloadConnections));
+      let sizeKnown = totalBytes || estBytes || 0;
+      // 1ª vez (tamanho desconhecido): pergunta o tamanho com um pedido de 1 byte ("Range: bytes=0-0").
+      // Servidor que aceita responde "Content-Range: bytes 0-0/N" → dá pra dividir em partes e mostrar a % certa.
+      if(!sizeKnown && conns > 1 && response.body && response.body.getReader){
+        const pc = typeof AbortController !== 'undefined' ? new AbortController() : null;
+        const pt = pc ? setTimeout(() => { try{ pc.abort(); }catch(e){} }, 7000) : null;
         try{
-          r = await DLWorker.run(w, ctx, (PerfMode.isLite() ? 2 : 10) + N);
-          if(ServerModule._dlAuto() && ServerModule._dlFlag() !== 'yes'){ ServerModule._dlFlag('yes'); pushDebugLog('⚡ Download em segundo plano (worker) funcionando neste aparelho.'); }
-        }catch(e){
-          // falhou ANTES de o servidor responder, no automático: pode ser o worker sem acesso à rede
-          if(e && e.beforeHeaders && ServerModule._dlAuto() && ServerModule._dlFlag() !== 'yes'){
-            pushDebugLog('⚡ Download em segundo plano falhou antes de conectar (' + (e.message || e) + ') — tentando pela tela.', true);
-            r = await runMain();
-            ServerModule._dlFlag('no');
-            pushDebugLog('⚡ Neste aparelho o download fica na tela (o worker não consegue baixar).');
-          } else throw e;
-        }
-      } else {
-        r = await runMain();
+          const pr = await fetch(server.url, { cache: 'no-store', signal: pc ? pc.signal : undefined, headers: { 'Range': 'bytes=0-0' } });
+          const m = /^bytes\s+0-0\/(\d+)/i.exec(pr.headers.get('Content-Range') || '');
+          try{ pr.body && pr.body.cancel && pr.body.cancel(); }catch(e){}
+          if(pr.status === 206 && m && +m[1] > 0){ totalBytes = +m[1]; sizeKnown = totalBytes; }
+        }catch(e){}
+        clearTimeout(pt);
       }
-      bytes = r.bytes; n = r.n; totalBytes = r.totalBytes || totalBytes; tNet = r.tNet; tWaitPool = r.tWaitPool;
-      progress(true);
-      fireNear();
+      const K = (conns > 1 && sizeKnown >= 8 * CH && response.body && response.body.getReader) ? Math.min(conns, Math.floor(sizeKnown / (4 * CH))) : 1;
+      const bounds = []; for(let k = 0; k < K; k++) bounds.push(Math.floor(sizeKnown * k / K));
+      let effK = K; // vira 1 se o servidor não aceitar as partes
+      // uma faixa em andamento
+      const mkSeg = (k) => ({ k, start: K > 1 ? bounds[k] : 0, end: (K > 1 && k < K - 1) ? bounds[k + 1] : null,
+        got: 0, buf: new Uint8Array(2 * CH), used: 0, j: 0, head: k === 0 ? new Uint8Array(0) : null, tail: null, done: false,
+        reader: null, reading: false, readStart: 0, stallWhy: null, limit: null, overflow: [] });
+      const segs = [];
+      const seams = new Map(); // k -> {tail, head} costura entre faixa k e k+1
+      const trySeam = async (k) => {
+        const s = seams.get(k);
+        if(!s || s.tail == null || s.head == null || s.sent) return;
+        s.sent = true;
+        const u = concat(s.tail, s.head);
+        if(u.length) await sendBlock(k * 100000 + 99999, u);
+      };
+      // guarda bytes na faixa e solta blocos completos
+      const feed = async (seg, v) => {
+        if(seg.used + v.length > seg.buf.length){ const nb = new Uint8Array(Math.max(seg.buf.length * 2, seg.used + v.length)); nb.set(seg.buf.subarray(0, seg.used)); seg.buf = nb; }
+        seg.buf.set(v, seg.used); seg.used += v.length;
+        if(seg.head === null){ // faixa k>0: o começo (até o 1º "\n#EXTINF") vai pra costura
+          const p = findFirst(seg.buf, seg.used);
+          if(p < 0){ if(seg.used > 4 * CH) throw new Error('faixa ' + seg.k + ' sem entrada M3U'); return; }
+          seg.head = seg.buf.slice(0, p + 1);
+          seg.buf.copyWithin(0, p + 1, seg.used); seg.used -= p + 1;
+          const sm = seams.get(seg.k - 1) || {}; sm.head = seg.head; seams.set(seg.k - 1, sm);
+          await trySeam(seg.k - 1);
+        }
+        while(seg.used >= CH){
+          const cut = findCut(seg.buf, seg.used, CH);
+          if(cut < 0) break;
+          const bl = seg.buf.slice(0, cut + 1);
+          seg.buf.copyWithin(0, cut + 1, seg.used); seg.used -= cut + 1;
+          await sendBlock(seg.k * 100000 + seg.j++, bl);
+        }
+      };
+      // faixa terminou: o resto vira fim da costura (ou o último bloco da lista)
+      const finishSeg = async (seg) => {
+        if(seg.done) return; seg.done = true;
+        const rest = seg.buf.slice(0, seg.used); seg.buf = null; seg.used = 0;
+        if(seg.head === null){ // faixa inteira sem nenhum "\n#EXTINF": tudo é costura
+          seg.head = rest; const sm = seams.get(seg.k - 1) || {}; sm.head = rest; seams.set(seg.k - 1, sm); await trySeam(seg.k - 1);
+          if(seg.k < effK - 1){ const s2 = seams.get(seg.k) || {}; s2.tail = new Uint8Array(0); seams.set(seg.k, s2); await trySeam(seg.k); }
+          return;
+        }
+        if(seg.k < effK - 1){ const sm = seams.get(seg.k) || {}; sm.tail = rest; seams.set(seg.k, sm); await trySeam(seg.k); }
+        else if(rest.length || n === 0) await sendBlock(seg.k * 100000 + seg.j++, rest);
+      };
+      // Conexão caiu no meio: tenta CONTINUAR a faixa de onde parou ("Range: bytes=N-fim").
+      // Lista gerada na hora que não aceita → recomeça tudo do zero (tentativa normal).
+      const etag0 = response.headers.get('ETag'), lastMod0 = response.headers.get('Last-Modified');
+      const RESUMES = PerfMode.isTvDevice() ? 6 : 3, RESUME_WAIT_S = 5;
+      let resumes = 0;
+      const tryResume = async (seg, origErr) => {
+        if(!ServerModule.isRetryableNetworkError(origErr) || resumes >= RESUMES || (K === 1 && bytes === 0)) return null;
+        resumes++;
+        const pos = seg.start + seg.got;
+        const why = origErr && (origErr.message || String(origErr));
+        pushDebugLog('Rede: "' + server.nome + '" caiu em ' + formatBytes(bytes) + (K > 1 ? ' (parte ' + (seg.k + 1) + '/' + K + ')' : '') + ' (' + why + ') — tentando continuar de onde parou (' + resumes + '/' + RESUMES + ') em ' + RESUME_WAIT_S + 's.', true);
+        try{ MemGuard.cleanBeforeRetry('"' + server.nome + '" vai continuar o download'); }catch(e){}
+        await NetEvents.whenUp(60000);
+        const t0r = Date.now() - 8000;
+        for(let sLeft = RESUME_WAIT_S; sLeft > 0; sLeft--){
+          if(NetEvents.backAt > t0r) break;
+          report({ phase:'download', status:'processing', downloaded: bytes, total: totalBytes, speed: 0,
+            retryIn: sLeft, retryAttempt: resumes, retryMax: RESUMES, retryWhy: String(why), retryResume: true });
+          await new Promise(res => setTimeout(res, 1000));
+        }
+        let r2;
+        try{ r2 = await fetch(server.url, { cache: 'no-store', headers: { 'Range': 'bytes=' + pos + '-' + (seg.end != null ? seg.end - 1 : '') } }); }
+        catch(e){ return tryResume(seg, e); }
+        const cr = r2.headers.get('Content-Range') || '';
+        const m = /^bytes\s+(\d+)-\d+\/(\d+|\*)/i.exec(cr);
+        const sameFile = (!etag0 || !r2.headers.get('ETag') || r2.headers.get('ETag') === etag0) &&
+                         (!lastMod0 || !r2.headers.get('Last-Modified') || r2.headers.get('Last-Modified') === lastMod0) &&
+                         (!totalBytes || !m || m[2] === '*' || +m[2] === totalBytes);
+        if(r2.status === 206 && m && +m[1] === pos && sameFile && r2.body && r2.body.getReader){
+          pushDebugLog('Rede: "' + server.nome + '" continuou do byte ' + pos + ' (' + formatBytes(bytes) + ' aproveitados).');
+          return r2.body.getReader();
+        }
+        try{ r2.body && r2.body.cancel && r2.body.cancel(); }catch(e){}
+        pushDebugLog('Rede: o servidor de "' + server.nome + '" não permite continuar (' + (r2.status === 200 ? 'mandou a lista inteira de novo' : 'HTTP ' + r2.status) + ') — recomeçando do zero.', true);
+        return null;
+      };
+      const STALL_MS = PerfMode.isTvDevice() ? 15000 : 25000;
+      const watch = setInterval(() => { // 1 cronômetro só: confere 1x/s se alguma faixa parou
+        for(const seg of segs){
+          if(!seg.reading || seg.stallWhy) continue;
+          const idle = Date.now() - seg.readStart;
+          if(idle > STALL_MS) seg.stallWhy = 'download parado há ' + Math.round(STALL_MS / 1000) + 's (conexão morta)';
+          else if(NetEvents.backAt > seg.readStart && idle > 3000) seg.stallWhy = 'a rede caiu e voltou — reconectando';
+          if(seg.stallWhy){ try{ seg.reader.cancel(); }catch(e){} }
+        }
+      }, 1000);
+      // lê uma faixa até o fim (ou até o limite dela)
+      let decided = K === 1; // faixa 0 só é cortada no limite depois que as outras conexões confirmam (206)
+      const takeOverflow = async (seg) => { const ov = seg.overflow; seg.overflow = []; for(const v of ov){ seg.got += v.length; bytes += v.length; await feed(seg, v); } };
+      const runSeg = async (seg) => {
+        for(;;){
+          if(seg.overflow.length && seg.end == null) await takeOverflow(seg);
+          const tr = performance.now();
+          let chunk;
+          try{
+            seg.reading = true; seg.readStart = Date.now();
+            chunk = await seg.reader.read();
+            seg.reading = false;
+            if(seg.stallWhy){ const w = seg.stallWhy; seg.stallWhy = null; throw new TypeError('network: ' + w); }
+          }catch(readErr){
+            seg.reading = false; seg.stallWhy = null;
+            if(seg.cancelled) return;
+            const r2 = await tryResume(seg, readErr);
+            if(!r2) throw readErr;
+            seg.reader = r2;
+            continue;
+          }
+          const { done } = chunk; let value = chunk.value;
+          if(K === 1) tNet += performance.now() - tr;
+          if(!firstDataLogged && value){
+            firstDataLogged = true; clearInterval(genTick);
+            stg.marks.push(stg.name + ' ' + Math.round(performance.now() - stg.t) + ' ms');
+            const tot = Math.round(performance.now() - tStart);
+            pushDebugLog('⏱ "' + server.nome + '": até o 1º dado ' + tot + ' ms → ' + stg.marks.join(' • '), tot > 5000);
+          }
+          if(done) break;
+          // faixa com fim: não passa do fim (a faixa 0 guarda o excedente até decidir)
+          if(seg.end != null){
+            const room = seg.end - (seg.start + seg.got);
+            if(value.length > room){
+              if(seg.k === 0 && !decided){ seg.overflow.push(value.slice(Math.max(0, room))); value = value.subarray(0, Math.max(0, room)); }
+              else value = value.subarray(0, Math.max(0, room));
+            }
+          }
+          seg.got += value.length; bytes += value.length;
+          if(value.length) await feed(seg, value);
+          progress(false);
+          if(seg.end != null && seg.start + seg.got >= seg.end){
+            if(seg.k === 0 && !decided){
+              await seg.decision;
+              if(seg.end == null){ await takeOverflow(seg); continue; } // voltou a ser 1 conexão: segue lendo
+            }
+            try{ seg.reader.cancel(); }catch(e){}
+            break;
+          }
+        }
+        // faixa 0 acabou antes da decisão (lista menor que o esperado): espera saber se é a única
+        if(seg.k === 0 && !decided){ await seg.decision; if(seg.end == null) await takeOverflow(seg); }
+        await finishSeg(seg);
+      };
+      const tDl0 = performance.now();
+      try{
+        if(response.body && response.body.getReader){
+          const s0 = mkSeg(0); s0.reader = response.body.getReader(); segs.push(s0);
+          if(K > 1){
+            let resolveDecision; s0.decision = new Promise(r => { resolveDecision = r; });
+            // abre as outras conexões; qualquer uma sem 206 certo = volta pra 1 conexão
+            const extras = [];
+            const opens = [];
+            for(let k = 1; k < K; k++){
+              const seg = mkSeg(k); extras.push(seg);
+              const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null; seg.ctl = ctl;
+              const to = ctl ? setTimeout(() => { try{ ctl.abort(); }catch(e){} }, 7000) : null;
+              opens.push(fetch(server.url, { cache: 'no-store', signal: ctl ? ctl.signal : undefined,
+                headers: { 'Range': 'bytes=' + seg.start + '-' + (seg.end != null ? seg.end - 1 : '') } })
+                .then(r => { clearTimeout(to); seg.resp = r; })
+                .catch(e => { clearTimeout(to); seg.openErr = e; }));
+            }
+            const run0 = runSeg(s0);
+            await Promise.all(opens);
+            let totals = new Set(), bad = null;
+            for(const seg of extras){
+              if(seg.openErr){ bad = 'erro ao abrir (' + (seg.openErr.message || seg.openErr) + ')'; break; }
+              const cr = seg.resp.headers.get('Content-Range') || '';
+              const m = /^bytes\s+(\d+)-\d+\/(\d+|\*)/i.exec(cr);
+              if(seg.resp.status !== 206 || !m || +m[1] !== seg.start || !seg.resp.body){ bad = 'HTTP ' + seg.resp.status + (cr ? ' ' + cr : ''); break; }
+              if(m[2] !== '*') totals.add(+m[2]);
+            }
+            if(!bad && totalBytes && totals.size && !totals.has(totalBytes)) bad = 'tamanho diferente entre as conexões';
+            if(!bad && totals.size > 1) bad = 'tamanho diferente entre as conexões';
+            if(bad){
+              for(const seg of extras){ try{ seg.resp && seg.resp.body && seg.resp.body.cancel(); }catch(e){} }
+              pushDebugLog('⚡ "' + server.nome + '": download em ' + K + ' partes não aceito pelo servidor (' + bad + ') — seguindo com 1 conexão.');
+              s0.end = null; effK = 1; decided = true;
+              resolveDecision();
+              await run0;
+            } else {
+              // as outras conexões dizem o tamanho REAL da lista ("Content-Range: .../N") → % exata
+              if(!totalBytes && totals.size === 1) totalBytes = Array.from(totals)[0];
+              pushDebugLog('⚡ "' + server.nome + '": baixando em ' + K + ' partes ao mesmo tempo (' + formatBytes(totalBytes || sizeKnown) + (totalBytes ? '' : ' estimado') + ').');
+              decided = true; s0.overflow = []; resolveDecision();
+              for(const seg of extras){ seg.reader = seg.resp.body.getReader(); seg.resp = null; segs.push(seg); }
+              // se alguma falhar de vez, cancela as outras (erro vai pra tentativa normal)
+              const all = [run0].concat(extras.map(seg => runSeg(seg)));
+              try{ await Promise.all(all); }
+              catch(e){ for(const seg of segs){ seg.cancelled = true; try{ seg.reader.cancel(); }catch(_){} } await Promise.allSettled(all); throw e; }
+            }
+          } else {
+            await runSeg(s0);
+          }
+        } else {
+          const u = new TextEncoder().encode(await response.text());
+          const s0 = mkSeg(0); segs.push(s0);
+          s0.got = u.length; bytes = u.length;
+          await feed(s0, u); await finishSeg(s0);
+        }
+      } finally { clearInterval(watch); }
+      if(K > 1) tNet = Math.max(0, performance.now() - tDl0 - tWaitPool);
       const tDownloaded = performance.now();
       pushDebugLog('⏱ "' + server.nome + '": download ' + Math.round(tDownloaded - tStart) + ' ms (' + formatBytes(bytes) + ', ' + n + ' blocos, processados junto) — esperando a rede ' +
         Math.round(tNet) + ' ms, esperando o processamento ' + Math.round(tWaitPool) + ' ms' +
@@ -7103,7 +6844,8 @@ const ServerModule = {
       });
       const blocosIdx = acc.blocks.map(b => b.sort((p, q) => p - q));
       // sobras do conteúdo antigo (não são lidas: o app só lê os blocos listados) → apaga sem travar
-      setTimeout(() => ServerModule._trimStale(serverId, gen, n, nsb, blocosIdx), 1500);
+      const epGroups = new Set(Object.values(acc.epMap));
+      setTimeout(() => ServerModule._trimStale(serverId, gen, n, nsb, blocosIdx, epGroups), 1500);
       const sortedKeys = (m) => Array.from(m.keys()).sort();
       const result = {
         counts: { live: acc.cnt[0], movie: acc.cnt[1], series: acc.cnt[2] },
@@ -7129,6 +6871,7 @@ const ServerModule = {
         seriesCount: result.seriesCount,
         blocos: result.blocos,               // [ao vivo, filme, episódio] — nº de blocos de cada
         blocosIdx: result.blocosIdx,         // chaves reais dos blocos de cada tipo (= nº do bloco cru) — ver blockKeys()
+        epMap: acc.epMap,                    // episódios: bloco → grupo gravado ([id, 3, grupo]) — ver QueryModule._epBlock
         blocosSeries: result.blocosSeries,
         blocosCrus: result.blocosCrus,
         bytes: result.bytes,
@@ -7214,12 +6957,7 @@ const ServerModule = {
         await NetEvents.whenUp(60000); // rede fora: espera voltar sem gastar tentativa
         job.tries++;
         const last = job.tries >= MAX;
-        ServerModule.prefetchCancel(job.s.id); // pré-conexão que não é deste (a fila mudou) não serve mais
-        const nearEnd = lanes === 1 ? () => {
-          const nx = queue[0];
-          if(nx && nx.s !== job.s && !ServerModule._sameAccount(job.s, nx.s)) ServerModule.prefetchStart(nx.s);
-        } : null;
-        const r = await ServerModule._importOnce(job.s, (patch) => upd(job.s, patch), !last, { onNearEnd: nearEnd });
+        const r = await ServerModule._importOnce(job.s, (patch) => upd(job.s, patch), !last);
         if(!r.ok && r.retryable && !last){
           job.why = r.error && (r.error.status ? 'HTTP ' + r.error.status : (r.error.message || String(r.error)));
           // "network error" (conexão caiu no meio, parada, sem resposta): tenta DE NOVO na hora, ele mesmo.
@@ -7251,7 +6989,7 @@ const ServerModule = {
 
     const running = [];
     for(let i = 0; i < lanes; i++) running.push(lane());
-    try{ await Promise.all(running); } finally { ServerModule.prefetchCancel(); }
+    await Promise.all(running);
     ServerModule._workersPerImport = 0;
     return results;
   }
@@ -11923,24 +11661,6 @@ async function renderSettingsView(container){
     g.appendChild(el('div', { style:'font-size:11px;color:var(--text-2);margin-top:4px;' }, ['Quantos processadores interpretam a lista enquanto baixa. Padrão: 1 no projetor/TV, automático nos demais.']));
     perfRow.appendChild(g);
   }
-  const mkSel = (label, opts, value, onChange, hint) => {
-    const g = el('div', { class:'form-group' });
-    g.appendChild(el('label', {}, [label]));
-    const sel = el('select', {});
-    opts.forEach(([v, t]) => sel.appendChild(el('option', { value: v }, [t])));
-    sel.value = value;
-    sel.addEventListener('change', async function(){ await onChange(sel.value); await IDB.put(STORES.settings, State.settings); showToast('Configuração salva.', 'success'); });
-    g.appendChild(sel);
-    if(hint) g.appendChild(el('div', { style:'font-size:11px;color:var(--text-2);margin-top:4px;' }, [hint]));
-    return g;
-  };
-  perfRow.appendChild(mkSel('Download em segundo plano', [['auto','Automático'],['on','Ligado'],['off','Desligado']], ServerModule._dlSetting(), (v) => {
-    State.settings.performance = Object.assign({}, State.settings.performance || DEFAULT_SETTINGS.performance, { dlWorker: v });
-    try{ localStorage.removeItem('sm_dl_worker'); }catch(e){} // testa de novo
-  }, 'Baixa a lista fora da tela (ela fica livre). Automático: testa no 1º download e, se o aparelho não deixar, baixa pela tela.' + (ServerModule._dlFlag() === 'no' ? ' Resultado do teste: neste aparelho fica na tela.' : ServerModule._dlFlag() === 'yes' ? ' Resultado do teste: funcionando.' : '')));
-  perfRow.appendChild(mkSel('Pré-conectar o próximo servidor', [['on','Ligado'],['off','Desligado']], ServerModule.prefetchOn() ? 'on' : 'off', (v) => {
-    State.settings.performance = Object.assign({}, State.settings.performance || DEFAULT_SETTINGS.performance, { prefetchNext: v === 'on' });
-  }, 'Atualizando 1 servidor por vez: perto do fim de um, já abre a conexão do próximo (esconde o "servidor montando a lista"). Desligue se algum servidor recusar conexões.'));
   perfRow.appendChild(makePerfField('Conexões por download', 'downloadConnections', 'Baixa a lista em partes ao mesmo tempo (1 a 6). Padrão 4. Servidor que não aceita: usa 1 sozinho.', 1));
   // Modo leve: sem desfoque/sombras/animações (TV e projetor ficam bem mais leves)
   const liteGroup = el('div', { class:'form-group' });
