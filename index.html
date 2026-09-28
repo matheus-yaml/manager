@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.5.8';
+<script>var APP_VERSION = '1.6.0';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -3739,53 +3739,75 @@ const TvSharp = {
     window.addEventListener('resize', () => this.schedule());
     this.schedule();
   },
-  /** Janela de teste: padrões de 1 pixel + letras em vários tamanhos. */
+  /** Teste de nitidez em TELA CHEIA: medidas + padrões de 1 pixel no centro e textos
+   *  de vários tamanhos e fontes nos cantos, nas bordas e no centro (a lente costuma
+   *  desfocar primeiro nas bordas). Fecha no × ou no Voltar do controle. */
   openTest(){
     const dpr = window.devicePixelRatio || 1;
+    const vw = window.innerWidth, vh = window.innerHeight;
     const rw = Math.round(screen.width * dpr), rh = Math.round(screen.height * dpr);
-    const overlay = el('div', { class:'modal-overlay' });
-    const box = el('div', { class:'modal-box', style:'max-width:760px;' });
-    box.appendChild(el('h3', {}, ['Teste de nitidez', el('span', { class:'modal-close-x', onclick: () => overlay.remove() }, ['×'])]));
-    const info = el('div', { style:'font-size:13px;line-height:1.5;margin-bottom:10px;' });
     const frac = Math.abs(dpr - Math.round(dpr)) > 0.01;
-    info.appendChild(el('div', {}, ['O app enxerga ' + window.innerWidth + '×' + window.innerHeight + ' • densidade ' + dpr + 'x • o Android desenha em ' + rw + '×' + rh + ' pixels.']));
-    info.appendChild(el('div', { style:'color:' + (frac ? '#fbbf24' : 'var(--text-2)') + ';' }, [
-      frac ? '⚠ Densidade quebrada (' + dpr + 'x): cada pixel do app vira ' + dpr + ' pixels reais — sempre fica um pouco borrado. Se o Android deixar, mude o tamanho de exibição/DPI.'
-           : 'Densidade inteira (' + dpr + 'x): do lado do app está ok.'
-    ]));
-    box.appendChild(info);
-    // padrão de linhas de 1px: se o caminho até a lente for 1:1, fica listrado nítido; se houver reescala, vira cinza/ondulado
+    const overlay = el('div', { class:'modal-overlay sharp-test', style:'position:fixed;inset:0;top:0;left:0;right:0;bottom:0;padding:0;margin:0;display:block;background:#000;z-index:2147483000;overflow:hidden;-webkit-backdrop-filter:none;backdrop-filter:none;' });
+    // moldura de 1 pixel real na borda da tela (mostra corte/overscan e foco nas bordas)
+    const frame = el('div', { style:'position:absolute;inset:0;top:0;left:0;right:0;bottom:0;border:' + (1 / dpr) + 'px solid #fff;pointer-events:none;' });
+    overlay.appendChild(frame);
+    // × fixo no canto (focável pelo controle)
+    const close = el('span', { class:'modal-close-x', tabindex:'0', role:'button', style:'position:absolute;top:50%;right:14px;transform:translateY(-50%);font-size:26px;color:#fff;background:rgba(255,255,255,.14);border-radius:10px;padding:2px 12px;z-index:2;cursor:pointer;' }, ['×']);
+    close.addEventListener('click', () => { overlay.remove(); document.removeEventListener('keydown', onKey, true); });
+    close.addEventListener('keydown', (e) => { if(e.key === 'Enter' || e.keyCode === 13){ e.preventDefault(); close.click(); } });
+    const onKey = (e) => { if(!overlay.isConnected){ document.removeEventListener('keydown', onKey, true); return; } if(e.key === 'Escape' || e.key === 'GoBack' || e.key === 'BrowserBack' || e.keyCode === 27 || e.keyCode === 461 || e.keyCode === 10009){ e.preventDefault(); e.stopPropagation(); close.click(); } };
+    document.addEventListener('keydown', onKey, true);
+    overlay.appendChild(close);
+
+    // textos: tamanhos do menor ao maior, fontes alternando
+    const FONTS = [['Sistema', 'Roboto,"Noto Sans",sans-serif'], ['Manrope', "'Manrope',sans-serif"], ['Serifa', 'Georgia,"Noto Serif",serif'], ['Mono', '"Roboto Mono","Noto Sans Mono",monospace']];
+    const SIZES = [8, 10, 12, 14, 16, 20];
+    const block = (pos, style, fontStart) => {
+      const d = el('div', { style:'position:absolute;' + style + 'color:#fff;line-height:1.15;white-space:nowrap;' });
+      SIZES.forEach((px, i) => {
+        const f = FONTS[(i + fontStart) % FONTS.length];
+        d.appendChild(el('div', { style:'font-family:' + f[1] + ' !important;font-size:' + px + 'px;font-weight:' + (i % 2 ? 400 : 600) + ';' }, [px + ' ' + f[0] + ' Ação ' + pos]));
+      });
+      overlay.appendChild(d);
+      return d;
+    };
+    const m = 6; // encosta na borda (sobra só a moldura)
+    block('↖', 'top:' + m + 'px;left:' + m + 'px;', 0);
+    block('↑', 'top:' + m + 'px;left:50%;transform:translateX(-50%);text-align:center;', 1);
+    block('↗', 'top:' + m + 'px;right:' + m + 'px;text-align:right;', 2);
+    block('←', 'top:50%;left:' + m + 'px;transform:translateY(-50%);', 3);
+    block('→', 'top:50%;right:84px;transform:translateY(-50%);text-align:right;', 0); // à esquerda do ×
+    block('↙', 'bottom:' + m + 'px;left:' + m + 'px;', 1);
+    block('↓', 'bottom:' + m + 'px;left:50%;transform:translateX(-50%);text-align:center;', 2);
+    block('↘', 'bottom:' + m + 'px;right:' + m + 'px;text-align:right;', 3);
+
+    // centro: medidas + padrões de 1 pixel real + textos
+    const mid = el('div', { style:'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;color:#fff;font-family:Roboto,sans-serif;' });
+    mid.appendChild(el('div', { style:'font-size:13px;font-weight:700;margin-bottom:2px;' }, ['Teste de nitidez']));
+    mid.appendChild(el('div', { style:'font-size:10px;line-height:1.4;' }, ['App ' + vw + '×' + vh + ' • densidade ' + dpr + 'x • Android ' + rw + '×' + rh + ' px']));
+    mid.appendChild(el('div', { style:'font-size:10px;line-height:1.4;margin-bottom:4px;color:' + (frac ? '#fbbf24' : '#9aa3b2') + ';' }, [frac ? '⚠ Densidade quebrada: sempre fica um pouco borrado' : 'Densidade inteira: do lado do app está ok']));
     const cv = document.createElement('canvas');
-    const W = 360, H = 90;
+    const W = Math.min(260, Math.round(vw * 0.27)), H = 46;
     cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
-    cv.style.width = W + 'px'; cv.style.height = H + 'px'; cv.style.display = 'block'; cv.style.imageRendering = 'pixelated';
+    cv.style.cssText = 'width:' + W + 'px;height:' + H + 'px;display:block;margin:0 auto 6px;image-rendering:pixelated;';
     const c = cv.getContext('2d');
-    c.fillStyle = '#000'; c.fillRect(0, 0, cv.width, cv.height);
-    c.fillStyle = '#fff';
+    c.fillStyle = '#000'; c.fillRect(0, 0, cv.width, cv.height); c.fillStyle = '#fff';
     const third = Math.floor(cv.width / 3);
-    for(let x = 0; x < third; x += 2) c.fillRect(x, 0, 1, cv.height);              // colunas de 1 pixel real
-    for(let y = 0; y < cv.height; y += 2) c.fillRect(third, y, third, 1);            // linhas de 1 pixel real
-    for(let y = 0; y < cv.height; y++) for(let x = third * 2 + (y % 2); x < cv.width; x += 2) c.fillRect(x, y, 1, 1); // xadrez
-    box.appendChild(el('div', { style:'font-size:12px;color:var(--text-2);margin-bottom:6px;' }, ['Listras e xadrez de 1 pixel real:']));
-    box.appendChild(cv);
-    const samples = el('div', { style:'display:grid;grid-template-columns:1fr 1fr;gap:6px 18px;margin:12px 0;' });
-    const txt = 'Ação 0123 Série';
-    [['Fonte do sistema', 'Roboto,"Noto Sans",sans-serif'], ['Manrope (fonte do app fora do modo TV)', "'Manrope',sans-serif"]].forEach(([lab, ff]) => {
-      const col = el('div');
-      col.appendChild(el('div', { style:'font-size:11px;color:var(--text-2);margin-bottom:2px;font-family:Roboto,sans-serif;' }, [lab]));
-      [12, 14, 16].forEach((px) => col.appendChild(el('div', { style:'font-family:' + ff + ' !important;font-size:' + px + 'px;font-weight:500;color:#fff;' }, [px + 'px — ' + txt])));
-      samples.appendChild(col);
+    for(let x = 0; x < third; x += 2) c.fillRect(x, 0, 1, cv.height);
+    for(let y = 0; y < cv.height; y += 2) c.fillRect(third, y, third, 1);
+    for(let y = 0; y < cv.height; y++) for(let x = third * 2 + (y % 2); x < cv.width; x += 2) c.fillRect(x, y, 1, 1);
+    mid.appendChild(cv);
+    const midTxt = el('div', { style:'display:inline-block;text-align:left;' });
+    [8, 10, 12, 14, 16, 18].forEach((px, i) => {
+      const f = FONTS[i % FONTS.length];
+      midTxt.appendChild(el('div', { style:'font-family:' + f[1] + ' !important;font-size:' + px + 'px;line-height:1.2;' }, [px + ' ' + f[0] + ' Ação 0123']));
     });
-    box.appendChild(samples);
-    box.appendChild(el('div', { style:'font-size:12.5px;line-height:1.55;color:var(--text-1);' }, [
-      'Como ler: se as listras aparecem nítidas (preto e branco separados), o app está chegando 1:1 na lente. ' +
-      'Se viram um cinza liso, ondulado ou com faixas, a imagem está sendo REESCALADA no caminho — aí o borrado é do aparelho, não do app. ' +
-      'No projetor, confira: 1) trapézio/keystone em 0 (o ajuste digital reescala tudo); 2) zoom digital em 100%; ' +
-      '3) resolução de saída do Android igual à nativa do projetor; 4) foco da lente com este teste aberto.'
-    ]));
-    overlay.appendChild(box);
-    overlay.addEventListener('click', (e) => { if(e.target === overlay) overlay.remove(); });
+    mid.appendChild(midTxt);
+    mid.appendChild(el('div', { style:'font-size:9px;color:#9aa3b2;margin-top:4px;white-space:nowrap;' }, ['Listras nítidas = 1:1 na lente • cinza/ondulado = reescala (trapézio, zoom, resolução)']));
+    overlay.appendChild(mid);
+
     document.body.appendChild(overlay);
+    setTimeout(() => { try{ close.focus(); }catch(e){} }, 30);
   }
 };
 
@@ -5402,24 +5424,27 @@ function searchWorkerMain(){
           sg = findLines(e.sn.txt, q, max + 1, function(line){ res.series.push([sid, e.sn.pos[2 * line], e.sn.pos[2 * line + 1]]); });
           if(sg > max){ res.series.pop(); res.capped.series.push(sid); }
         }
-        // resolve as tuplas aqui mesmo (ver getBlocks): cada hit ganha a tupla no fim
-        var need = new Map();
-        var add = function(store, key){ var k = store + '|' + key.join('|'); if(!need.has(k)) need.set(k, [store, key]); return k; };
-        var hk = { movie: [], live: [], series: [] };
-        res.movie.forEach(function(h){ hk.movie.push(add(STORES.contentBlocks, [h[0], h[1], h[2]])); });
-        res.live.forEach(function(h){ hk.live.push(add(STORES.contentBlocks, [h[0], h[1], h[2]])); });
-        res.series.forEach(function(h){ hk.series.push(add(STORES.seriesBlocks, [h[0], h[1]])); });
-        var got = await getBlocks(need);
-        // enquanto lia do banco a pessoa digitou de novo: não perde tempo mandando
-        if(m.seq && m.seq < lastSeq){ self.postMessage({ id: m.id, ok: true, res: { stale: true } }); return; }
-        ['movie', 'live'].forEach(function(T){
-          res[T].forEach(function(h, i){ var bl = got.get(hk[T][i]); h.push(bl && bl[h[3]] || null); });
-        });
-        res.series.forEach(function(h, i){ var bl = got.get(hk.series[i]); h.push(bl && bl[h[2]] || null); });
-        got = need = null;
+        // só POSIÇÕES (baratas): as tuplas são lidas depois, só das que forem aparecer na tela (cmd 'resolve')
         qcache.set(ck, res);
         while(qcache.size > QMAX) qcache.delete(qcache.keys().next().value);
         self.postMessage({ id: m.id, ok: true, res: res });
+        return;
+      }
+      if(m.cmd === 'resolve'){
+        // hits: [[tipo('m'|'l'|'s'), hit], ...] → tupla de cada um (lê só os blocos necessários; cache LRU)
+        if(m.lite) BMAX = 5;
+        var need2 = new Map(), keys2 = [];
+        m.hits.forEach(function(x){
+          var h = x[1], st = x[0] === 's' ? STORES.seriesBlocks : STORES.contentBlocks;
+          var key = x[0] === 's' ? [h[0], h[1]] : [h[0], h[1], h[2]];
+          var k = st + '|' + key.join('|');
+          if(!need2.has(k)) need2.set(k, [st, key]);
+          keys2.push(k);
+        });
+        var got2 = await getBlocks(need2);
+        var tuples = m.hits.map(function(x, i){ var bl = got2.get(keys2[i]); var h = x[1]; return bl ? (bl[x[0] === 's' ? h[2] : h[3]] || null) : null; });
+        self.postMessage({ id: m.id, ok: true, tuples: tuples, blocks: need2.size });
+        return;
       }
     }catch(err){
       self.postMessage({ id: m.id, ok: false, error: String(err && err.message || err) });
@@ -5471,6 +5496,11 @@ const SearchIndex = {
     if(PerfMode.isLite()){ clearTimeout(this._idleT); this._idleT = setTimeout(() => { if(!activeSearchOverlay) this.release(); }, 180000); }
     return r.res;
   },
+  async resolve(hits){
+    await this.ensure();
+    const r = await this._call({ cmd: 'resolve', hits, lite: PerfMode.isLite() });
+    return r;
+  },
   /** Solta a memória do índice (pouca RAM). Recarrega sozinho na próxima pesquisa. */
   release(){
     if(this._w){ try{ this._w.terminate(); }catch(e){} }
@@ -5520,33 +5550,40 @@ const GlobalSearchModule = {
     const servers = Array.from(State.servers.values()).filter(serverHasBlocks);
     maxPerType = maxPerType || Math.max(10, Math.min(40, Math.floor(120 / Math.max(1, servers.length))));
     const t0 = performance.now();
-    // o worker já devolve cada hit COM a tupla (último item): a tela não lê
-    // nem desserializa blocos de 2000 itens — só monta os objetos encontrados
+    // o worker devolve só as POSIÇÕES de todos os resultados (baratas; dão os contadores).
+    // Os dados de cada cartão só são lidos quando ele vai aparecer na tela (ver materialize).
     const hits = await SearchIndex.search(norm, maxPerType, servers.map(s => s.id), my);
     if(my !== this._seq || hits.stale) throw new Error('busca antiga');
-    const t1 = performance.now();
     const result = { movie:[], live:[], series:[], capped: { movie:new Set(hits.capped.movie), live:new Set(hits.capped.live), series:new Set(hits.capped.series) } };
-    // favoritos: 1 leitura só (antes eram 3 leituras da store inteira)
-    const favs = { movie: new Set(), live: new Set(), series: new Set() };
-    try{ for(const f of await IDB.getAll(STORES.favorites)) if(favs[f.type]) favs[f.type].add(f.id); }catch(e){}
-    if(my !== this._seq) throw new Error('busca antiga');
-    for(const type of ['movie', 'live']){
-      const fav = favs[type];
-      for(const h of hits[type]){
-        const tup = h[4]; if(!tup) continue;
-        const c = QueryModule.tupleToContent(tup, h[1], h[0], h[2], h[3]);
-        c.favorito = fav.has(c.id);
-        result[type].push(c);
-      }
-    }
-    for(const h of hits.series){
-      const tup = h[3]; if(!tup) continue;
-      const s = QueryModule.seriesTupleToSummary(tup, h[0]);
-      s.favorito = favs.series.has(s.key);
-      result.series.push(s);
-    }
-    pushDebugLog('🔎 Pesquisa "' + norm + '": ' + Math.round(t1 - t0) + ' ms no worker (índice + blocos) + ' + Math.round(performance.now() - t1) + ' ms na tela.');
+    for(const h of hits.movie) result.movie.push({ serverId: h[0], __k: 'm', __h: h });
+    for(const h of hits.live) result.live.push({ serverId: h[0], __k: 'l', __h: h });
+    for(const h of hits.series) result.series.push({ serverId: h[0], __k: 's', __h: h });
+    pushDebugLog('🔎 Pesquisa "' + norm + '": ' + Math.round(performance.now() - t0) + ' ms (' + (hits.movie.length + hits.live.length + hits.series.length) + ' posições).');
     return result;
+  },
+  /** Completa os itens da pesquisa que vão aparecer (lê só os blocos deles). Idempotente. */
+  async materialize(items){
+    const todo = items.filter(it => it.__h && !it.__done);
+    if(!todo.length) return;
+    const t0 = performance.now();
+    const [r, favList] = await Promise.all([
+      SearchIndex.resolve(todo.map(it => [it.__k, it.__h])),
+      IDB.getAll(STORES.favorites).catch(() => [])
+    ]);
+    const favs = new Set(favList.map(f => f.type + '|' + f.id));
+    todo.forEach((it, i) => {
+      const tup = r.tuples[i], h = it.__h;
+      it.__done = true;
+      if(!tup){ it.__bad = true; return; }
+      if(it.__k === 's'){
+        Object.assign(it, QueryModule.seriesTupleToSummary(tup, h[0]));
+        it.favorito = favs.has('series|' + it.key);
+      } else {
+        Object.assign(it, QueryModule.tupleToContent(tup, h[1], h[0], h[2], h[3]));
+        it.favorito = favs.has((it.__k === 'm' ? 'movie' : 'live') + '|' + it.id);
+      }
+    });
+    pushDebugLog('🔎 ' + todo.length + ' cartão(ões) montados em ' + Math.round(performance.now() - t0) + ' ms (' + r.blocks + ' bloco(s) lidos).');
   },
   async _searchLegacy(term, maxPerType){
     const norm = normalizeText(term).trim();
@@ -5795,55 +5832,69 @@ function openSearchPopup(term, initialFilters){
     if(!currentResults){ renderServerChips(); return; }
     body.innerHTML = '';
     renderTabs();
-    renderServerChips(); // contadores dos servidores acompanham o filtro de tipo
+    renderServerChips(); // contadores dos servidores acompanham o filtro de tipo (vêm das posições, sem ler blocos)
     const groups = [];
     if(activeType==='all' || activeType==='series') groups.push(['Séries', currentResults.series, renderSeriesCard]);
     if(activeType==='all' || activeType==='movie') groups.push(['Filmes', currentResults.movie, renderContentCard]);
     if(activeType==='all' || activeType==='live') groups.push(['Ao Vivo', currentResults.live, renderContentCard]);
 
-    let any = false;
-    // desenha as primeiras capas de cada grupo na hora e o resto aos poucos
-    // (centenas de cartões de uma vez travavam a tela no projetor)
+    // Só os cartões que vão aparecer são montados: os primeiros de cada grupo
+    // (12 no projetor) numa leitura só; "Ver mais" pede os próximos 24.
     const lite = PerfMode.isLite();
-    const myRender = ++renderSeq, FIRST = lite ? 12 : 30, STEP = lite ? 12 : 40;
-    const rest = [];
+    const myRender = ++renderSeq, FIRST = lite ? 12 : 30, STEP = lite ? 24 : 40;
+    const secs = [];
     for(const [label, items, renderFn] of groups){
       const filtered = activeServer==='all' ? items : items.filter(i => i.serverId===activeServer);
       if(filtered.length===0) continue;
-      any = true;
       body.appendChild(el('div', { class:'server-section-title' }, [label + ' (' + filtered.length + ')']));
       const grid = el('div', { class:'card-grid' });
-      for(let i = 0; i < Math.min(FIRST, filtered.length); i++) grid.appendChild(renderFn(filtered[i]));
       body.appendChild(grid);
-      if(filtered.length > FIRST){
-        if(lite){
-          // projetor: poucos cartões por vez (como nas listas); o resto só se pedir
-          let shown = FIRST;
-          const btn = el('button', { class:'btn search-more' }, ['Ver mais (' + (filtered.length - shown) + ')']);
-          btn.addEventListener('click', () => {
-            const frag = document.createDocumentFragment(), end = Math.min(filtered.length, shown + 24);
-            const firstNew = end > shown ? renderFn(filtered[shown]) : null;
-            if(firstNew) frag.appendChild(firstNew);
-            for(let i = shown + 1; i < end; i++) frag.appendChild(renderFn(filtered[i]));
-            grid.appendChild(frag); shown = end;
-            if(shown >= filtered.length) btn.remove(); else btn.textContent = 'Ver mais (' + (filtered.length - shown) + ')';
-            if(firstNew){ try{ firstNew.focus({ preventScroll: false }); }catch(e){} }
-          });
-          body.appendChild(btn);
-        } else rest.push([grid, filtered, FIRST, renderFn]);
-      }
+      secs.push({ grid, filtered, renderFn, shown: 0, btn: null });
     }
-    const more = () => {
-      if(myRender !== renderSeq || !rest.length) return;
-      const r = rest[0], frag = document.createDocumentFragment();
-      const end = Math.min(r[1].length, r[2] + STEP);
-      for(let i = r[2]; i < end; i++) frag.appendChild(r[3](r[1][i]));
-      r[0].appendChild(frag); r[2] = end;
-      if(end >= r[1].length) rest.shift();
-      if(rest.length) setTimeout(more, 60);
+    if(!secs.length){ body.appendChild(renderEmptyState('🔍', 'Nada encontrado', 'Nenhum resultado com esses filtros.')); return; }
+    const put = (sec, from, to, focusFirst) => {
+      const frag = document.createDocumentFragment(); let firstEl = null;
+      for(let i = from; i < to; i++){
+        const it = sec.filtered[i]; if(it.__bad) continue;
+        const c = sec.renderFn(it); if(!firstEl) firstEl = c; frag.appendChild(c);
+      }
+      sec.grid.appendChild(frag); sec.shown = to;
+      if(sec.shown < sec.filtered.length){
+        if(!sec.btn){
+          sec.btn = el('button', { class:'btn search-more' }, ['']);
+          sec.btn.addEventListener('click', () => showMore(sec, true));
+          sec.grid.parentNode.insertBefore(sec.btn, sec.grid.nextSibling);
+        }
+        sec.btn.textContent = 'Ver mais (' + (sec.filtered.length - sec.shown) + ')';
+      } else if(sec.btn){ sec.btn.remove(); sec.btn = null; }
+      if(focusFirst && firstEl){ try{ firstEl.focus({ preventScroll: false }); }catch(e){} }
     };
-    if(rest.length) setTimeout(more, 120);
-    if(!any) body.appendChild(renderEmptyState('🔍', 'Nada encontrado', 'Nenhum resultado com esses filtros.'));
+    const showMore = async (sec, focusFirst) => {
+      if(sec.busy) return; sec.busy = true;
+      const to = Math.min(sec.filtered.length, sec.shown + STEP);
+      try{ await GlobalSearchModule.materialize(sec.filtered.slice(sec.shown, to)); }catch(e){}
+      sec.busy = false;
+      if(myRender !== renderSeq) return;
+      put(sec, sec.shown, to, focusFirst);
+    };
+    (async () => {
+      // 1ª leva de todos os grupos numa chamada só
+      const first = [];
+      for(const sec of secs) first.push(...sec.filtered.slice(0, FIRST));
+      try{ await GlobalSearchModule.materialize(first); }catch(e){}
+      if(myRender !== renderSeq) return;
+      for(const sec of secs) put(sec, 0, Math.min(FIRST, sec.filtered.length), false);
+      // fora do projetor: completa o resto aos poucos, sem precisar de "Ver mais"
+      if(!lite){
+        for(const sec of secs){
+          while(myRender === renderSeq && sec.shown < sec.filtered.length){
+            await new Promise(r => setTimeout(r, 60));
+            if(myRender !== renderSeq) return;
+            await showMore(sec, false);
+          }
+        }
+      }
+    })();
   }
 
   function runSearch(val){
@@ -5880,7 +5931,8 @@ function openSearchPopup(term, initialFilters){
   function scheduleSearch(val){
     clearTimeout(debounceT);
     if(!val){ searchToken++; currentResults = null; body.innerHTML = ''; tabsRow.innerHTML=''; renderServerChips(); return; }
-    debounceT = setTimeout(function(){ runSearch(val); }, 500);
+    // projetor/TV: espera 1s sem digitar (com o controle as letras demoram mais); demais 500 ms
+    debounceT = setTimeout(function(){ runSearch(val); }, PerfMode.isLite() ? 1000 : 500);
   }
 
   input.addEventListener('input', function(e){
