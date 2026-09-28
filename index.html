@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.5.4';
+<script>var APP_VERSION = '1.5.5';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -686,6 +686,13 @@ html.lite .content-card:hover{transform:none !important;}
 html.lite .content-card:hover .thumb img{transform:none !important;}
 html.lite .content-card::after{display:none !important;}
 html.lite .modal-box{background:#141622 !important;}
+/* Pesquisa no projetor/TV: tela cheia e OPACA. A caixa translúcida por cima do app
+   obrigava o aparelho a redesenhar o app inteiro por trás (e o vídeo nativo, se
+   tiver) a cada mudança — era isso que deixava a pesquisa lenta só ali. */
+html.lite .modal-overlay.search-full{background:#0b0c14;padding:0;align-items:stretch;justify-content:stretch;}
+html.lite .modal-overlay.search-full .modal-box{max-width:none !important;width:100%;height:100%;max-height:none;border-radius:0;border:none;box-shadow:none !important;padding:16px 20px;}
+html.lite.search-open #app{visibility:hidden;}
+.search-more{margin:6px 0 18px;}
 /* ---------- Sugira-me ---------- */
 .suggest-lead{color:var(--text-2);font-size:13.5px;margin:-8px 0 16px;}
 .suggest-roll .dice{display:inline-block;font-size:16px;line-height:1;}
@@ -5641,12 +5648,14 @@ function openSearchPopup(term, initialFilters){
   let searchToken = 0;
   let debounceT = null;
 
-  const overlay = el('div', { class:'modal-overlay' });
+  const overlay = el('div', { class:'modal-overlay search-full' });
   const box = el('div', { class:'modal-box', style:'max-width:min(92vw, 960px);' });
+  document.documentElement.classList.add('search-open');
 
   function closePopup(preserveInput){
     overlay.remove();
     activeSearchOverlay = null;
+    document.documentElement.classList.remove('search-open');
     if(!preserveInput){
       const topbarInput = qs('#global-search');
       if(topbarInput){ topbarInput.value = ''; }
@@ -5734,7 +5743,8 @@ function openSearchPopup(term, initialFilters){
     let any = false;
     // desenha as primeiras capas de cada grupo na hora e o resto aos poucos
     // (centenas de cartões de uma vez travavam a tela no projetor)
-    const myRender = ++renderSeq, FIRST = PerfMode.isLite() ? 12 : 30, STEP = PerfMode.isLite() ? 12 : 40;
+    const lite = PerfMode.isLite();
+    const myRender = ++renderSeq, FIRST = lite ? 12 : 30, STEP = lite ? 12 : 40;
     const rest = [];
     for(const [label, items, renderFn] of groups){
       const filtered = activeServer==='all' ? items : items.filter(i => i.serverId===activeServer);
@@ -5743,8 +5753,24 @@ function openSearchPopup(term, initialFilters){
       body.appendChild(el('div', { class:'server-section-title' }, [label + ' (' + filtered.length + ')']));
       const grid = el('div', { class:'card-grid' });
       for(let i = 0; i < Math.min(FIRST, filtered.length); i++) grid.appendChild(renderFn(filtered[i]));
-      if(filtered.length > FIRST) rest.push([grid, filtered, FIRST, renderFn]);
       body.appendChild(grid);
+      if(filtered.length > FIRST){
+        if(lite){
+          // projetor: poucos cartões por vez (como nas listas); o resto só se pedir
+          let shown = FIRST;
+          const btn = el('button', { class:'btn search-more' }, ['Ver mais (' + (filtered.length - shown) + ')']);
+          btn.addEventListener('click', () => {
+            const frag = document.createDocumentFragment(), end = Math.min(filtered.length, shown + 24);
+            const firstNew = end > shown ? renderFn(filtered[shown]) : null;
+            if(firstNew) frag.appendChild(firstNew);
+            for(let i = shown + 1; i < end; i++) frag.appendChild(renderFn(filtered[i]));
+            grid.appendChild(frag); shown = end;
+            if(shown >= filtered.length) btn.remove(); else btn.textContent = 'Ver mais (' + (filtered.length - shown) + ')';
+            if(firstNew){ try{ firstNew.focus({ preventScroll: false }); }catch(e){} }
+          });
+          body.appendChild(btn);
+        } else rest.push([grid, filtered, FIRST, renderFn]);
+      }
     }
     const more = () => {
       if(myRender !== renderSeq || !rest.length) return;
