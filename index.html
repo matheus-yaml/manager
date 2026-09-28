@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.7.0';
+<script>var APP_VERSION = '1.7.2';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -6836,12 +6836,40 @@ const M6 = {
     if(!this._src){
       const doc = new DOMParser().parseFromString(M3uTest.html(), 'text/html');
       this._src = {
-        shared: doc.getElementById('shared-src').textContent,
+        // mesma página de testes, SÓ com a regra de classificação (ao vivo / filme / série) trocada pela do app
+        shared: doc.getElementById('shared-src').textContent + '\n' + this.appClassSrc(),
         parser: doc.getElementById('parser-src').textContent,
         worker: doc.getElementById('worker-src').textContent
       };
     }
     return this._src;
+  },
+  /** Regra de classificação do app (até a 1.6.9: classifyFast), no formato que a página de testes usa.
+   *  Declarada depois da original, substitui a classifica() dela. Nada mais muda. */
+  appClassSrc(){
+    return [
+      'var APP_VIDEO_EXT = ' + JSON.stringify(VIDEO_EXTENSIONS) + ';',
+      'var APP_SERIES_PATTERNS = [' + SERIES_PATTERNS.map(r => r.toString()).join(',') + '];',
+      'var APP_LIVE_KW = ' + JSON.stringify(LIVE_GROUP_KEYWORDS_NORMALIZED) + ';',
+      normalizeText.toString(),
+      normalizeForKeywordMatch.toString(),
+      'var APP_LIVE_TS_RE = /\\/ts(\\?.*)?$/i, APP_LIVE_DOT_TS_RE = /\\.ts(\\?.*)?$/i, appLiveGroupCache = new Map();',
+      'function appGroupIsLive(g){ var v = appLiveGroupCache.get(g); if(v === undefined){ v = false; var nc = normalizeForKeywordMatch(g); for(var k = 0; k < APP_LIVE_KW.length; k++){ var kw = APP_LIVE_KW[k]; if(kw && nc.indexOf(kw) !== -1){ v = true; break; } } appLiveGroupCache.set(g, v); } return v; }',
+      'function appClassify(nome, url, grupo){',
+      '  var ln = nome.toLowerCase();',
+      '  for(var i = 0; i < APP_SERIES_PATTERNS.length; i++) if(APP_SERIES_PATTERNS[i].test(ln)) return 2;',
+      '  var lu = url.toLowerCase();',
+      '  for(var j = 0; j < APP_VIDEO_EXT.length; j++) if(lu.indexOf(APP_VIDEO_EXT[j]) !== -1) return 1;',
+      '  if(APP_LIVE_TS_RE.test(url) || lu.indexOf("m3u8") !== -1 || APP_LIVE_DOT_TS_RE.test(url)) return 0;',
+      '  if(grupo && appGroupIsLive(grupo)) return 0;',
+      '  return 1;',
+      '}',
+      'function classifica(cache, inf, url, nome){',
+      '  var g = attr(inf, \'group-title="\') || "Sem grupo";',
+      '  var gi = infoGrupo(cache, g), t = appClassify(nome, url, g.replace(/[\\t\\n]/g, " "));',
+      '  return { t: t, gi: gi, se: t === 2 ? SE_RE.exec(nome) : null };',
+      '}'
+    ].join('\n');
   },
   /** funções da página de testes (as mesmas regras de interpretação) para ler episódios */
   fns(){
@@ -7239,12 +7267,12 @@ const ServerModule = {
       const conns = Math.max(1, Math.min(4, parseInt(perf.downloadConnections, 10) || DEFAULT_SETTINGS.performance.downloadConnections));
       const wch = ServerModule.workersChoice();
       const msg = { cmd: 'importar', src: { url: server.url }, nome: lista, nw: wch === 'auto' ? 0 : wch, comp: false,
-        cru: 'idb', calib: M6.lerCalib(), conexoes: conns };
+        // lista crua em BANCO e SEM medir o disco: passa sempre uma medição pronta (nunca roda o "Testar disco")
+        cru: 'idb', calib: M6.lerCalib() || { v: 2, idb: { 1: 0, 4: 0, 8: 0 }, opfs: 0, grupo: 4, melhor: 'idb' }, conexoes: conns };
       let lastB = 0, lastT = Date.now(), speed = 0, first = false;
       const txt = await M6.run(msg, (st) => {
         const p = M6.parseStatus(st);
         if(!p){ return; }
-        if(p.phase === 'calib'){ report({ phase:'download', status:'processing', downloaded:0, total:null, speed:0, stage: 'Medindo o disco (1ª vez)...' }); return; }
         if(p.phase === 'dl'){
           if(!first){ first = true; pushDebugLog('⏱ "' + server.nome + '": 1º dado ' + Math.round(performance.now() - t0) + ' ms depois do clique.'); }
           const now = Date.now(), dt = (now - lastT) / 1000;
