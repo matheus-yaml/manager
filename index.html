@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.9.0';
+<script>var APP_VERSION = '1.9.1';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -2327,7 +2327,7 @@ function renderDebugPanel(){
     });
     header.appendChild(copyBtn);
     const minBtn = el('span', { style:'cursor:pointer;color:#8fd;font-size:11px;padding:1px 6px;border:1px solid rgba(255,255,255,.2);border-radius:5px;', title:'Minimizar (fica no canto, clique pra voltar)' }, ['minimizar']);
-    minBtn.addEventListener('click', () => minimizeDebugPanel(panel));
+    minBtn.addEventListener('click', (e) => { e.stopPropagation(); minimizeDebugPanel(panel); });
     header.appendChild(minBtn);
     const closeBtn = el('span', { style:'cursor:pointer;color:#888;font-size:15px;line-height:1;padding:0 2px;', title:'Fechar (desliga o painel — pode religar em Configurações)' }, ['×']);
     closeBtn.addEventListener('click', () => {
@@ -5971,6 +5971,16 @@ let searchDebounceTimer = null;
 let activeSearchOverlay = null;
 let lastSearchState = null; // { term, results } — evita repetir a mesma busca no banco
 
+/** Depois de reabrir a busca global (voltando de um card): põe o foco de
+ *  volta no card daquele conteúdo/série dentro do popup de busca — usa
+ *  seletor explícito porque o popup fica fora de #content-area (ver
+ *  TvNav.restoreCard, que só olha #content-area quando usado com `cid`). */
+function focusSearchCard(cid){
+  if(!TvNav.on() || !cid) return;
+  const esc = (v) => (window.CSS && CSS.escape) ? CSS.escape(v) : String(v).replace(/["\\]/g, '\\$&');
+  TvNav.focusSoon('.search-full .content-card[data-cid="' + esc(cid) + '"]');
+}
+
 function openSearchPopup(term, initialFilters, opts){
   if(activeSearchOverlay) return activeSearchOverlay; // já tem um aberto, não duplica
   let currentResults = null; // null = ainda não buscou (chips de servidor sem contador)
@@ -6189,7 +6199,10 @@ function openSearchPopup(term, initialFilters, opts){
       input.focus();
       input.setSelectionRange(term.length, term.length); // cursor no fim, não no início
     }
-    scheduleSearch(term);
+    // Reabrindo depois de "voltar" (noFocus): o termo já foi buscado antes,
+    // então busca na hora (sem esperar o debounce) — evita a tela "piscar"
+    // vazia por até 1s antes de mostrar os resultados de novo.
+    if(noFocus) runSearch(term); else scheduleSearch(term);
   } else if(!noFocus){
     input.focus();
   }
@@ -9759,6 +9772,7 @@ const PlayerModule = {
     this.close();
     if(returnTo && returnTo.type === 'search'){
       openSearchPopup(returnTo.term, { activeType: returnTo.activeType, activeServer: returnTo.activeServer }, { noFocus: true });
+      focusSearchCard(returnTo.cid);
     }
   },
 
@@ -10636,7 +10650,7 @@ function renderContentCard(content, options){
   const activateCard = function(){
     if(activeSearchOverlay){
       const f = activeSearchOverlay.getFilters();
-      State.ui.returnTo = { type:'search', term: activeSearchOverlay.input.value, activeType: f.activeType, activeServer: f.activeServer };
+      State.ui.returnTo = { type:'search', term: activeSearchOverlay.input.value, activeType: f.activeType, activeServer: f.activeServer, cid: content && content.id };
       activeSearchOverlay.close(true);
     } else {
       State.ui.returnTo = null;
@@ -10657,6 +10671,7 @@ function renderContentCard(content, options){
 
 function renderSeriesCard(entry){
   const card = el('div', { class:'content-card', tabindex:'0' });
+  if(entry && entry.key) card.setAttribute('data-cid', entry.key); // TvNav.restoreCard
   const thumb = el('div', { class:'thumb' });
   if(entry.logo){
     const img = el('img', { loading:'lazy' });
@@ -10692,7 +10707,7 @@ function renderSeriesCard(entry){
   const activateSeriesCard = function(){
     if(activeSearchOverlay){
       const f = activeSearchOverlay.getFilters();
-      State.ui.returnTo = { type:'search', term: activeSearchOverlay.input.value, activeType: f.activeType, activeServer: f.activeServer };
+      State.ui.returnTo = { type:'search', term: activeSearchOverlay.input.value, activeType: f.activeType, activeServer: f.activeServer, cid: entry.key };
       activeSearchOverlay.close(true);
     } else {
       // Aberta pelo Sugira-me ("Também pode curtir"): voltar leva pra lá.
@@ -11135,6 +11150,7 @@ function goBackFromSeriesDetail(){
   Router.render();
   if(returnTo && returnTo.type === 'search'){
     openSearchPopup(returnTo.term, { activeType: returnTo.activeType, activeServer: returnTo.activeServer }, { noFocus: true });
+    focusSearchCard(returnTo.cid);
   }
 }
 
@@ -13327,7 +13343,17 @@ const TvNav = {
       // senão, ao sair de outra seção (ex: 1º card de "Continuar Assistindo")
       // pra esquerda, a seta ficava "no caminho" antes da barra lateral.
       const curCar = cur.closest && cur.closest('.carousel');
-      target = this.pick(cur, dir, all.filter(c => contentArea.contains(c.el) && (!c.el.classList.contains('car-nav') || c.el.closest('.carousel') === curCar)));
+      const curChipRow = cur.closest && cur.closest('.chip-row');
+      const curHeader = cur.closest && cur.closest('.section-header');
+      // chips do topo (Todos/servidores/★/✓/☰ Categorias) e botões de
+      // cabeçalho de seção (ex: "Ver tudo") só entram na disputa quando o
+      // foco já está DENTRO daquela mesma linha/seção — senão, ao sair do
+      // 1º card de uma lista pra esquerda, esses elementos ficavam "no
+      // caminho" antes da barra lateral (mesmo bug do car-nav, outros elementos).
+      target = this.pick(cur, dir, all.filter(c => contentArea.contains(c.el) &&
+        (!c.el.classList.contains('car-nav') || c.el.closest('.carousel') === curCar) &&
+        (!c.el.classList.contains('chip') || c.el.closest('.chip-row') === curChipRow) &&
+        (!c.el.closest('.section-header') || c.el.closest('.section-header') === curHeader)));
     }
     // Nada mais pra focar pra cima/baixo no conteúdo, mas a página ainda
     // tem o que rolar (título, texto…): ROLA a página e o foco fica onde
@@ -13952,6 +13978,7 @@ function setupEventListeners(){
     PlayerModule.close();
     if(!(content && content.tipo === 'series') && returnTo && returnTo.type === 'search'){
       openSearchPopup(returnTo.term, { activeType: returnTo.activeType, activeServer: returnTo.activeServer }, { noFocus: true });
+      focusSearchCard(returnTo.cid);
     }
     consumeNavState(); // mantém o histórico do navegador em sincronia — ver definição acima
   });
