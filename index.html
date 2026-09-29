@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.12.4';
+<script>var APP_VERSION = '1.13.1';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -1205,6 +1205,11 @@ html.tv #player-overlay.live-mode #player-fullscreen{display:none;}
 .toast.error{border-color:rgba(239,68,68,.5);}
 .toast.success{border-color:rgba(52,211,153,.5);}
 @keyframes toastIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+
+/* URLs "sensíveis" travadas (ver UrlLock): vira campo tipo senha (bolinhas/
+   asteriscos, mascarado pelo próprio navegador) até destravar pelo toque
+   secreto na versão do app. */
+.url-locked{cursor:not-allowed;background:var(--bg-2);letter-spacing:2px;}
 
 .dash-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:28px;}
 .dash-card{background:var(--bg-1);-webkit-backdrop-filter:blur(var(--blur));backdrop-filter:blur(var(--blur));border:1px solid var(--border);border-radius:var(--radius);padding:19px;
@@ -12350,6 +12355,64 @@ async function runImportWithProgressModal(servers){
 }
 
 /* ======================================================================
+   UrlLock — esconde/trava os campos de URL "sensíveis" (update manual e
+   Raw/JSON) pra quem recebe o app pronto (ex: aluno) não ver nem trocar
+   de onde ele vem. Ficam embaçados e sem digitação por padrão; tocar 7x
+   seguidas (em até 3s) em "StreamManager · vX.Y.Z" no rodapé do menu
+   libera — só enquanto o app está aberto (fecha e abre, volta a travar).
+   Tem que reforçar o travamento no foco do próprio campo porque no Modo
+   TV o TvNav destrava QUALQUER campo de texto (readOnly=false) quando
+   aperta OK pra digitar — sem isso o controle contornava o bloqueio.
+   ====================================================================== */
+const UrlLock = {
+  unlocked: false,
+  _inputs: [],
+  register(input){
+    if(!input || input._urlLockRegistered) return;
+    input._urlLockRegistered = true;
+    this._inputs.push(input);
+    this._apply(input);
+    input.addEventListener('focusin', () => this._apply(input));
+  },
+  _apply(input){
+    // Sem checar isConnected aqui: quando registrado, o campo ainda pode
+    // não estar preso na árvore do documento (só é anexado depois, junto
+    // com o resto do bloco) — se saísse sem aplicar por causa disso, abria
+    // com o valor legível até alguém focar o campo (era exatamente o bug).
+    if(this.unlocked){
+      input.type = 'text';
+      input.readOnly = false;
+      input.classList.remove('url-locked');
+      input.title = '';
+    } else {
+      input.type = 'password';
+      input.readOnly = true;
+      input.classList.add('url-locked');
+      input.title = 'Bloqueado — toque 7x em "v' + APP_VERSION + '" no rodapé do menu pra editar';
+    }
+  },
+  unlock(){
+    if(this.unlocked) return;
+    this.unlocked = true;
+    this._inputs = this._inputs.filter(i => i.isConnected);
+    this._inputs.forEach(i => this._apply(i));
+  },
+  /** Toque 7x seguidas (em até 3s) no elemento pra destravar — mesmo padrão
+   *  do "número da versão" nas Configurações do Android. Sem toast: fica
+   *  discreto, sem chamar atenção pro gesto. */
+  attachSecretTap(el){
+    let count = 0, timer = null;
+    el.addEventListener('click', () => {
+      if(this.unlocked) return;
+      count++;
+      clearTimeout(timer);
+      timer = setTimeout(() => { count = 0; }, 3000);
+      if(count >= 7){ count = 0; clearTimeout(timer); this.unlock(); }
+    });
+  }
+};
+
+/* ======================================================================
    VIEW: SETTINGS
 
    ====================================================================== */
@@ -12485,6 +12548,7 @@ async function renderSettingsView(container){
     urlInput.value = ManualUpdate.getUrl();
     urlGroup.appendChild(urlInput);
     updBlock.appendChild(urlGroup);
+    UrlLock.register(urlInput);
     const updStatus = el('div', { style:'font-size:12px;color:var(--text-2);margin-top:8px;min-height:1.3em;overflow-wrap:anywhere;' });
     const row = el('div', { style:'display:flex;gap:10px;flex-wrap:wrap;margin-top:6px;' });
     const goBtn = el('button', { class:'btn primary' }, ['⬇ Baixar e atualizar agora']);
@@ -12688,12 +12752,16 @@ async function renderSettingsView(container){
   autoBlock.appendChild(el('h3', {}, ['Servidores Automáticos']));
 
   const row1 = el('div', { class:'form-row' });
+  const rawUrlInput = el('input',{type:'text'});
+  rawUrlInput.id = 'raw-url-input';
+  rawUrlInput.value = DEFAULT_SETTINGS.rawUrl || '';
   const rawUrlGroup = el('div', { class:'form-group' }, [
     el('label',{},['URL do Raw (JSON)']),
-    (function(){ const i = el('input',{type:'text'}); i.id='raw-url-input'; i.value = DEFAULT_SETTINGS.rawUrl || ''; return i; })(),
+    rawUrlInput,
     el('div',{class:'hint'},['O JSON deve conter pares chave (nome do servidor) → URL M3U/M3U8.'])
   ]);
   row1.appendChild(rawUrlGroup);
+  UrlLock.register(rawUrlInput);
   autoBlock.appendChild(row1);
 
   const row2 = el('div', { class:'form-row' });
@@ -14175,7 +14243,10 @@ async function initApp(){
   setupEventListeners();
   TvNav.init();
   const versionLabel = qs('#app-version-label');
-  if(versionLabel) versionLabel.textContent = 'v' + APP_VERSION;
+  if(versionLabel){
+    versionLabel.textContent = 'v' + APP_VERSION;
+    UrlLock.attachSecretTap(versionLabel);
+  }
   try{ NetStatus.start(); NetStatus.startClock(); }catch(e){}
   try{ NetSpeed.start(); }catch(e){}
   try{ SysMon.start(); }catch(e){}
