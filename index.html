@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.8.0';
+<script>var APP_VERSION = '1.9.0';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -1008,6 +1008,15 @@ html.native-pip #player-topbar,html.native-pip #player-controls-bottom,html.nati
 html.native-pip #player-playpause-feedback,html.native-pip #player-lock-affordance,html.native-pip #player-buffering,
 html.native-pip #debug-panel,html.native-pip #toast-wrap,html.native-pip #boot-progress{display:none !important;}
 html.native-pip #video-player{width:100vw !important;height:100vh !important;object-fit:contain;}
+/* painel de diagnóstico minimizado: vira uma bolinha no canto, só com o "⠿" */
+#debug-panel.debug-panel-min{min-width:0;min-height:0;resize:none;border-radius:50%;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;}
+#debug-panel.debug-panel-min #debug-panel-mem,
+#debug-panel.debug-panel-min #debug-panel-body,
+#debug-panel.debug-panel-min .debug-panel-header-extra{display:none;}
+#debug-panel.debug-panel-min > div:first-child{border:none;padding:0;justify-content:center;cursor:pointer;}
+#debug-panel.debug-panel-min > div:first-child span{display:none;}
+#debug-panel.debug-panel-min > div:first-child span:first-child{display:block;font-size:18px;}
 #player-zoom-badge{position:absolute;top:18px;left:50%;transform:translateX(-50%);z-index:6;padding:6px 12px;border-radius:20px;
   background:rgba(10,11,18,.75);color:#fff;font-size:13px;font-weight:700;opacity:0;transition:opacity .2s;pointer-events:none;}
 #player-zoom-badge.show{opacity:1;}
@@ -1136,6 +1145,9 @@ html.native-pip #video-player{width:100vw !important;height:100vh !important;obj
    ao vivo — só aparece de fato dentro de .live-mode. */
 #player-live-sync{display:none;}
 #player-overlay.live-mode #player-live-sync{display:flex;gap:7px;}
+/* No projetor, o app já ocupa a tela toda — o botão de tela cheia dentro
+   de um canal ao vivo é redundante (pedido: some só no projetor/TV). */
+html.tv #player-overlay.live-mode #player-fullscreen{display:none;}
 .live-dot{
   width:8px;height:8px;border-radius:50%;flex-shrink:0;
   background:#6b7280; /* cinza = desincronizado (pausado ou atrasado da transmissão) */
@@ -1363,6 +1375,10 @@ html.tv .nav-item:focus, html.tv .live-cat:focus, html.tv .episode-row:focus, ht
 }
 /* cards: moldura azul arredondada desenhada por cima da capa (não é cortada) */
 html.tv .content-card:focus{outline:none !important;box-shadow:0 0 16px -2px rgba(var(--accent-rgb),.6) !important;}
+/* cabeçalho de temporada: o anel de foco fica só na bolinha de +/-, não no
+   cabeçalho inteiro (ficava feio, ocupando a largura toda). */
+html.tv [data-season]:focus{box-shadow:none !important;background:rgba(var(--accent-rgb),.10);}
+html.tv [data-season]:focus .season-toggle-dot{box-shadow:0 0 0 3px var(--accent), 0 0 0 6px rgba(var(--accent-rgb),.28);}
 html.tv .content-card:focus::before{
   content:"";position:absolute;top:0;right:0;bottom:0;left:0;z-index:6;pointer-events:none;
   border:3px solid var(--accent);border-radius:inherit;
@@ -2139,6 +2155,10 @@ const State = {
     serversUpdating: new Set(), // ids dos servidores em atualização agora — bolinha pisca na tela de Servidores
     debugPanelEnabled: false, // painel de diagnóstico — SEMPRE começa desligado, nunca é salvo/lembrado entre aberturas
     activeSeriesKey: null,
+    // Temporada que ficou expandida na tela de detalhes da série — persiste
+    // entre re-renders (ex: voltar de assistir um episódio) pra não recolher
+    // a temporada nem perder o foco do episódio (ver renderSeriesDetailView).
+    seriesDetailOpenSeason: null,
     // Preenchido só quando o usuário abre um conteúdo a partir da busca
     // global ({type:'search', term, activeType, activeServer}) — usado
     // pra "voltar" reabrir a busca com o mesmo termo/filtros em vez de
@@ -2306,6 +2326,9 @@ function renderDebugPanel(){
       else showToast('Não deu pra copiar automaticamente.', 'error');
     });
     header.appendChild(copyBtn);
+    const minBtn = el('span', { style:'cursor:pointer;color:#8fd;font-size:11px;padding:1px 6px;border:1px solid rgba(255,255,255,.2);border-radius:5px;', title:'Minimizar (fica no canto, clique pra voltar)' }, ['minimizar']);
+    minBtn.addEventListener('click', () => minimizeDebugPanel(panel));
+    header.appendChild(minBtn);
     const closeBtn = el('span', { style:'cursor:pointer;color:#888;font-size:15px;line-height:1;padding:0 2px;', title:'Fechar (desliga o painel — pode religar em Configurações)' }, ['×']);
     closeBtn.addEventListener('click', () => {
       State.ui.debugPanelEnabled = false;
@@ -2322,6 +2345,7 @@ function renderDebugPanel(){
     MemMonitor.start();
     const body = el('div', { id:'debug-panel-body', style:'overflow-y:auto;padding:6px 10px;white-space:pre-wrap;line-height:1.5;flex:1;min-height:0;' });
     panel.appendChild(body);
+    panel.addEventListener('click', () => { if(panel.classList.contains('debug-panel-min')) restoreDebugPanel(panel); });
     document.body.appendChild(panel);
     DebugPanelDrag.attach(panel, header);
   }
@@ -2335,6 +2359,29 @@ function renderDebugPanel(){
 
 /** Mover (arrastando o título) e redimensionar (canto) o painel — mouse ou
  *  dedo. A posição/tamanho ficam salvos pra próxima vez. */
+/** Minimiza o painel de diagnóstico pro canto inferior direito (uma bolinha
+ *  clicável); guarda posição/tamanho de antes pra voltar do jeito que estava. */
+function minimizeDebugPanel(panel){
+  if(!panel || panel.classList.contains('debug-panel-min')) return;
+  panel._prevBox = { left: panel.style.left, top: panel.style.top, right: panel.style.right, bottom: panel.style.bottom, width: panel.style.width, height: panel.style.height };
+  panel.classList.add('debug-panel-min');
+  panel.style.left = 'auto'; panel.style.top = 'auto';
+  panel.style.right = '10px'; panel.style.bottom = '10px';
+  panel.style.width = '46px'; panel.style.height = '46px';
+  panel.title = 'Diagnóstico minimizado — clique pra voltar';
+}
+function restoreDebugPanel(panel){
+  if(!panel || !panel.classList.contains('debug-panel-min')) return;
+  panel.classList.remove('debug-panel-min');
+  const b = panel._prevBox;
+  if(b){
+    panel.style.left = b.left; panel.style.top = b.top;
+    panel.style.right = b.right; panel.style.bottom = b.bottom;
+    panel.style.width = b.width; panel.style.height = b.height;
+  }
+  panel.removeAttribute('title');
+}
+
 const DebugPanelDrag = {
   KEY: 'sm_debug_panel_box2', // (2: painel ficou mais alto — tamanho antigo salvo não vale mais)
   attach(panel, handle){
@@ -2455,8 +2502,7 @@ const MemMonitor = {
     }
     if(this._storage) lines.push(this._storage);
     lines.push(UpdateLog.statusLine());
-    lines.push(NetStatus.statusLine());
-    try{ const ns = NetSpeed.statusLine(); if(ns) lines.push(ns); }catch(e){}
+    // (a parte de rede não entra mais aqui — já dá pra ver no indicador da tela, canto esquerdo)
     try{ const rs = PlayerModule.reserveStatus(); if(rs) lines.push(rs); }catch(e){}
     try{ const vs = PlayerModule.vodStatus(); if(vs) lines.push(vs); }catch(e){}
     // quanto as imagens da tela ocupam (bitmap = largura x altura x 4 bytes)
@@ -2623,13 +2669,6 @@ const PerfMode = {
       this._ltInt = setInterval(() => {
         if(!acc.n){ try{ window.__SM_PROF && window.__SM_PROF.top(); }catch(e){} return; }
         pushDebugLog('🐢 Últimos 10s: ' + acc.n + ' travada(s), ' + Math.round(acc.total) + ' ms no total (maior ' + Math.round(acc.max) + ' ms) • ' + PerfMode._playerDesc(), acc.total > 1500);
-        // quem do app estava rodando nesse tempo (o que não aparece aqui é o
-        // navegador desenhando a tela ou o próprio Android)
-        try{
-          const top = window.__SM_PROF ? window.__SM_PROF.top(3) : [];
-          if(top.length) pushDebugLog('🔎 Mais pesados do app (10s): ' + top.map(([k, v]) => k + ' — ' + v.n + '× ' + Math.round(v.t) + ' ms (maior ' + Math.round(v.max) + ')').join(' | '));
-          else pushDebugLog('🔎 Nenhum código do app passou de 30 ms — as travadas vêm do navegador desenhando a tela ou do Android.');
-        }catch(e){}
         acc.n = 0; acc.total = 0; acc.max = 0;
       }, 10000);
     }catch(e){}
@@ -5932,7 +5971,7 @@ let searchDebounceTimer = null;
 let activeSearchOverlay = null;
 let lastSearchState = null; // { term, results } — evita repetir a mesma busca no banco
 
-function openSearchPopup(term, initialFilters){
+function openSearchPopup(term, initialFilters, opts){
   if(activeSearchOverlay) return activeSearchOverlay; // já tem um aberto, não duplica
   let currentResults = null; // null = ainda não buscou (chips de servidor sem contador)
   let activeType = (initialFilters && initialFilters.activeType) || 'all';
@@ -6143,12 +6182,15 @@ function openSearchPopup(term, initialFilters){
   });
 
   renderServerChips();
+  const noFocus = opts && opts.noFocus;
   if(term){
     input.value = term;
-    input.focus();
-    input.setSelectionRange(term.length, term.length); // cursor no fim, não no início
+    if(!noFocus){
+      input.focus();
+      input.setSelectionRange(term.length, term.length); // cursor no fim, não no início
+    }
     scheduleSearch(term);
-  } else {
+  } else if(!noFocus){
     input.focus();
   }
 
@@ -7315,7 +7357,7 @@ const ServerModule = {
       QueryModule.invalidateCaches(); Cat.clear();
       State.pageCache.clear(); State.dashboardCache = null; State.favoritesCache = null; State.continueCache = null;
       const total = counts.live + counts.movie + counts.series;
-      report({ phase:'process', status:'done', processed: total, total: total, counts, seriesCount: meta.series });
+      report({ phase:'process', status:'done', processed: total, total: total, counts, seriesCount: meta.series, elapsedS: Math.round((performance.now() - t0) / 1000) });
       return { ok: true, count: total };
     }catch(err0){
       let err = err0;
@@ -8119,6 +8161,16 @@ document.addEventListener('backbutton', function(e){
     goBackFromSeriesDetail();
     _lastRootBackPressAt = 0;
     return;
+  }
+  // Séries/Filmes/Ao Vivo com as categorias da barra lateral abertas: o
+  // "voltar" fecha as categorias (mesmo que o botão "← Menu") em vez de
+  // cair direto na tela raiz e avisar que vai sair do app.
+  {
+    const v = State.ui.currentView;
+    if((v === 'series' || v === 'movies' || v === 'live') && !State.ui.catSideHidden[v]){
+      const b = qs('#live-side-back');
+      if(b){ b.click(); _lastRootBackPressAt = 0; return; }
+    }
   }
   // Nada do app pra fechar — está na tela raiz. Só sai de verdade se
   // apertar voltar de novo dentro de ~2s (senão, só avisa).
@@ -8964,7 +9016,20 @@ const PlayerModule = {
 
   /** Pula pra ponta da transmissão ao vivo e retoma a reprodução. */
   syncToLiveEdge(){
-    if(this._hybrid){ if(this._hybridPaused) this.togglePlayPause(); return; } // nativo sempre na ponta ao vivo
+    if(this._hybrid){
+      // Despausar sozinho NÃO volta pro tempo real no player nativo (ele
+      // retoma de onde tinha parado) — só reabrir o canal garante a ponta
+      // ao vivo de verdade, igual quando ele reconecta sozinho.
+      if(this.currentContent){
+        this.playToken++;
+        this._hybridPaused = false;
+        this._startHybrid(this.currentContent, this.playToken);
+        this._updatePlayPauseIcon();
+        this._showPlayPauseFeedback(true);
+        this._scheduleHideControls();
+      }
+      return;
+    }
     const video = qs('#video-player');
     const edge = this._getLiveEdgeTime(video);
     if(edge !== null){
@@ -9693,7 +9758,7 @@ const PlayerModule = {
     State.ui.returnTo = null;
     this.close();
     if(returnTo && returnTo.type === 'search'){
-      openSearchPopup(returnTo.term, { activeType: returnTo.activeType, activeServer: returnTo.activeServer });
+      openSearchPopup(returnTo.term, { activeType: returnTo.activeType, activeServer: returnTo.activeServer }, { noFocus: true });
     }
   },
 
@@ -10790,21 +10855,13 @@ const LiveView = {
     PlayerModule.open(content, { mini: true, host });
     this.markPlaying();
   },
-  /** Clique/OK num canal = tela cheia (o foco já toca no quadro). Toca no
-   *  quadro primeiro e expande — assim o Voltar devolve pro quadro sem reiniciar. */
-  /** 1 clique/OK no canal = toca no quadro. 2 cliques/OK seguidos (até ~0,5s)
-   *  = tela cheia. Segurar = menu (TvNav). */
+  /** Clique/OK num canal = tela cheia direto (o foco já toca no quadro
+   *  sozinho, então 1 clique/OK já é suficiente pra expandir). Toca no
+   *  quadro primeiro (se ainda não estava) e expande — assim o Voltar
+   *  devolve pro quadro sem reiniciar. Segurar = menu (TvNav). */
   activate(content){
     clearTimeout(this._focusT);
-    const now = Date.now();
-    const dbl = this._lastAct && this._lastAct.id === content.id && now - this._lastAct.t < 550;
-    this._lastAct = dbl ? null : { id: content.id, t: now };
-    if(!dbl){
-      if(!(PlayerModule.isMini() && PlayerModule.currentContent && PlayerModule.currentContent.id === content.id)) this.play(content);
-      return;
-    }
-    const cc = PlayerModule.currentContent;
-    if(!(PlayerModule.isMini() && cc && cc.id === content.id)) this.play(content);
+    if(!(PlayerModule.isMini() && PlayerModule.currentContent && PlayerModule.currentContent.id === content.id)) this.play(content);
     PlayerModule.expandMini();
   },
   /** Player nativo em uso: o quadro não toca (economia) — mostra nome e o que
@@ -11073,10 +11130,11 @@ async function renderSeriesListView(container){
 function goBackFromSeriesDetail(){
   const returnTo = State.ui.returnTo;
   State.ui.returnTo = null;
+  State.ui.seriesDetailOpenSeason = null; // saindo de vez da série: não precisa mais lembrar a temporada aberta
   State.ui.currentView = (returnTo && returnTo.type === 'suggest') ? 'suggest' : 'series';
   Router.render();
   if(returnTo && returnTo.type === 'search'){
-    openSearchPopup(returnTo.term, { activeType: returnTo.activeType, activeServer: returnTo.activeServer });
+    openSearchPopup(returnTo.term, { activeType: returnTo.activeType, activeServer: returnTo.activeServer }, { noFocus: true });
   }
 }
 
@@ -11176,8 +11234,13 @@ async function renderSeriesDetailView(container){
   const seasonsWrap = el('div');
   container.appendChild(seasonsWrap);
   // Se houver mais de uma temporada, começa tudo recolhido (o usuário
-  // escolhe o que expandir). Com uma única temporada, já abre ela.
+  // escolhe o que expandir). Com uma única temporada, já abre ela. Se o
+  // usuário já tinha uma temporada aberta nesta série (ex: voltou de
+  // assistir um episódio), mantém a mesma aberta em vez de recolher tudo.
   let openSeasonNum = sortedSeasons.length === 1 ? sortedSeasons[0] : null;
+  if(State.ui.seriesDetailOpenSeason != null && sortedSeasons.includes(State.ui.seriesDetailOpenSeason)){
+    openSeasonNum = State.ui.seriesDetailOpenSeason;
+  }
 
   function renderEpisodeRow(content){
     const prog = ProgressModule.getProgress(content.id);
@@ -11232,12 +11295,13 @@ async function renderSeriesDetailView(container){
         el('h4', { style:'margin:0;' }, ['Temporada ' + seasonNum]),
         el('span', { style:'display:flex;align-items:center;gap:10px;color:var(--text-2);font-size:13px;' }, [
           seasons.get(seasonNum).length + ' ep.',
-          el('span', { style:'display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:var(--bg-3);color:var(--text-0);font-size:16px;font-weight:700;line-height:1;' }, [isOpen ? '−' : '+'])
+          el('span', { class:'season-toggle-dot', style:'display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:var(--bg-3);color:var(--text-0);font-size:16px;font-weight:700;line-height:1;' }, [isOpen ? '−' : '+'])
         ])
       ]);
       seasonHeader.setAttribute('data-season', String(seasonNum));
       seasonHeader.addEventListener('click', function(){
         openSeasonNum = isOpen ? null : seasonNum; // clicar na mesma fecha; clicar em outra troca
+        State.ui.seriesDetailOpenSeason = openSeasonNum;
         renderSeasonsAccordion();
         // controle remoto: o foco continua no cabeçalho dessa temporada (redesenhado)
         if(TvNav.on()){
@@ -11965,6 +12029,7 @@ async function runImportWithProgressModal(servers){
   const overallTrack = el('div', { class:'progress-track' }, [el('div',{class:'pfill', id:'overall-fill', style:'width:0%'})]);
   overallWrap.appendChild(overallLabel);
   overallWrap.appendChild(overallTrack);
+  overallWrap.appendChild(el('div', { style:'font-size:12px;color:var(--muted);margin-top:4px;' }, ['É recomendado aguardar o processamento de todos os servidores.']));
   box.appendChild(overallWrap);
 
   const listWrap = el('div', { class:'server-progress-list', id:'sp-list' });
@@ -12102,7 +12167,7 @@ async function runImportWithProgressModal(servers){
       dotEl.className = 'status-dot processing';
       statusEl.className = 'sp-status proc';
       if(patch.status === 'done'){
-        statusEl.textContent = 'Processado';
+        statusEl.textContent = 'Processado' + (patch.elapsedS != null ? ' — ' + patch.elapsedS + 's' : '');
         statusEl.className = 'sp-status ok';
         dotEl.className = 'status-dot';
         fillEl.style.width = '100%';
@@ -13205,7 +13270,9 @@ const TvNav = {
     const cx = c.left + c.width / 2, cy = c.top + c.height / 2;
     let best = null, bestScore = Infinity;
     for(const { el, r } of cands){
-      if(el === cur || el.contains(cur) || cur.contains(el)) continue;
+      // (episode-row tem o botão de baixar dentro e mesmo assim precisa ser um
+      // alvo de navegação alcançável com → — não filtra descendentes de cur aqui)
+      if(el === cur || el.contains(cur)) continue;
       let primary, overlap, secondary;
       if(dir === 'right'){ primary = r.left - c.right; if(r.left + r.width / 2 <= cx + 2) continue; }
       else if(dir === 'left'){ primary = c.left - r.right; if(r.left + r.width / 2 >= cx - 2) continue; }
@@ -13255,7 +13322,12 @@ const TvNav = {
     const inContent = contentArea && contentArea.contains(cur);
     const inTopbar = !!cur.closest('#topbar');
     if(contentArea && scope.id === 'app' && (inContent || (inTopbar && dir === 'down'))){
-      target = this.pick(cur, dir, all.filter(c => contentArea.contains(c.el)));
+      // setas "‹›" de um carrossel (ex: "Adicionados Recentemente") só entram
+      // na disputa quando o foco já está DENTRO daquele mesmo carrossel —
+      // senão, ao sair de outra seção (ex: 1º card de "Continuar Assistindo")
+      // pra esquerda, a seta ficava "no caminho" antes da barra lateral.
+      const curCar = cur.closest && cur.closest('.carousel');
+      target = this.pick(cur, dir, all.filter(c => contentArea.contains(c.el) && (!c.el.classList.contains('car-nav') || c.el.closest('.carousel') === curCar)));
     }
     // Nada mais pra focar pra cima/baixo no conteúdo, mas a página ainda
     // tem o que rolar (título, texto…): ROLA a página e o foco fica onde
@@ -13273,10 +13345,12 @@ const TvNav = {
     // ↑/↓ no conteúdo nunca pulam pra barra lateral (só ←)
     if(!target) target = this.pick(cur, dir, (inContent && (dir === 'up' || dir === 'down')) ? all.filter(c => !c.el.closest('#sidebar')) : all);
     if(!target) return;
-    // Conteúdo → menu: cai no item ATIVO do menu (não num aleatório)
+    // Conteúdo → menu: em Ao Vivo/Séries/Filmes (categorias na barra lateral)
+    // começa lá em cima, na seta "← Menu" — nas demais telas, cai no item
+    // ATIVO do menu (não num aleatório)
     if(!inSidebar && target.closest('#sidebar')){
-      const active = document.querySelector('#sidebar.live-side-on #live-cat-list .live-cat.active') ||
-        document.querySelector('#sidebar.live-side-on #live-cat-list .live-cat') || document.querySelector('#sidebar .nav-item.active');
+      const catSide = document.querySelector('#sidebar.live-side-on');
+      const active = catSide ? document.getElementById('live-side-back') : document.querySelector('#sidebar .nav-item.active');
       this.focus(active || target); return;
     }
     this.focus(target);
@@ -13441,8 +13515,11 @@ const TvNav = {
     input._tvEditing = true;
     this._typingUntil = Date.now() + 2000;
     // tira e devolve o foco pro Android abrir o teclado agora que dá pra escrever
+    // (marca como "blur interno": o listener de focusout não pode achar que o
+    // usuário desistiu de digitar só porque piscamos o foco pra reabrir o teclado)
+    input._tvInternalBlur = true;
     input.blur();
-    setTimeout(() => { input._tvEditing = true; input.focus(); try{ const n = input.value.length; input.setSelectionRange(n, n); }catch(e){} }, 30);
+    setTimeout(() => { input._tvInternalBlur = false; input._tvEditing = true; input.focus(); try{ const n = input.value.length; input.setSelectionRange(n, n); }catch(e){} }, 30);
   },
   stopTyping(input){
     input._tvEditing = false;
@@ -13498,14 +13575,17 @@ const TvNav = {
       el.readOnly = true;
       el.classList.add('tv-locked');
       el.classList.remove('tv-editing');
-      this.hint('OK para digitar');
     }, true);
     document.addEventListener('focusout', (e) => {
       const el = e.target;
       if(!this.isTextInput(el) || !el.classList) return;
-      if(el._tvEditing) return; // blur/focus do startTyping
-      if(el.classList.contains('tv-locked')) el.readOnly = false; // devolve o campo ao normal fora do controle
-      el.classList.remove('tv-locked');
+      if(el._tvInternalBlur) return; // blur/foco do próprio startTyping (reabrindo o teclado): não mexe
+      // saiu de vez do campo (seta, clique em outro lugar…): garante que a
+      // próxima vez que ele focar (mesmo sem clicar) volte travado, sem teclado
+      el._tvEditing = false;
+      el.readOnly = true;
+      el.classList.remove('tv-editing');
+      el.classList.add('tv-locked');
     }, true);
     document.addEventListener('input', (e) => { if(this.on() && this.isTextInput(e.target)) this._typingUntil = Date.now() + 1500; }, true);
     // Alguns WebViews transformam "segurar OK" em menu de contexto (igual
@@ -13524,6 +13604,16 @@ const TvNav = {
       if(!this.on() || !e.target || e.target.tagName !== 'SELECT') return;
       e.preventDefault();
       TvSelect.open(e.target);
+    }, true);
+    // clique/toque (ex: touchpad de um mini teclado USB) num campo de texto travado:
+    // mesma coisa que apertar OK — sem isso, só o botão OK do controle abria o teclado
+    document.addEventListener('click', (e) => {
+      if(!this.on() || !e.target) return;
+      const el = e.target;
+      if(this.isTextInput(el) && el.classList.contains('tv-locked')){
+        e.preventDefault();
+        this.startTyping(el);
+      }
     }, true);
 
     document.addEventListener('keydown', (e) => {
@@ -13560,6 +13650,15 @@ const TvNav = {
             const pp = (last && last.offsetParent !== null) ? last : document.getElementById('player-playpause');
             PlayerModule._lastCtrlFocusId = null;
             if(pp) this.focus(pp);
+            PlayerModule._scheduleHideControls();
+            return;
+          }
+          // OK com os controles escondidos: pausa/despausa (igual o toque no
+          // vídeo já faz) e mostra os controles um instante
+          if(this.isOk(e)){
+            e.preventDefault();
+            PlayerModule.togglePlayPause();
+            PlayerModule._showControls();
             PlayerModule._scheduleHideControls();
           }
           return;
@@ -13598,8 +13697,8 @@ const TvNav = {
         if(document.querySelector('.modal-overlay') && closeTopModal()){ e.preventDefault(); e.stopPropagation(); return; }
       }
 
-      // ---- segurar OK num card = favoritar ----
-      if(this.isOk(e) && a && a.classList && a.classList.contains('content-card')){
+      // ---- segurar OK num card (ou linha de episódio) = menu de ações ----
+      if(this.isOk(e) && a && a.classList && (a.classList.contains('content-card') || a.classList.contains('episode-row'))){
         e.preventDefault(); e.stopPropagation();
         if(e.repeat || (this._okCard === a && Date.now() - this._okAt < 5000)) return; // repetição do botão segurado
         this._okFired = false; this._okCard = a; this._okAt = Date.now();
@@ -13611,7 +13710,7 @@ const TvNav = {
         return;
       }
       // tecla de menu/opções do controle (quando existe) num card: mesmo menu
-      if((k === 'ContextMenu' || k === 'Menu' || e.keyCode === 93 || e.keyCode === 82) && a && a.classList && a.classList.contains('content-card')){
+      if((k === 'ContextMenu' || k === 'Menu' || e.keyCode === 93 || e.keyCode === 82) && a && a.classList && (a.classList.contains('content-card') || a.classList.contains('episode-row'))){
         e.preventDefault(); e.stopPropagation();
         this.openCardMenu(a);
         return;
@@ -13852,7 +13951,7 @@ function setupEventListeners(){
     if(!(content && content.tipo === 'series')) State.ui.returnTo = null;
     PlayerModule.close();
     if(!(content && content.tipo === 'series') && returnTo && returnTo.type === 'search'){
-      openSearchPopup(returnTo.term, { activeType: returnTo.activeType, activeServer: returnTo.activeServer });
+      openSearchPopup(returnTo.term, { activeType: returnTo.activeType, activeServer: returnTo.activeServer }, { noFocus: true });
     }
     consumeNavState(); // mantém o histórico do navegador em sincronia — ver definição acima
   });
