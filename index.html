@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.11.0';
+<script>var APP_VERSION = '1.11.1';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -13381,6 +13381,7 @@ const TvNav = {
       const curCar = cur.closest && cur.closest('.carousel');
       const curChipRow = cur.closest && cur.closest('.chip-row');
       const curHeader = cur.closest && cur.closest('.section-header');
+      const crossSection = dir === 'left' || dir === 'right';
       // chips do topo (Todos/servidores/★/✓/☰ Categorias) e botões de
       // cabeçalho de seção (ex: "Ver tudo") só entram na disputa quando o
       // foco já está DENTRO daquela mesma linha/seção — senão, ao sair do
@@ -13388,10 +13389,21 @@ const TvNav = {
       // caminho" antes da barra lateral (mesmo bug do car-nav, outros elementos).
       // (candidates(contentArea) em vez de candidates(scope) filtrado: mesmo
       // resultado, mas sem gastar tempo medindo sidebar/topo à toa.)
-      target = this.pick(cur, dir, this.candidates(contentArea).filter(c =>
-        (!c.el.classList.contains('car-nav') || c.el.closest('.carousel') === curCar) &&
-        (!c.el.classList.contains('chip') || c.el.closest('.chip-row') === curChipRow) &&
-        (!c.el.closest('.section-header') || c.el.closest('.section-header') === curHeader)));
+      target = this.pick(cur, dir, this.candidates(contentArea).filter(c => {
+        const inOtherCar = c.el.closest('.carousel') && c.el.closest('.carousel') !== curCar;
+        if(inOtherCar){
+          // Indo ← ou → pra OUTRO carrossel (ex: "Adicionados Recentemente"
+          // por cima de "Continuar Assistindo"): não entra — senão o card de
+          // outra seção ficava "no caminho" da barra lateral, igual ao
+          // car-nav. ↑/↓ continuam entrando normalmente — é assim que se
+          // alcança o carrossel a partir de outra seção.
+          if(crossSection) return false;
+          if(c.el.classList.contains('car-nav')) return false;
+        }
+        if(c.el.classList.contains('chip') && c.el.closest('.chip-row') !== curChipRow) return false;
+        if(c.el.closest('.section-header') && c.el.closest('.section-header') !== curHeader) return false;
+        return true;
+      }));
     }
     // Nada mais pra focar pra cima/baixo no conteúdo, mas a página ainda
     // tem o que rolar (título, texto…): ROLA a página e o foco fica onde
