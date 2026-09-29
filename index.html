@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.10.0';
+<script>var APP_VERSION = '1.10.1';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -13612,7 +13612,11 @@ const TvNav = {
     }, true);
     document.addEventListener('focusout', (e) => {
       const el = e.target;
-      if(!this.isTextInput(el) || !el.classList) return;
+      // faltava esse "!this.on()" aqui: sem ele, em QUALQUER aparelho (não só
+      // TV), ao sair de um campo de texto ele ficava travado (readOnly) pra
+      // sempre — e no celular isso significa que o teclado nunca mais abria
+      // nesse campo, nem tocando nele.
+      if(!this.on() || !this.isTextInput(el) || !el.classList) return;
       if(el._tvInternalBlur) return; // blur/foco do próprio startTyping (reabrindo o teclado): não mexe
       // saiu de vez do campo (seta, clique em outro lugar…): garante que a
       // próxima vez que ele focar (mesmo sem clicar) volte travado, sem teclado
