@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.10.2';
+<script>var APP_VERSION = '1.11.0';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -2842,6 +2842,27 @@ const CoverSharp = {
 
 const ImageMem = {
   _io: null,
+  /** Manda carregar UMA capa agora (mesma lógica usada quando ela entra na
+   *  tela) — usado tanto pelo observador de rolagem quanto por warmAll(). */
+  _loadOne(img, url){
+    if(CoverSharp.on()){ if(!img.hasAttribute('src') && !img._csBusy && !img._csCanvas) CoverSharp.render(img, url); }
+    else if(img.getAttribute('src') !== url) img.src = url;
+  },
+  /** Listas paginadas (Séries/Filmes/Ao Vivo): a página já é um número
+   *  limitado de itens (pageSize, no máximo 100), então não tem risco de
+   *  estourar RAM pedindo todas de uma vez — a fila do CoverSharp (3 por
+   *  vez) e o cache do modo leve já seguram o ritmo. Chamado logo depois
+   *  de montar a grade, pra já começar a processar tudo ao entrar na tela
+   *  em vez de esperar rolar perto de cada capa (dava tempo de ver o fundo
+   *  escuro do card antes da capa aparecer). NÃO usar em listas sem limite
+   *  (ex: busca global "todos os servidores") — aí o lazy-load continua. */
+  warmAll(root){
+    if(!root || !root.querySelectorAll) return;
+    root.querySelectorAll('img[data-lazy-src]').forEach(img => {
+      const url = img.dataset.lazySrc;
+      if(url) this._loadOne(img, url);
+    });
+  },
   _observer(){
     if(this._io || !('IntersectionObserver' in window)) return this._io;
     this._io = new IntersectionObserver((entries) => {
@@ -2849,8 +2870,7 @@ const ImageMem = {
         const img = e.target, url = img.dataset.lazySrc;
         if(!url) continue;
         if(e.isIntersecting){
-          if(CoverSharp.on()){ if(!img.hasAttribute('src') && !img._csBusy && !img._csCanvas) CoverSharp.render(img, url); }
-          else if(img.getAttribute('src') !== url) img.src = url;
+          this._loadOne(img, url);
         } else if(img._csBusy && !img.hasAttribute('src')){
           CoverSharp.cancel(img); // ainda na fila: não processa capa que já saiu da tela
         } else if(PerfMode.isLite()){
@@ -10852,6 +10872,7 @@ async function renderListView(type, titleLabel, container){
   const grid = el('div', { class:'card-grid' });
   for(const content of pageResult.items){ grid.appendChild(renderContentCard(content)); }
   container.appendChild(grid);
+  ImageMem.warmAll(grid); // página tem no máximo pageSize itens: pode pedir todas as capas já
   container.appendChild(renderPagination(filters.page, totalPages, (p)=>{ filters.page = p; Router.render(); window.scrollTo(0,0); }));
 
 }
@@ -11090,6 +11111,7 @@ async function renderLiveView(container){
       }, 700);
     });
     scroller.appendChild(grid);
+    ImageMem.warmAll(grid); // página tem no máximo pageSize itens: pode pedir todas as capas já
     scroller.appendChild(renderPagination(filters.page, totalPages, (p)=>{ filters.page = p; Router.render(); }));
   }
 
@@ -11137,6 +11159,7 @@ async function renderSeriesListView(container){
   const grid = el('div', { class:'card-grid' });
   for(const entry of pageResult.items){ grid.appendChild(renderSeriesCard(entry)); }
   container.appendChild(grid);
+  ImageMem.warmAll(grid); // página tem no máximo pageSize itens: pode pedir todas as capas já
   container.appendChild(renderPagination(filters.page, totalPages, (p)=>{ filters.page=p; Router.render(); window.scrollTo(0,0); }));
 }
 
