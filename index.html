@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.11.2';
+<script>var APP_VERSION = '1.12.4';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -510,6 +510,15 @@ html.tv .live-grid .content-card:focus{transform:none !important;}
   grid-template-columns:repeat(auto-fill,minmax(164px,1fr));
   gap:18px;
 }
+/* Enquanto a barra lateral tem espaço pra ficar fixa (não vira menu que
+   recolhe) — projetor, TV ou PC — garante no mínimo 6 cards por linha,
+   mesmo que isso deixe o card um pouco menor que 164px. O min() calcula
+   sozinho o tamanho exato pra caber 6 na largura disponível; se sobrar
+   espaço (tela bem larga) o auto-fill ainda cabe mais de 6. Só olha
+   largura de tela, nenhuma detecção de aparelho. */
+@media(min-width:901px){
+  .card-grid{grid-template-columns:repeat(auto-fill,minmax(min(164px, calc((100% - 90px) / 6)),1fr));}
+}
 .content-card{
   background:var(--bg-1);
   -webkit-backdrop-filter:blur(var(--blur));backdrop-filter:blur(var(--blur));
@@ -630,7 +639,16 @@ html.tv #global-search{padding:7px 12px 7px 34px;font-size:12.5px;}
 html.tv #content-area{padding:12px 16px 40px;}
 html.tv .section-header{margin-bottom:10px;}
 html.tv .section-header h2{font-size:15px;}
-html.tv .card-grid{grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;}
+/* SEM regra de .card-grid aqui de propósito. Antes tinha um grid-template-columns
+   próprio pro modo TV (mesmo com auto-fill) — só que ele só valia quando a
+   classe "tv" tava presente, e essa classe depende de detectar o aparelho
+   (que pode falhar, ex: Chrome achando que tem toque). Assim o tamanho do
+   card ficava "refém" da detecção: sem o modo TV ligado, caía pra um valor
+   diferente. Agora o tamanho das capas usa SEMPRE a mesma regra (.card-grid
+   lá em cima, baseada só na largura disponível), então fica igual e
+   responsivo em qualquer aparelho, ligado o modo TV ou não — só a
+   NAVEGAÇÃO por controle (setas/foco) continua dependendo de detectar
+   remoto, porque isso não dá pra saber só pela resolução da tela. */
 html.tv .content-card .info{padding:5px 7px 6px;gap:3px;}
 html.tv .content-card .info .name{font-size:11px;min-height:0;-webkit-line-clamp:1;}
 html.tv .content-card .info .server-tag{padding:1px 5px;}
@@ -2634,7 +2652,8 @@ const PerfMode = {
     return 'Chrome ' + chrome + ' (' + wv + ') • ' + (navigator.hardwareConcurrency || '?') + ' núcleos • ' +
       (navigator.deviceMemory ? navigator.deviceMemory + ' GB' : 'RAM ?') + ' • tela ' + screen.width + 'x' + screen.height +
       ' (densidade ' + (window.devicePixelRatio || 1) + 'x = ' + Math.round(screen.width * (window.devicePixelRatio || 1)) + 'x' + Math.round(screen.height * (window.devicePixelRatio || 1)) + ' pixels reais)' +
-      ' • modo leve ' + (this.isLite() ? 'LIGADO' : 'desligado') + ' (' + this.setting() + ')';
+      ' • modo leve ' + (this.isLite() ? 'LIGADO' : 'desligado') + ' (' + this.setting() + ')' +
+      ' • modo TV ' + (this.isTv() ? 'LIGADO' : 'desligado') + ' (' + this.tvSetting() + ', toque: ' + (navigator.maxTouchPoints || 0) + ')';
   },
   /** Mede quanto um trecho levou e registra no painel de diagnóstico. */
   async time(label, fn){
@@ -12587,9 +12606,19 @@ async function renderSettingsView(container){
   // Modo TV: layout compacto + navegação pelas setas do controle (ver TvNav)
   const tvGroup = el('div', { class:'form-group' });
   tvGroup.appendChild(el('label', {}, ['Modo TV / controle remoto']));
-  const tvSel = el('select', {});
+  const tvSel = el('select', { 'aria-label':'Modo TV / controle remoto' });
   [['auto','Automático (liga em TV/projetor)'],['on','Sempre ligado'],['off','Desligado']].forEach(([v,l]) => tvSel.appendChild(el('option', { value:v }, [l])));
   tvSel.value = perf.tvMode || 'auto';
+  // Essa lista de opções (visual bonito, ver TvSelect) só aparecia sozinha
+  // quando o Modo TV já estava ligado — mas é justamente esse select que
+  // liga o Modo TV, então enquanto ele estivesse em "Automático"/"Desligado"
+  // (sem o Modo TV ativo) o navegador mostrava o dropdown feio padrão. Aqui
+  // ela abre nesse select específico mesmo fora do Modo TV.
+  tvSel.addEventListener('mousedown', (e) => {
+    if(TvNav.on()) return; // já tratado pelo listener global do TvNav
+    e.preventDefault();
+    TvSelect.open(tvSel);
+  });
   tvSel.addEventListener('change', async () => {
     State.settings.performance = Object.assign({}, State.settings.performance || DEFAULT_SETTINGS.performance, { tvMode: tvSel.value });
     PerfMode.apply();
