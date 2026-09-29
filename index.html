@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.10.1';
+<script>var APP_VERSION = '1.10.2';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -2859,7 +2859,14 @@ const ImageMem = {
           if(img.hasAttribute('src') && !img.dataset.sharp) img.removeAttribute('src'); // libera o bitmap decodificado
         }
       }
-    }, { rootMargin: '400px' });
+    // No projetor (CoverSharp): reduzir a capa em etapas + afiar leva um
+    // tempo real (rede pra baixar a capa grande + processamento) — com só
+    // 400px de folga, rolando a página essa conta às vezes não fecha antes
+    // do card chegar na tela, e aparece o fundo escuro do card por um
+    // instante antes da capa "estourar". Aqui dá mais distância pra
+    // processar com folga (não é <img src> direto, então o custo por card
+    // é maior). Fora do projetor (só troca src) 400px já é de sobra.
+    }, { rootMargin: CoverSharp.on() ? '1400px' : '400px' });
     return this._io;
   },
   set(img, url){
