@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.11.1';
+<script>var APP_VERSION = '1.11.2';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -129,6 +129,12 @@
 }
 *{box-sizing:border-box;margin:0;padding:0;}
 html,body{
+  /* Um Chrome de verdade (fora do WebView do APK) tem um algoritmo próprio de
+     "aumentar texto pra ficar legível", que o WebView do Cordova não aplica —
+     por isso abrindo o mesmo HTML direto no Chrome do aparelho, tudo fica
+     maior do que devia (o Chrome está "adivinhando" que precisa ampliar).
+     Isso desliga essa adivinhação: o tamanho que o CSS pede é o que aparece. */
+  -webkit-text-size-adjust:100%;text-size-adjust:100%;
   height:100%;
   color:var(--text-0);
   font-family:'Manrope',-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
