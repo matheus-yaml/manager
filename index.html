@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.9.1';
+<script>var APP_VERSION = '1.10.0';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -13329,9 +13329,15 @@ const TvNav = {
       const gs = document.getElementById('global-search');
       if(gs && gs.getClientRects().length && scope.contains(gs)){ this.focus(gs); return; }
     }
-    const all = this.candidates(scope);
     const contentArea = document.getElementById('content-area');
     let target = null;
+    // Só monta a lista de candidatos do app inteiro (sidebar + topo +
+    // conteúdo) quando for realmente preciso — numa lista grande (200+
+    // cards), calcular a posição de cada item na tela a cada seta pesa na
+    // CPU/GPU fraca do projetor; a maioria das setas fica dentro do
+    // conteúdo, então o caso comum (abaixo) nem chega a olhar pra fora dele.
+    let all = null;
+    const getAll = () => all || (all = this.candidates(scope));
     // Dentro do conteúdo (ou descendo da barra de cima): procura primeiro SÓ no
     // conteúdo — inclusive o que está rolado pra fora da tela. A pesquisa geral
     // / barra de cima só recebe o foco quando não há mais nada naquela direção.
@@ -13350,7 +13356,9 @@ const TvNav = {
       // foco já está DENTRO daquela mesma linha/seção — senão, ao sair do
       // 1º card de uma lista pra esquerda, esses elementos ficavam "no
       // caminho" antes da barra lateral (mesmo bug do car-nav, outros elementos).
-      target = this.pick(cur, dir, all.filter(c => contentArea.contains(c.el) &&
+      // (candidates(contentArea) em vez de candidates(scope) filtrado: mesmo
+      // resultado, mas sem gastar tempo medindo sidebar/topo à toa.)
+      target = this.pick(cur, dir, this.candidates(contentArea).filter(c =>
         (!c.el.classList.contains('car-nav') || c.el.closest('.carousel') === curCar) &&
         (!c.el.classList.contains('chip') || c.el.closest('.chip-row') === curChipRow) &&
         (!c.el.closest('.section-header') || c.el.closest('.section-header') === curHeader)));
@@ -13369,7 +13377,7 @@ const TvNav = {
       }
     }
     // ↑/↓ no conteúdo nunca pulam pra barra lateral (só ←)
-    if(!target) target = this.pick(cur, dir, (inContent && (dir === 'up' || dir === 'down')) ? all.filter(c => !c.el.closest('#sidebar')) : all);
+    if(!target) target = this.pick(cur, dir, (inContent && (dir === 'up' || dir === 'down')) ? getAll().filter(c => !c.el.closest('#sidebar')) : getAll());
     if(!target) return;
     // Conteúdo → menu: em Ao Vivo/Séries/Filmes (categorias na barra lateral)
     // começa lá em cima, na seta "← Menu" — nas demais telas, cai no item
@@ -13745,7 +13753,20 @@ const TvNav = {
       const dir = k === 'ArrowRight' ? 'right' : k === 'ArrowLeft' ? 'left' : k === 'ArrowUp' ? 'up' : k === 'ArrowDown' ? 'down' : null;
       if(!dir) return;
       e.preventDefault(); // desliga a navegação nativa do WebView (senão anda 2x)
-      this.move(dir);
+      // Segurando a seta (repetição do controle) numa lista grande: cada
+      // keydown mede a posição de vários elementos na tela, e no projetor
+      // isso pode não dar conta da velocidade da repetição e empilhar —
+      // aqui só a ÚLTIMA direção dentro do mesmo quadro (~16ms) roda; em uso
+      // normal (uma tecla por vez) isso não muda nada, só evita o acúmulo.
+      this._pendingDir = dir;
+      if(!this._moveScheduled){
+        this._moveScheduled = true;
+        requestAnimationFrame(() => {
+          this._moveScheduled = false;
+          const d = this._pendingDir; this._pendingDir = null;
+          if(d) this.move(d);
+        });
+      }
     }, true);
 
     document.addEventListener('keyup', (e) => {
