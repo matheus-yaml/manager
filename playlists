@@ -3,5 +3,5 @@
   "SPEED": "http://netuno.live/get.php?username=xxx&password=yyy&type=m3u_plus&output=mpegts",
   "GALAXY": "http://new-link.shop/get.php?username=xxx&password=yyy&type=m3u_plus&output=mpegts",
   "EXPLOSION": "http://fasttv.sbs/get.php?username=xxx&password=yyy&type=m3u_plus&output=mpegts",
-  "ATENA": "http://atenaplay/get.php?username=xxx&password=yyy&type=m3u_plus&output=mpegts"
+  "ATENA": "http://atenaplay.lat/get.php?username=xxx&password=yyy&type=m3u_plus&output=mpegts"
 }
