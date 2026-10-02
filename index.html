@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.13.1';
+<script>var APP_VERSION = '1.13.5';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -1624,6 +1624,7 @@ const BlockSyncWorker = (function(){
     return `
 'use strict';
 var DB_NAME = ${JSON.stringify(DB_NAME)};
+var DB_VERSION = ${JSON.stringify(DB_VERSION)};
 var STORES = ${JSON.stringify(STORES)};
 var BLOCO = 2000;      // itens por bloco processado
 var RW = { durability: 'relaxed' };
@@ -1648,11 +1649,26 @@ function txDone(tx){ return new Promise(function(ok,ko){ tx.oncomplete=ok; tx.on
 function faixaServidor(serverId){ return IDBKeyRange.bound([serverId], [serverId, []]); }
 
 function openDB(){
-  // O schema já foi criado pela thread principal antes de qualquer
-  // operação acontecer (ver IDB.open no app) — o worker só abre a conexão
-  // já existente, nunca precisa rodar onupgradeneeded.
+  // Era pra o schema já ter sido criado pela thread principal antes de
+  // qualquer worker abrir (ver IDB.open no app), então abria sem versão
+  // nenhuma. Só que se esse worker for a PRIMEIRA conexão a tocar no banco
+  // (ex: disparado rápido demais, ou um banco recém-apagado) abrir sem
+  // versão cria um banco vazio, SEM NENHUMA store — e qualquer transação
+  // depois dava "object store not found". Agora abre com a MESMA versão
+  // do app e sabe criar o schema sozinho também, igual a thread principal.
   return new Promise(function(resolve, reject){
-    var r = indexedDB.open(DB_NAME);
+    var r = indexedDB.open(DB_NAME, DB_VERSION);
+    r.onupgradeneeded = function(e){
+      var db = e.target.result;
+      if(!db.objectStoreNames.contains(STORES.servers)) db.createObjectStore(STORES.servers, { keyPath: 'id' });
+      if(!db.objectStoreNames.contains(STORES.progress)) db.createObjectStore(STORES.progress, { keyPath: 'contentId' });
+      if(!db.objectStoreNames.contains(STORES.settings)) db.createObjectStore(STORES.settings, { keyPath: 'id' });
+      if(!db.objectStoreNames.contains(STORES.favorites)) db.createObjectStore(STORES.favorites, { keyPath: 'id' });
+      ['rawBlocks','contentBlocks','searchBlocks','seriesBlocks'].forEach(function(n){
+        if(!db.objectStoreNames.contains(STORES[n])) db.createObjectStore(STORES[n]);
+      });
+    };
+    r.onblocked = function(){}; // a thread principal fecha a conexão antiga sozinha (onversionchange)
     r.onsuccess = function(){ resolve(r.result); };
     r.onerror = function(){ reject(r.error); };
   });
@@ -5469,7 +5485,26 @@ function searchWorkerMain(){
     x = x.replace(ACCRE, function(c){ return ACCT[ACCS.indexOf(c)]; });
     return NONA.test(x) ? normalizeText(x) : x;
   }
-  function open(){ return new Promise(function(ok, ko){ var r = indexedDB.open(DB_NAME); r.onsuccess = function(){ ok(r.result); }; r.onerror = function(){ ko(r.error); }; }); }
+  function open(){
+    // Mesmo risco do worker de processamento (ver openDB lá): abrir sem
+    // versão podia criar um banco vazio se esse worker chegasse primeiro.
+    return new Promise(function(ok, ko){
+      var r = indexedDB.open(DB_NAME, DB_VERSION);
+      r.onupgradeneeded = function(e){
+        var d = e.target.result;
+        if(!d.objectStoreNames.contains(STORES.servers)) d.createObjectStore(STORES.servers, { keyPath: 'id' });
+        if(!d.objectStoreNames.contains(STORES.progress)) d.createObjectStore(STORES.progress, { keyPath: 'contentId' });
+        if(!d.objectStoreNames.contains(STORES.settings)) d.createObjectStore(STORES.settings, { keyPath: 'id' });
+        if(!d.objectStoreNames.contains(STORES.favorites)) d.createObjectStore(STORES.favorites, { keyPath: 'id' });
+        ['rawBlocks','contentBlocks','searchBlocks','seriesBlocks'].forEach(function(n){
+          if(!d.objectStoreNames.contains(STORES[n])) d.createObjectStore(STORES[n]);
+        });
+      };
+      r.onblocked = function(){};
+      r.onsuccess = function(){ ok(r.result); };
+      r.onerror = function(){ ko(r.error); };
+    });
+  }
   function getOne(store, key){
     return new Promise(function(ok, ko){ var r = db.transaction(store).objectStore(store).get(key); r.onsuccess = function(){ ok(r.result); }; r.onerror = function(){ ko(r.error); }; });
   }
@@ -5717,7 +5752,7 @@ const SearchIndex = {
   _worker(){
     if(this._w || this._broken) return this._w;
     try{
-      const src = 'var DB_NAME = ' + JSON.stringify(DB_NAME) + ';\nvar STORES = ' + JSON.stringify(STORES) + ';\n' +
+      const src = 'var DB_NAME = ' + JSON.stringify(DB_NAME) + ';\nvar DB_VERSION = ' + JSON.stringify(DB_VERSION) + ';\nvar STORES = ' + JSON.stringify(STORES) + ';\n' +
         'var M6_DBN = ' + JSON.stringify(M6.fns().DBN) + ';\n' + fnv1a.toString() + '\n' + stableContentId.toString() + '\n' +
         normalizeText.toString() + '\n(' + searchWorkerMain.toString() + ')();';
       this._url = URL.createObjectURL(new Blob([src], { type: 'application/javascript' }));
@@ -7018,6 +7053,30 @@ const M6 = {
       catch(e){ ko(e); }
     });
   },
+  /** Cria de uma vez as tabelas cruas que faltam ANTES das importações simultâneas.
+   *  Criar tabela exige subir a versão do banco, e isso fica bloqueado enquanto outra
+   *  importação em andamento tem o banco aberto — a 3ª ficava parada em "Conectando...".
+   *  Com as tabelas já criadas, o worker não precisa subir versão (igual na 2ª vez). */
+  async criarTabelas(nomes){
+    const db = await this.db();
+    const falta = nomes.filter(n => !db.objectStoreNames.contains(n));
+    if(!falta.length) return;
+    const v = db.version + 1;
+    try{ db.close(); }catch(e){}
+    this._db = null;
+    await new Promise((ok) => {
+      const timer = setTimeout(ok, 8000); // não trava a importação se algo segurar o banco
+      const r = indexedDB.open(this.fns().DBN, v);
+      r.onupgradeneeded = () => {
+        const d = r.result;
+        if(!d.objectStoreNames.contains('listas')) d.createObjectStore('listas', { keyPath: 'nome' });
+        ['conteudos', 'busca', 'series'].forEach((n) => { if(!d.objectStoreNames.contains(n)) d.createObjectStore(n); });
+        falta.forEach((n) => { if(!d.objectStoreNames.contains(n)) d.createObjectStore(n); });
+      };
+      r.onsuccess = () => { clearTimeout(timer); try{ r.result.close(); }catch(e){} ok(); };
+      r.onerror = () => { clearTimeout(timer); ok(); };
+    });
+  },
   lerCalib(){ try{ const c = JSON.parse(localStorage.getItem('iptv_calib') || 'null'); return c && c.v === 2 && c.melhor ? c : null; }catch(e){ return null; } },
   salvarCalib(c){ try{ localStorage.setItem('iptv_calib', JSON.stringify(c)); }catch(e){} },
   /** Roda o worker coordenador da página de testes (igual ao rodarWorker dela). */
@@ -7868,6 +7927,9 @@ const ServerModule = {
       }
     }
 
+    // tabelas de todos os servidores criadas antes (senão a 3ª importação simultânea trava em "Conectando...")
+    try{ await M6.criarTabelas(servers.map(s => M6.tableName(s.id))); }
+    catch(e){ pushDebugLog('Criar tabelas antes da importação: ' + (e && e.message || e), true); }
     const running = [];
     for(let i = 0; i < lanes; i++) running.push(lane());
     await Promise.all(running);
