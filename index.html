@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.13.5';
+<script>var APP_VERSION = '1.13.6';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -7486,7 +7486,7 @@ const ServerModule = {
       QueryModule.invalidateCaches(); Cat.clear();
       State.pageCache.clear(); State.dashboardCache = null; State.favoritesCache = null; State.continueCache = null;
       const total = counts.live + counts.movie + counts.series;
-      report({ phase:'process', status:'done', processed: total, total: total, counts, seriesCount: meta.series, elapsedS: Math.round((performance.now() - t0) / 1000) });
+      report({ phase:'process', status:'done', processed: total, total: total, counts, seriesCount: meta.series, elapsedS: Math.round((performance.now() - t0) / 1000), bytes: meta.bytes || lastB });
       return { ok: true, count: total };
     }catch(err0){
       let err = err0;
@@ -12305,7 +12305,7 @@ async function runImportWithProgressModal(servers){
       dotEl.className = 'status-dot processing';
       statusEl.className = 'sp-status proc';
       if(patch.status === 'done'){
-        statusEl.textContent = 'Processado' + (patch.elapsedS != null ? ' — ' + patch.elapsedS + 's' : '');
+        statusEl.textContent = 'Processado' + (patch.bytes ? ' — ' + (patch.bytes / 1048576).toFixed(1) + ' MB' : '') + (patch.elapsedS != null ? ' — ' + patch.elapsedS + 's' : '');
         statusEl.className = 'sp-status ok';
         dotEl.className = 'status-dot';
         fillEl.style.width = '100%';
@@ -12551,7 +12551,7 @@ async function renderSettingsView(container){
   const debugBlock = el('div', { class:'settings-block' });
   debugBlock.appendChild(el('h3', {}, ['Diagnóstico']));
   debugBlock.appendChild(el('p', { style:'font-size:12.5px;color:var(--text-2);margin-bottom:12px;' }, [
-    'Mostra um painel na tela com erros e eventos recentes — útil pra investigar problemas sem precisar de ferramentas externas. Sempre começa desligado ao abrir o app.'
+    'Mostra um painel na tela com erros e eventos recentes — útil pra investigar problemas sem precisar de ferramentas externas.'
   ]));
   const debugToggleRow = el('label', { style:'display:flex;align-items:center;gap:10px;cursor:pointer;font-size:13px;' });
   const debugCheckbox = el('input', { type:'checkbox', id:'debug-panel-toggle', style:'width:16px;height:16px;' });
@@ -12650,9 +12650,6 @@ async function renderSettingsView(container){
   // computador normal; reduza em TVs/projetores Android mais fracos.
   const perfBlock = el('div', { class:'settings-block' });
   perfBlock.appendChild(el('h3', {}, ['Desempenho']));
-  perfBlock.appendChild(el('p', { style:'font-size:12.5px;color:var(--text-2);margin-bottom:12px;' }, [
-    'Cada servidor é baixado, processado e gravado num processo separado, que é encerrado ao terminar (a memória volta pro sistema na hora). Em TVs/projetores Android com pouca memória, use 1.'
-  ]));
   const perf = Object.assign({}, DEFAULT_SETTINGS.performance, State.settings.performance);
 
   function makePerfField(label, key, hint, min){
