@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.13.6';
+<script>var APP_VERSION = '1.14.0';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -103,9 +103,9 @@
 <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.min.js"></script>
 <style>
 :root{
-  --bg-0:#06070c;
-  --bg-1:rgba(22,24,36,.55);
-  --bg-1-solid:#12141f;
+  --bg-0:#000000;
+  --bg-1:rgba(22,22,25,.6);
+  --bg-1-solid:#121214;
   --bg-2:rgba(255,255,255,.05);
   --bg-3:rgba(255,255,255,.09);
   --border:rgba(255,255,255,.09);
@@ -142,14 +142,8 @@ html,body{
   letter-spacing:-.01em;
 }
 body{
+  /* fundo preto puro (padrão) — sem os brilhos coloridos de antes */
   background-color:var(--bg-0);
-  background-image:
-    radial-gradient(1100px 750px at 12% -8%, rgba(var(--accent-rgb),.32), transparent 60%),
-    radial-gradient(950px 700px at 108% 8%, rgba(var(--accent2-rgb),.20), transparent 55%),
-    radial-gradient(900px 650px at 45% 115%, rgba(var(--accent-rgb),.16), transparent 60%),
-    radial-gradient(600px 500px at 85% 90%, rgba(var(--fav-rgb),.10), transparent 60%);
-  background-attachment:fixed;
-  background-repeat:no-repeat;
 }
 ::-webkit-scrollbar{width:10px;height:10px;}
 ::-webkit-scrollbar-track{background:transparent;}
@@ -204,33 +198,30 @@ a:focus,
   position:relative;
 }
 
-/* ===== SIDEBAR (vidro fosco) ===== */
+/* ===== SIDEBAR (preta, ícones em linha, seções) ===== */
 #sidebar{
   width:var(--sidebar-w);
   min-width:var(--sidebar-w);
-  background:var(--bg-1);
-  -webkit-backdrop-filter:blur(var(--blur)) saturate(160%);backdrop-filter:blur(var(--blur)) saturate(160%);
-  -webkit-backdrop-filter:blur(var(--blur)) saturate(160%);
-  border-right:1px solid var(--border);
+  background:rgba(6,6,8,.94);
+  -webkit-backdrop-filter:blur(var(--blur));backdrop-filter:blur(var(--blur));
+  border-right:1px solid rgba(255,255,255,.06);
   display:flex;
   flex-direction:column;
   transition:transform .25s ease;
   z-index:50;
-  box-shadow:inset -1px 0 0 rgba(255,255,255,.07);
 }
 #sidebar .brand{
   display:flex;
   align-items:center;
   gap:11px;
-  padding:22px 20px;
-  border-bottom:1px solid var(--border);
+  padding:22px 20px 18px;
 }
 #sidebar .brand .logo{
   width:36px;height:36px;border-radius:11px;
   background:linear-gradient(135deg,var(--accent),var(--accent-2));
   display:flex;align-items:center;justify-content:center;
-  font-weight:800;font-size:16px;color:#fff;
-  box-shadow:0 4px 16px -2px rgba(var(--accent-rgb),.55), inset 0 1px 0 rgba(255,255,255,.35);
+  font-weight:800;font-size:15px;color:#fff;letter-spacing:-.02em;
+  box-shadow:0 6px 20px -6px rgba(var(--accent-rgb),.7), inset 0 1px 0 rgba(255,255,255,.3);
 }
 #sidebar .brand .name{font-weight:800;font-size:16.5px;letter-spacing:-.02em;}
 #sidebar .brand .name span{
@@ -238,44 +229,47 @@ a:focus,
   -webkit-background-clip:text;background-clip:text;color:transparent;
 }
 
-.nav-list{list-style:none;padding:12px;flex:1;overflow-y:auto;}
+.nav-list{list-style:none;padding:4px 12px 12px;flex:1;overflow-y:auto;}
+.nav-section-label{
+  font-size:10.5px;text-transform:uppercase;letter-spacing:.12em;
+  color:rgba(255,255,255,.32);padding:16px 14px 6px;font-weight:700;
+}
+.nav-list .nav-section-label:first-child{padding-top:4px;}
 .nav-item{
   display:flex;align-items:center;gap:12px;
-  padding:11px 14px;
-  border-radius:var(--radius-sm);
+  padding:10px 12px;
+  border-radius:12px;
   color:var(--text-1);
   font-size:14px;
   font-weight:600;
   cursor:pointer;
-  margin-bottom:3px;
+  margin-bottom:2px;
   transition:background .15s, color .15s;
   position:relative;
   user-select:none;
 }
-.nav-item .ic{width:18px;text-align:center;font-size:15px;opacity:.9;}
-.nav-item:hover{background:var(--bg-2);color:var(--text-0);}
+.nav-item .ic{width:20px;height:20px;flex-shrink:0;display:flex;align-items:center;justify-content:center;color:var(--text-2);transition:color .15s;}
+.nav-item .ic svg{width:18px;height:18px;}
+.nav-item:hover{background:rgba(255,255,255,.05);color:var(--text-0);}
+.nav-item:hover .ic{color:var(--text-0);}
 .nav-item.active{
-  background:linear-gradient(135deg, rgba(var(--accent-rgb),.30), rgba(var(--accent2-rgb),.14));
-  color:var(--text-0);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.1), inset 0 0 0 1px rgba(var(--accent-rgb),.4), 0 0 18px -4px rgba(var(--accent-rgb),.5);
+  background:rgba(var(--accent-rgb),.13);
+  color:#fff;
 }
+.nav-item.active .ic{color:var(--accent);}
 .nav-item.active::before{
-  content:"";position:absolute;left:-10px;top:8px;bottom:8px;width:3px;
-  background:linear-gradient(180deg,var(--accent),var(--accent-2));border-radius:2px;
-  box-shadow:0 0 8px 0 rgba(var(--accent-rgb),.8);
+  content:"";position:absolute;left:-12px;top:9px;bottom:9px;width:3px;
+  background:var(--accent);border-radius:0 3px 3px 0;
+  box-shadow:0 0 10px 0 rgba(var(--accent-rgb),.7);
 }
 .nav-item .count{
-  margin-left:auto;font-size:11px;background:var(--bg-3);
-  color:var(--text-2);padding:2px 7px;border-radius:20px;font-weight:700;
+  margin-left:auto;font-size:11px;background:rgba(255,255,255,.06);
+  color:var(--text-2);padding:2px 8px;border-radius:20px;font-weight:700;font-variant-numeric:tabular-nums;
 }
 .nav-item.active .count{background:var(--accent);color:#fff;}
-.nav-section-label{
-  font-size:11px;text-transform:uppercase;letter-spacing:.08em;
-  color:var(--text-2);padding:14px 14px 6px;font-weight:700;
-}
 
 #sidebar .footer-mini{
-  padding:14px 18px;border-top:1px solid var(--border);
+  padding:14px 18px;border-top:1px solid rgba(255,255,255,.06);
   font-size:11px;color:var(--text-2);
 }
 
@@ -348,7 +342,7 @@ html.native-hole #content-area > div, html.native-hole .live-player, html.native
 html.native-hole .lp-screen .lp-empty{display:none !important;}
 /* player híbrido: o vídeo é nativo (atrás) — a tela do player fica transparente */
 #player-overlay.hybrid{background:transparent !important;}
-#player-overlay.hybrid video{visibility:hidden !important;}
+#player-overlay.hybrid video{opacity:0 !important;} /* opacity (não visibility): continua recebendo o toque (play/pause no centro, mostrar/esconder controles) */
 /* ao vivo nativo (projetor): só play/pausa, AO VIVO, volume, tela cheia e PiP embaixo; voltar/fechar em cima */
 #player-overlay.hybrid #player-seek-back5, #player-overlay.hybrid #player-seek-fwd5,
 #player-overlay.hybrid #player-time-current, #player-overlay.hybrid #player-time-duration,
@@ -404,6 +398,10 @@ html.tv .live-grid .content-card:focus{transform:none !important;}
 #player-overlay.mini > :not(video):not(#player-buffering){display:none !important;}
 #player-overlay.mini #player-buffering{background:rgba(0,0,0,.35);}
 #player-overlay.mini video{object-fit:contain;}
+/* celular: quadro do Ao Vivo com os controles (somem sozinhos; toque mostra/esconde) */
+#player-overlay.mini.mini-ctrl{cursor:default;}
+#player-overlay.mini.mini-ctrl > #player-controls-bottom{display:flex !important;padding:6px 8px !important;gap:5px;}
+#player-overlay.mini.mini-ctrl > #player-playpause-feedback{display:flex !important;}
 
 #sidebar-overlay{
   display:none;position:fixed;top:0;right:0;bottom:0;left:0;background:rgba(4,5,10,.6);
@@ -428,7 +426,7 @@ html.tv .live-grid .content-card:focus{transform:none !important;}
   display:flex;align-items:center;gap:16px;
   padding:18px 28px;
   border-bottom:1px solid var(--border);
-  background:rgba(10,11,18,.4);
+  background:rgba(10,10,12,.4);
   -webkit-backdrop-filter:blur(var(--blur)) saturate(160%);backdrop-filter:blur(var(--blur)) saturate(160%);
   -webkit-backdrop-filter:blur(var(--blur)) saturate(160%);
 }
@@ -562,12 +560,12 @@ html.tv .live-grid .content-card:focus{transform:none !important;}
 .content-card .thumb .ph{position:absolute;top:0;left:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;font-size:30px;color:var(--text-2);z-index:1;}
 .content-card .fav-btn{
   position:absolute;top:8px;right:8px;width:29px;height:29px;border-radius:50%;
-  background:rgba(10,11,18,.55);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);
+  background:rgba(10,10,12,.55);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);
   border:1px solid rgba(255,255,255,.12);
   display:flex;align-items:center;justify-content:center;
   font-size:14px;color:#fff;z-index:2;transition:transform .15s, background .15s;
 }
-.content-card .fav-btn:hover{transform:scale(1.12);background:rgba(10,11,18,.8);}
+.content-card .fav-btn:hover{transform:scale(1.12);background:rgba(10,10,12,.8);}
 .content-card .fav-btn.active{color:var(--fav);}
 .content-card .progress-bar-mini{
   position:absolute;bottom:0;left:0;right:0;height:4px;background:rgba(255,255,255,.18);z-index:1;
@@ -605,7 +603,7 @@ html.tv .live-grid .content-card:focus{transform:none !important;}
 .car-sentinel{flex:0 0 80px;display:flex;align-items:center;justify-content:center;}
 .car-nav{
   position:absolute;top:50%;transform:translateY(-50%);z-index:3;width:36px;height:36px;border-radius:50%;
-  background:rgba(10,11,18,.72);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
+  background:rgba(10,10,12,.72);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
   border:1px solid rgba(255,255,255,.28);color:#fff;font-size:24px;font-weight:700;line-height:1;padding-bottom:3px;
   display:flex;align-items:center;justify-content:center;opacity:.85;transition:opacity .2s, transform .15s;
   box-shadow:0 4px 14px -4px rgba(0,0,0,.7);
@@ -630,6 +628,9 @@ html.tv .live-grid .content-card:focus{transform:none !important;}
 html.tv{--sidebar-w:200px;}
 html.tv #sidebar .brand{padding:12px 14px;}
 html.tv .nav-list{padding:8px;}
+html.tv .nav-section-label{display:none;}
+html.tv .nav-item.active::before{left:-8px;}
+html.tv .nav-item .ic svg{width:16px;height:16px;}
 html.tv .nav-item{padding:7px 10px;font-size:12.5px;margin-bottom:2px;gap:9px;}
 html.tv .nav-item .count{font-size:10px;padding:1px 6px;}
 html.tv #sidebar .footer-mini{padding:8px 12px;font-size:10px;}
@@ -691,7 +692,7 @@ html.tv input.tv-editing:focus{outline:3px solid var(--accent-2);outline-offset:
 .tv-select-opt.selected{background:rgba(var(--accent-rgb),.3);}
 .tv-select-opt:focus{outline:3px solid #fff;outline-offset:0;background:rgba(var(--accent-rgb),.45);}
 #tv-hint{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:9000;padding:7px 14px;border-radius:20px;
-  background:rgba(10,11,18,.92);border:1px solid rgba(255,255,255,.2);color:#fff;font-size:12px;font-weight:700;
+  background:rgba(10,10,12,.92);border:1px solid rgba(255,255,255,.2);color:#fff;font-size:12px;font-weight:700;
   pointer-events:none;opacity:0;transition:opacity .2s;}
 #tv-hint.show{opacity:1;}
 html.lite #tv-hint{transition:none !important;}
@@ -703,17 +704,17 @@ html.lite *, html.lite *::before, html.lite *::after{
 }
 html.lite .spinner{animation:spin .8s linear infinite !important;}
 html.lite body{background-image:none !important;background-attachment:scroll !important;}
-html.lite{--bg-1:#141725;--bg-2:#1b1f2e;--bg-3:#252a3b;}
+html.lite{--bg-1:#141416;--bg-2:#1b1b1f;--bg-3:#26262b;}
 html.lite .content-card, html.lite .btn.primary, html.lite .chip.active, html.lite .suggest-hero .sh-poster,
 html.lite .car-nav, html.lite .series-header .cover{box-shadow:none !important;}
 html.lite .content-card:hover{transform:none !important;}
 html.lite .content-card:hover .thumb img{transform:none !important;}
 html.lite .content-card::after{display:none !important;}
-html.lite .modal-box{background:#141622 !important;}
+html.lite .modal-box{background:#141417 !important;}
 /* Pesquisa no projetor/TV: tela cheia e OPACA. A caixa translúcida por cima do app
    obrigava o aparelho a redesenhar o app inteiro por trás (e o vídeo nativo, se
    tiver) a cada mudança — era isso que deixava a pesquisa lenta só ali. */
-html.lite .modal-overlay.search-full{background:#0b0c14;padding:0;align-items:stretch;justify-content:stretch;}
+html.lite .modal-overlay.search-full{background:#0b0b0d;padding:0;align-items:stretch;justify-content:stretch;}
 html.lite .modal-overlay.search-full .modal-box{max-width:none !important;width:100%;height:100%;max-height:none;border-radius:0;border:none;box-shadow:none !important;padding:16px 20px;}
 html.lite.search-open #app{visibility:hidden;}
 html.m3u-test-open #app{visibility:hidden;}
@@ -828,7 +829,7 @@ html.tv .empty-state p{font-size:11.5px;max-width:none;flex-basis:100%;}
   display:flex;align-items:center;justify-content:center;z-index:200;padding:20px;
 }
 .modal-box{
-  background:rgba(20,22,34,.82);-webkit-backdrop-filter:blur(28px) saturate(160%);backdrop-filter:blur(28px) saturate(160%);
+  background:rgba(20,20,23,.82);-webkit-backdrop-filter:blur(28px) saturate(160%);backdrop-filter:blur(28px) saturate(160%);
   -webkit-backdrop-filter:blur(28px) saturate(160%);
   border:1px solid var(--border-strong);border-radius:var(--radius);
   width:100%;max-width:640px;max-height:88vh;overflow-y:auto;padding:24px;
@@ -1000,7 +1001,7 @@ html.tv .epg-box .epg-now-time, html.tv .epg-box .epg-next{font-size:12px;}
 #player-volume-slider-wrap{
   position:absolute;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%);
   width:36px;height:0;overflow:hidden;
-  background:rgba(20,22,34,.9);-webkit-backdrop-filter:blur(20px) saturate(160%);backdrop-filter:blur(20px) saturate(160%);
+  background:rgba(20,20,23,.9);-webkit-backdrop-filter:blur(20px) saturate(160%);backdrop-filter:blur(20px) saturate(160%);
   border:1px solid var(--border-strong);border-radius:12px;
   display:flex;align-items:center;justify-content:center;
   transition:height .2s ease;
@@ -1042,7 +1043,7 @@ html.native-pip #video-player{width:100vw !important;height:100vh !important;obj
 #debug-panel.debug-panel-min > div:first-child span{display:none;}
 #debug-panel.debug-panel-min > div:first-child span:first-child{display:block;font-size:18px;}
 #player-zoom-badge{position:absolute;top:18px;left:50%;transform:translateX(-50%);z-index:6;padding:6px 12px;border-radius:20px;
-  background:rgba(10,11,18,.75);color:#fff;font-size:13px;font-weight:700;opacity:0;transition:opacity .2s;pointer-events:none;}
+  background:rgba(10,10,12,.75);color:#fff;font-size:13px;font-weight:700;opacity:0;transition:opacity .2s;pointer-events:none;}
 #player-zoom-badge.show{opacity:1;}
 #player-overlay{overflow:hidden;} /* vídeo ampliado não vaza pra fora */
 #player-seek-track:hover,#player-seek-track.dragging{height:7px;}
@@ -1068,7 +1069,7 @@ html.native-pip #video-player{width:100vw !important;height:100vh !important;obj
    visualmente que o seek aconteceu. */
 #player-seek-feedback{
   position:absolute;top:50%;left:50%;transform:translate(-50%,-50%) scale(.85);
-  background:rgba(10,11,18,.72);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
+  background:rgba(10,10,12,.72);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
   border:1px solid rgba(255,255,255,.15);border-radius:50px;
   padding:14px 22px;display:flex;align-items:center;gap:8px;
   color:#fff;font-size:15px;font-weight:700;z-index:3;pointer-events:none;
@@ -1092,7 +1093,7 @@ html.native-pip #video-player{width:100vw !important;height:100vh !important;obj
 #player-lock-affordance.show{opacity:1;}
 #player-lock-track{
   width:52px;height:136px;border-radius:26px;position:relative;
-  background:rgba(10,11,18,.6);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
+  background:rgba(10,10,12,.6);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
   border:1px solid rgba(255,255,255,.18);
 }
 #player-lock-target{
@@ -1113,7 +1114,7 @@ html.native-pip #video-player{width:100vw !important;height:100vh !important;obj
 #player-lock-affordance.locked #player-lock-target{color:var(--accent);transform:translateX(-50%) scale(1.15);}
 #player-lock-affordance.locked #player-lock-track{border-color:rgba(var(--accent-rgb),.6);}
 #player-lock-hint{
-  font-size:11px;font-weight:600;color:#fff;background:rgba(10,11,18,.7);
+  font-size:11px;font-weight:600;color:#fff;background:rgba(10,10,12,.7);
   padding:4px 10px;border-radius:20px;white-space:nowrap;
 }
 #player-playpause-feedback{
@@ -1124,7 +1125,7 @@ html.native-pip #video-player{width:100vw !important;height:100vh !important;obj
      quanto pra sumir. */
   position:absolute;top:50%;left:50%;transform:translate(-50%,-50%) scale(.7);
   width:76px;height:76px;border-radius:50%;
-  background:rgba(10,11,18,.6);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
+  background:rgba(10,10,12,.6);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
   display:flex;align-items:center;justify-content:center;
   color:#fff;z-index:3;pointer-events:none;
   opacity:0;transition:opacity .32s ease, transform .32s ease;
@@ -1139,7 +1140,7 @@ html.native-pip #video-player{width:100vw !important;height:100vh !important;obj
 /* Menu de opções de velocidade */
 #player-speed-menu{
   display:none;position:absolute;bottom:calc(100% + 10px);left:50%;transform:translateX(-50%);
-  background:rgba(20,22,34,.9);-webkit-backdrop-filter:blur(20px) saturate(160%);backdrop-filter:blur(20px) saturate(160%);
+  background:rgba(20,20,23,.9);-webkit-backdrop-filter:blur(20px) saturate(160%);backdrop-filter:blur(20px) saturate(160%);
   border:1px solid var(--border-strong);border-radius:12px;padding:6px;
   flex-direction:column;gap:2px;min-width:70px;box-shadow:0 12px 32px -8px rgba(0,0,0,.6);
 }
@@ -1197,7 +1198,7 @@ html.tv #player-overlay.live-mode #player-fullscreen{display:none;}
 /* toast */
 #toast-wrap{position:fixed;bottom:20px;right:20px;z-index:500;display:flex;flex-direction:column;gap:10px;}
 .toast{
-  background:rgba(20,22,34,.85);-webkit-backdrop-filter:blur(20px) saturate(160%);backdrop-filter:blur(20px) saturate(160%);
+  background:rgba(20,20,23,.85);-webkit-backdrop-filter:blur(20px) saturate(160%);backdrop-filter:blur(20px) saturate(160%);
   border:1px solid var(--border-strong);border-radius:var(--radius-sm);
   padding:13px 17px;font-size:13px;max-width:320px;box-shadow:0 12px 32px -8px rgba(0,0,0,.55);
   animation:toastIn .2s ease;font-weight:600;
@@ -1226,7 +1227,7 @@ html.tv #player-overlay.live-mode #player-fullscreen{display:none;}
 /* responsive */
 @media(max-width:900px){
   #sidebar{position:fixed;top:0;left:0;bottom:0;transform:translateX(-100%);}
-  #sidebar.open{transform:translateX(0);}
+  #sidebar.open{transform:translateX(0);box-shadow:24px 0 60px rgba(0,0,0,.7);}
   #sidebar-overlay.open{display:block;}
   #menu-toggle{display:flex;}
   #topbar{padding:14px 16px 14px 62px;}
@@ -1370,14 +1371,14 @@ html.tv, html.tv body, html.tv button, html.tv input, html.tv select, html.tv te
 }
 html.tv body{font-weight:500;-webkit-font-smoothing:antialiased;}
 html.tv{--text-1:#e6e9f2;--text-2:#b9bfcf;--border:rgba(255,255,255,.16);--border-strong:rgba(255,255,255,.28);
-  --bg-1:#141725;--bg-2:#1c2030;--bg-3:#252a3c;}
-html.tv body{background-image:none !important;background-color:#0b0d16;}
+  --bg-1:#141416;--bg-2:#1c1c20;--bg-3:#26262b;}
+html.tv body{background-image:none !important;background-color:var(--bg-0);}
 html.tv *{text-shadow:none !important;}
 html.tv #sidebar .brand .name span, html.tv .dash-card .dnum{background:none !important;-webkit-text-fill-color:currentColor;color:var(--accent-2);}
 html.tv .dash-card .dnum{color:#fff;}
 html.tv .content-card .info .name, html.tv .nav-item, html.tv .chip, html.tv .btn, html.tv .episode-row .ename,
 html.tv .form-group label, html.tv .dash-card .dlabel, html.tv .content-card .info .server-tag, html.tv .content-card .info .cat-tag{font-weight:600;}
-html.tv .content-card .info{background:#141725;}
+html.tv .content-card .info{background:#141416;}
 /* altura de linha inteira no card: sem isso cada card tinha 249,19px e a 2ª
    linha da grade começava em y=318,19 (capa e bordas entre dois pixels) */
 html.tv .content-card .info .name{line-height:16px;}
@@ -1443,15 +1444,18 @@ html.tv .live-cat.active:focus, html.tv .nav-item.active:focus, html.tv .tv-sele
       <div class="name">Stream<span>Manager</span></div>
     </div>
     <ul class="nav-list" id="nav-list">
-      <li class="nav-item" data-view="dashboard" tabindex="0"><span class="ic">&#9635;</span>Dashboard</li>
-      <li class="nav-item" data-view="live" tabindex="0"><span class="ic">&#9679;</span>Ao Vivo<span class="count" id="cnt-live">0</span></li>
-      <li class="nav-item" data-view="series" tabindex="0"><span class="ic">&#127909;</span>Séries<span class="count" id="cnt-series">0</span></li>
-      <li class="nav-item" data-view="movies" tabindex="0"><span class="ic">&#127916;</span>Filmes<span class="count" id="cnt-movies">0</span></li>
-      <li class="nav-item" data-view="suggest" tabindex="0"><span class="ic">&#127922;</span>Sugira-me</li>
-      <li class="nav-item" data-view="favorites" tabindex="0"><span class="ic">&#9733;</span>Favoritos<span class="count" id="cnt-favs">0</span></li>
-      <li class="nav-item" data-view="continue" tabindex="0"><span class="ic">&#9199;</span>Continuar Assistindo<span class="count" id="cnt-continue">0</span></li>
-      <li class="nav-item" data-view="servers" tabindex="0"><span class="ic">&#128421;</span>Servidores<span class="count" id="cnt-servers">0</span></li>
-      <li class="nav-item" data-view="settings" tabindex="0"><span class="ic">&#9881;</span>Configurações</li>
+      <li class="nav-section-label">Assistir</li>
+      <li class="nav-item" data-view="dashboard" tabindex="0"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></span>Dashboard</li>
+      <li class="nav-item" data-view="live" tabindex="0"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2.5"/><polyline points="17 2 12 7 7 2"/></svg></span>Ao Vivo<span class="count" id="cnt-live">0</span></li>
+      <li class="nav-item" data-view="series" tabindex="0"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg></span>Séries<span class="count" id="cnt-series">0</span></li>
+      <li class="nav-item" data-view="movies" tabindex="0"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="18" rx="2.5"/><line x1="7" y1="3" x2="7" y2="21"/><line x1="17" y1="3" x2="17" y2="21"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="2" y1="7.5" x2="7" y2="7.5"/><line x1="2" y1="16.5" x2="7" y2="16.5"/><line x1="17" y1="7.5" x2="22" y2="7.5"/><line x1="17" y1="16.5" x2="22" y2="16.5"/></svg></span>Filmes<span class="count" id="cnt-movies">0</span></li>
+      <li class="nav-section-label">Pra você</li>
+      <li class="nav-item" data-view="suggest" tabindex="0"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg></span>Sugira-me</li>
+      <li class="nav-item" data-view="favorites" tabindex="0"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2.5 15 8.6 21.7 9.6 16.8 14.3 18 21 12 17.8 6 21 7.2 14.3 2.3 9.6 9 8.6 12 2.5"/></svg></span>Favoritos<span class="count" id="cnt-favs">0</span></li>
+      <li class="nav-item" data-view="continue" tabindex="0"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9.5"/><polygon points="10 8.5 16 12 10 15.5 10 8.5" fill="currentColor"/></svg></span>Continuar Assistindo<span class="count" id="cnt-continue">0</span></li>
+      <li class="nav-section-label">Gerenciar</li>
+      <li class="nav-item" data-view="servers" tabindex="0"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="7.5" rx="2"/><rect x="3" y="13.5" width="18" height="7.5" rx="2"/><line x1="7" y1="6.75" x2="7.01" y2="6.75"/><line x1="7" y1="17.25" x2="7.01" y2="17.25"/></svg></span>Servidores<span class="count" id="cnt-servers">0</span></li>
+      <li class="nav-item" data-view="settings" tabindex="0"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/><circle cx="9" cy="6" r="2" fill="currentColor"/><circle cx="15" cy="12" r="2" fill="currentColor"/><circle cx="7" cy="18" r="2" fill="currentColor"/></svg></span>Configurações</li>
     </ul>
     <!-- Ao Vivo: a barra lateral vira a lista de categorias (ver renderLiveSidebar) -->
     <div id="live-side">
@@ -2131,7 +2135,7 @@ const DEFAULT_SETTINGS = {
   rawUser: '111111',
   rawPass: 'xxx',
   autoSaveServers: true,
-  colors: { accent:'#4d7dff', accent2:'#22d3ee', fav:'#ec4899', bg:'#06070c' },
+  colors: { accent:'#4d7dff', accent2:'#22d3ee', fav:'#ec4899', bg:'#000000' },
   // Desempenho: cada servidor importa num worker próprio (download +
   // processamento + gravação juntos, memória liberada no fim de cada um).
   // Em TV/projetor com pouca RAM, use 1 (estritamente um por vez).
@@ -2162,6 +2166,7 @@ function hexToRgbString(hex){
  * no início do app e toda vez que o usuário muda uma cor em Configurações. */
 function applyThemeColors(colors){
   const c = Object.assign({}, DEFAULT_SETTINGS.colors, colors || {});
+  if(c.bg === '#06070c') c.bg = '#000000'; // fundo padrão antigo salvo → novo padrão preto
   const root = document.documentElement.style;
   root.setProperty('--accent', c.accent);
   root.setProperty('--accent-rgb', hexToRgbString(c.accent));
@@ -2171,6 +2176,7 @@ function applyThemeColors(colors){
   root.setProperty('--fav-rgb', hexToRgbString(c.fav));
   root.setProperty('--bg-0', c.bg);
 }
+
 
 /* Global in-memory state */
 const State = {
@@ -2357,7 +2363,7 @@ function renderDebugPanel(){
   if(!panel){
     panel = el('div', { id:'debug-panel', style:
       'position:fixed;bottom:10px;right:10px;z-index:100000;width:min(560px,94vw);height:min(82vh,640px);min-width:220px;min-height:160px;resize:both;' +
-      'background:rgba(10,11,18,.92);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);border:1px solid rgba(255,255,255,.15);' +
+      'background:rgba(10,10,12,.92);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);border:1px solid rgba(255,255,255,.15);' +
       'border-radius:10px;font-family:monospace;font-size:11px;color:#8fd; display:flex;flex-direction:column;overflow:hidden;box-shadow:0 12px 32px -8px rgba(0,0,0,.6);'
     });
     const header = el('div', { style:'display:flex;align-items:center;gap:10px;padding:7px 10px;border-bottom:1px solid rgba(255,255,255,.1);flex-shrink:0;cursor:move;user-select:none;touch-action:none;', title:'Arraste pra mover • canto de baixo à direita pra redimensionar' }, [
@@ -2589,7 +2595,7 @@ const BootProgress = {
   start(){
     const wrap = document.createElement('div');
     wrap.id = 'boot-progress';
-    wrap.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:9500;background:var(--bg-1-solid,#0a0b12);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;opacity:0;pointer-events:none;transition:opacity .2s;font-family:inherit;';
+    wrap.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:9500;background:var(--bg-1-solid,#0a0a0b);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;opacity:0;pointer-events:none;transition:opacity .2s;font-family:inherit;';
     const title = document.createElement('div');
     title.textContent = 'Aguarde…';
     title.style.cssText = 'font-size:18px;font-weight:700;color:var(--text-0,#fff);';
@@ -8465,6 +8471,8 @@ const PlayerModule = {
     });
   },
   isMini(){ return this._mini; },
+  /** Celular (toque, sem controle remoto): quadro do Ao Vivo com controles. */
+  _wantMiniCtrl(){ return !TvNav.on() && ((navigator.maxTouchPoints || 0) > 0 || 'ontouchstart' in window); },
   isFullOpen(){ const o = qs('#player-overlay'); return !!o && o.style.display === 'flex' && !this._mini; },
   _syncFullClass(){
     try{ if(this._hybrid) requestAnimationFrame(() => NativeVideo.engineSync()); }catch(e){}
@@ -8495,9 +8503,11 @@ const PlayerModule = {
     this._miniListeners = true;
     const o = qs('#player-overlay');
     // no mini, qualquer toque/clique = tela cheia (os gestos do player ficam de fora)
-    const block = (e) => { if(this._mini){ e.stopPropagation(); } };
+    // celular (mini-ctrl): o quadro tem os controles normais — toque não expande
+    const blocking = () => this._mini && !o.classList.contains('mini-ctrl');
+    const block = (e) => { if(blocking()){ e.stopPropagation(); } };
     ['touchstart','touchend','touchmove','mousedown','mouseup','pointerdown','pointerup','dblclick'].forEach(t => o.addEventListener(t, block, true));
-    o.addEventListener('click', (e) => { if(this._mini){ e.stopPropagation(); e.preventDefault(); this.expandMini(); } }, true);
+    o.addEventListener('click', (e) => { if(blocking()){ e.stopPropagation(); e.preventDefault(); this.expandMini(); } }, true);
     const sync = () => { if(this._mini && !this._syncRaf) this._syncRaf = requestAnimationFrame(() => { this._syncRaf = 0; this._syncMini(); }); };
     window.addEventListener('resize', sync);
     const ca = qs('#content-area'); if(ca) ca.addEventListener('scroll', sync, { passive: true });
@@ -8553,6 +8563,8 @@ const PlayerModule = {
     this._miniReturn = false;
     this._mini = true;
     o.classList.add('mini');
+    o.classList.toggle('mini-ctrl', this._wantMiniCtrl());
+    if(o.classList.contains('mini-ctrl')){ this._showControls(); this._scheduleHideControls(); }
     this._syncMini();
     const id = this.currentContent && this.currentContent.id;
     if(TvNav.on() && id) TvNav.restoreCard(id, null);
@@ -8591,6 +8603,7 @@ const PlayerModule = {
       if(opts.host) this.attachMini(opts.host);
       this._mini = true; this._miniReturn = false;
       overlay.classList.add('mini');
+      overlay.classList.toggle('mini-ctrl', this._wantMiniCtrl());
       clearTimeout(this._miniMarkT);
       // só entra no "Continuar Assistindo" se ficou uns segundos no canal
       this._miniMarkT = setTimeout(() => { if(this.currentContent && this.currentContent.id === content.id) ProgressModule.markLiveWatched(content).catch(()=>{}); }, 15000);
@@ -8646,6 +8659,7 @@ const PlayerModule = {
     const volumeSlider0 = qs('#player-volume-slider');
     if(volumeSlider0) volumeSlider0.value = video0.muted ? 0 : video0.volume;
     if(!mini) this._showControls();
+    else if(overlay.classList.contains('mini-ctrl')){ this._showControls(); this._scheduleHideControls(); }
   },
 
   _ensureNextEpisodeButton(){
@@ -8847,6 +8861,7 @@ const PlayerModule = {
 
     fullscreenBtn.addEventListener('click', (e) => {
       e.stopPropagation();
+      if(this._mini) this.expandMini(); // no quadro do Ao Vivo: abre o player e entra em tela cheia
       this.toggleFullscreen();
     });
     document.addEventListener('fullscreenchange', () => {
@@ -9357,6 +9372,7 @@ const PlayerModule = {
       // Travado: esse toque é só pra destravar (ver listener de 'click'),
       // o gesto de lateral fica totalmente desligado até destravar.
       if(this._sideHoldLocked){ downInSide = false; return; }
+      if(this._hybrid){ downInSide = false; return; } // ao vivo nativo: sem 2x/avançar — toque nas laterais só mostra/esconde
       if(this._isCenterZone(e)){ downInSide = false; return; } // centro: nada muda aqui
       const zone = this._sideZoneOf(e);
       if(zone === null){ downInSide = false; return; } // faixa do meio: continua sendo só mostrar/esconder controles
@@ -10730,7 +10746,7 @@ function renderContentCard(content, options){
 
   if(options.showRemoveFromContinue){
     const rmBtn = el('button', {
-      style:'position:absolute;top:8px;left:8px;width:29px;height:29px;border-radius:50%;background:rgba(10,11,18,.55);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);border:1px solid rgba(255,255,255,.12);display:flex;align-items:center;justify-content:center;font-size:13px;color:#fff;z-index:2;',
+      style:'position:absolute;top:8px;left:8px;width:29px;height:29px;border-radius:50%;background:rgba(10,10,12,.55);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);border:1px solid rgba(255,255,255,.12);display:flex;align-items:center;justify-content:center;font-size:13px;color:#fff;z-index:2;',
       title:'Remover de Continuar Assistindo'
     }, ['✕']);
     rmBtn.addEventListener('click', async function(e){
@@ -10996,6 +11012,12 @@ const LiveView = {
    *  devolve pro quadro sem reiniciar. Segurar = menu (TvNav). */
   activate(content){
     clearTimeout(this._focusT);
+    // celular: 1 toque = toca no quadro; tocar de novo no mesmo canal = tela cheia
+    if(PlayerModule._wantMiniCtrl()){
+      const here = PlayerModule.isMini() && PlayerModule.currentContent && PlayerModule.currentContent.id === content.id;
+      if(here) PlayerModule.expandMini(); else this.play(content);
+      return;
+    }
     if(!(PlayerModule.isMini() && PlayerModule.currentContent && PlayerModule.currentContent.id === content.id)) this.play(content);
     PlayerModule.expandMini();
   },
@@ -14227,7 +14249,7 @@ function setupEventListeners(){
 function showFatalDbScreen(err){
   const box = document.createElement('div');
   box.id = 'fatal-db-screen';
-  box.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:9999;background:#0a0b12;color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;text-align:center;font-family:system-ui,sans-serif;';
+  box.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:9999;background:#0a0a0b;color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;text-align:center;font-family:system-ui,sans-serif;';
   const detail = (err && ((err.name ? err.name + ': ' : '') + (err.message || ''))) || String(err);
   const title = document.createElement('div');
   title.style.cssText = 'font-size:20px;font-weight:800;';
@@ -14242,7 +14264,7 @@ function showFatalDbScreen(err){
   row.style.cssText = 'display:flex;gap:10px;flex-wrap:wrap;justify-content:center;';
   const btnRetry = document.createElement('button');
   btnRetry.textContent = 'Tentar de novo';
-  btnRetry.style.cssText = 'padding:12px 18px;border-radius:10px;border:1px solid #445;background:#1a1c2a;color:#fff;font-size:15px;';
+  btnRetry.style.cssText = 'padding:12px 18px;border-radius:10px;border:1px solid #445;background:#1a1a1e;color:#fff;font-size:15px;';
   btnRetry.onclick = () => location.reload();
   const btnWipe = document.createElement('button');
   btnWipe.textContent = 'Apagar dados do app e recomeçar';
