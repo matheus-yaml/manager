@@ -8,7 +8,7 @@
 <!-- ============================================================
      VERSÃO DO APP — mude só este número quando lançar uma nova versão.
      ============================================================ -->
-<script>var APP_VERSION = '1.14.0';
+<script>var APP_VERSION = '1.14.1';
 /* Fora do APK (navegador): se foi baixada uma versão pela "Atualização manual"
    (Configurações), ela fica guardada no localStorage e é carregada aqui no
    lugar deste arquivo — enquanto este arquivo for o mesmo de quando baixou.
@@ -8560,6 +8560,7 @@ const PlayerModule = {
     if(document.fullscreenElement) document.exitFullscreen().catch(()=>{});
     this._unlockOrientation();
     this._setNativeImmersive(false);
+    if(this._pseudoFs){ this._pseudoFs = false; const fb = qs('#player-fullscreen'); if(fb) fb.innerHTML = this.ICONS.fullscreenEnter; }
     this._miniReturn = false;
     this._mini = true;
     o.classList.add('mini');
@@ -9080,6 +9081,25 @@ const PlayerModule = {
 
   toggleFullscreen(){
     const overlay = qs('#player-overlay');
+    // Ao vivo no player nativo (vídeo do Android ATRÁS da página): a tela cheia
+    // do navegador põe uma camada preta por cima e esconde o vídeo. Aqui a
+    // "tela cheia" é: player ocupando a tela + barras do Android escondidas + girar.
+    if(this._hybrid && !document.fullscreenElement){
+      const btn = qs('#player-fullscreen');
+      if(this._pseudoFs){
+        this._pseudoFs = false;
+        this._setNativeImmersive(false);
+        this._unlockOrientation();
+      } else {
+        if(this._mini) this.expandMini();
+        this._pseudoFs = true;
+        this._setNativeImmersive(true);
+        this._lockLandscapeIfPhone();
+      }
+      if(btn) btn.innerHTML = this._pseudoFs ? this.ICONS.fullscreenExit : this.ICONS.fullscreenEnter;
+      try{ requestAnimationFrame(() => NativeVideo.engineSync()); }catch(e){}
+      return;
+    }
     if(document.fullscreenElement){
       document.exitFullscreen().catch(()=>{});
     } else if(overlay.requestFullscreen){
@@ -10568,6 +10588,7 @@ const PlayerModule = {
     if(document.fullscreenElement) document.exitFullscreen().catch(()=>{});
     this._unlockOrientation();
     this._setNativeImmersive(false);
+    if(this._pseudoFs){ this._pseudoFs = false; const fb = qs('#player-fullscreen'); if(fb) fb.innerHTML = this.ICONS.fullscreenEnter; }
     const video = qs('#video-player');
     if(this.currentContent && this.currentContent.tipo !== 'live' && video.duration && !isNaN(video.duration)){
       ProgressModule.saveProgress(this.currentContent.id, video.currentTime, video.duration, this.currentContent.seriesKey, this.currentContent._loc);
